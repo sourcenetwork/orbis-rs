@@ -1,88 +1,19 @@
-//! Docker-based integration test: full DKG + PRE + SIGN flow.
+//! Backend-neutral Docker E2E scenarios for PET-enabled rings.
 //!
-//! Spins up a full Docker Compose environment (Vera + 3 orbis-node containers)
-//! and exercises the complete DKG → StoreSecret → PRE workflow via CLI commands.
+//! The selected `TestEnvironment` adapter owns chain provisioning; this file
+//! contains only shared DKG, PET, PRE, refresh and reshare behavior.
 //!
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
 mod pet_reshare;
-#[path = "support/refresh_scenario.rs"]
-mod refresh_scenario;
-#[path = "support/reshare_scenario.rs"]
-mod reshare_scenario;
-// `pre_scenario`/`sign_scenario`/`pet_dkg_scenario` and the
-// `TestEnvironmentImpl` alias are declared once in `mod.rs` so sibling
-// modules (`cancel_ring_reshare.rs`, the `report_*.rs` family) can reuse
-// them too — loading the same file as two separate `mod` items trips
-// `clippy::duplicate_mod`.
-use super::{pet_dkg_scenario, pre_scenario, sign_scenario, TestEnvironmentImpl};
+// Shared scenario helpers and the compile-time-selected environment alias
+// are declared once in `mod.rs`; loading the same source through a second
+// `mod` item would trip `clippy::duplicate_mod`.
+use super::{pet_dkg_scenario, TestEnvironmentImpl};
 
-/// Scaffolding proving the harness-unification migration's fixture
-/// materialization (rings/policies) actually works against a real cluster,
-/// not just compiles — delete once a real scenario test uses
-/// `TestEnvironmentImpl` directly.
-#[tokio::test]
-#[serial_test::serial]
-async fn cosmos_test_environment_materializes_standard_fixture() {
-    use test_support::fixture::{
-        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
-        TestEnvironment,
-    };
-
-    const SCAFFOLD_POLICY_YAML: &str = r#"
-name: harness unification scaffold policy
-resources:
-- name: document
-  permissions:
-  - name: read
-    expr: reader
-  relations:
-  - name: reader
-    types:
-    - actor
-"#;
-
-    let policy = FixtureId::new("policy");
-    let ring = FixtureId::new("ring");
-    let fixture = ScenarioFixture {
-        nodes: (0..3)
-            .map(|_| NodeFixture {
-                id: FixtureId::new("node"),
-                role: NodeRole::Running,
-            })
-            .collect(),
-        policies: vec![PolicyFixture {
-            id: policy.clone(),
-            definition: SCAFFOLD_POLICY_YAML.to_string(),
-        }],
-        rings: vec![RingFixture {
-            id: ring.clone(),
-            members: vec![
-                NodeRef::Running(0),
-                NodeRef::Running(1),
-                NodeRef::Running(2),
-            ],
-            threshold: 2,
-            pss_interval: Duration::from_secs(86_400),
-            requires_pet: false,
-            policy: policy.clone(),
-            reporting: Default::default(),
-            upgrade: None,
-        }],
-        ..Default::default()
-    };
-
-    let environment = TestEnvironmentImpl::provision(fixture).await;
-    assert_eq!(environment.fixture().policies.len(), 1);
-    assert_eq!(environment.fixture().rings.len(), 1);
-    assert!(!environment.fixture().policies[&policy].id.0.is_empty());
-    assert_eq!(environment.fixture().rings[&ring].members.len(), 3);
-}
-
-use bulletin::r#trait::{BulletinKind, RingPayload};
-use common::blockchain::ChainConfig;
 use crypto::r#trait::EncryptionProof;
+use test_support::admin::{RingId, RingView};
 use tokio::time::{sleep, Duration, Instant};
 
 #[derive(Clone, Debug)]
@@ -91,162 +22,12 @@ struct RingStateSnapshot {
     last_pss: u64,
 }
 
-/// Cosmos half of the `cosmos_*`/`native_*` scenario pair the harness-unification
-/// plan asks for (see `native_dkg` in `bin/orbis-node/tests/native_startup.rs`).
-/// Proves the shared provision-trigger-finalize-verify scenario on its own, without
-/// the additional PET-gated PRE assertions `test_cli_calls_dkg_for_pet_ring`
-/// and `test_pet_ring_refresh_and_reshare` layer on top of the same foundation.
-#[tokio::test]
-#[serial_test::serial]
-async fn cosmos_dkg() {
-    use test_support::fixture::{
-        FixtureId, NodeFixture, NodeRef, NodeRole, RingFixture, ScenarioFixture, TestEnvironment,
-    };
-
-    let ring = FixtureId::new("ring");
-    let fixture = ScenarioFixture {
-        nodes: (0..3)
-            .map(|_| NodeFixture {
-                id: FixtureId::new("node"),
-                role: NodeRole::Running,
-            })
-            .collect(),
-        rings: vec![RingFixture {
-            id: ring.clone(),
-            members: vec![
-                NodeRef::Running(0),
-                NodeRef::Running(1),
-                NodeRef::Running(2),
-            ],
-            threshold: 2,
-            pss_interval: Duration::from_secs(5),
-            requires_pet: true,
-            policy: FixtureId::new("ring-policy"),
-            reporting: Default::default(),
-            upgrade: None,
-        }],
-        ..Default::default()
-    };
-
-    let environment = TestEnvironmentImpl::provision(fixture).await;
-    let ring_id = environment.fixture().rings[&ring].id.clone();
-
-    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id).await;
-    assert!(!keys.main.is_empty(), "DKG must finalize the main key");
-    assert!(!keys.pet.is_empty(), "DKG must finalize the PET key");
-}
-
-/// Cosmos adapter for the shared standard-DKG lifecycle: StoreSecret,
-/// authorized PRE, derived-key signing, refresh, and committee reshare. Its
-/// native counterpart runs the same scenario body below the backend boundary
-/// in `native_startup.rs`. Replaces the pre-harness-unification
-/// `cosmos_dkg_and_pre`/generic-`Backend`-trait version — this one drives
-/// `TestEnvironmentImpl` directly, through the compile-time-selected
-/// environment every other migrated test already uses.
-#[tokio::test]
-#[serial_test::serial]
-async fn test_cli_calls_dkg_and_pre_endpoint() {
-    use test_support::fixture::{
-        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
-        TestEnvironment,
-    };
-
-    const DOCUMENT_POLICY_YAML: &str = r#"
-name: shared-dkg-pre-policy
-resources:
-- name: document
-  permissions:
-  - name: read
-    expr: reader
-  relations:
-  - name: reader
-    types:
-    - actor
-"#;
-
-    let policy = FixtureId::new("policy");
-    // Cosmos's ring materializer always substitutes its own
-    // content-addressed governance policy for whatever `RingFixture.policy`
-    // points at (see `CosmosTestEnvironment::provision`'s ring loop) — a
-    // distinct id so that substitution doesn't clobber `policy`'s own
-    // `DOCUMENT_POLICY_YAML` content, which the scenario actually needs for
-    // document/key-derivation authorization.
-    let ring_policy = FixtureId::new("ring-policy");
-    let ring = FixtureId::new("ring");
-    let fixture = ScenarioFixture {
-        nodes: (0..3)
-            .map(|_| NodeFixture {
-                id: FixtureId::new("node"),
-                role: NodeRole::Running,
-            })
-            .collect(),
-        policies: vec![PolicyFixture {
-            id: policy.clone(),
-            definition: DOCUMENT_POLICY_YAML.to_string(),
-        }],
-        rings: vec![RingFixture {
-            id: ring.clone(),
-            members: vec![
-                NodeRef::Running(0),
-                NodeRef::Running(1),
-                NodeRef::Running(2),
-            ],
-            threshold: 2,
-            // Short enough to refresh naturally within the scenario's own
-            // wait — genesis-seeded, so the chain's production minimum
-            // doesn't apply (see `CosmosTestEnvironment::provision`).
-            pss_interval: Duration::from_secs(5),
-            requires_pet: false,
-            policy: ring_policy,
-            reporting: Default::default(),
-            upgrade: None,
-        }],
-        ..Default::default()
-    };
-
-    let environment = TestEnvironmentImpl::provision(fixture).await;
-    let ring_id = environment.fixture().rings[&ring].id.clone();
-    let policy_id = environment.fixture().policies[&policy].id.clone();
-
-    let (keys, local_state, outcome) = pre_scenario::run(&environment, &ring_id, &policy_id).await;
-    let sign = sign_scenario::run(&environment, &ring_id, &keys, &policy_id).await;
-    refresh_scenario::run(&environment, &ring_id, &keys, &local_state, &outcome, &sign).await;
-    reshare_scenario::run(&environment, &ring_id, &keys, &outcome, &sign).await;
-    assert!(
-        !outcome.object_id.is_empty(),
-        "the shared PRE scenario must store a document"
-    );
-    assert!(
-        !sign.derivation_id.is_empty(),
-        "the shared Sign scenario must store a key derivation"
-    );
-}
-
 /// Docker-based integration test: PET-enabled ring, end to end.
 ///
-/// Exercises two things the standard (non-PET) DKG/PRE scenario doesn't
-/// cover, both unblocked by the same change (Vera's `MsgCreateRing` no longer
-/// rejects `requires_pet: true` now that the checking-key lifecycle — the
-/// fresh-DKG auto-chain and combined finalize implemented in
-/// `coordinator::phases::phase4`/`network::start_fresh_pet` — actually exists
-/// to service such a ring):
-///
-/// 1. Genesis-seeds a `requires_pet: true` ring (same pss_interval-bypass
-///    trick as the reference test) and runs DKG through the CLI. This drives
-///    the full auto-chain: the main key's `Fresh` ceremony completes locally,
-///    triggers the PET key's own `FreshPet` ceremony internally (no second
-///    external trigger), and once both succeed the node submits one combined
-///    `MsgFinalizeRing` — `ring_pk` and `pet_pk` land on-chain together in
-///    the same commit.
-/// 2. A live `MsgCreateRing(requires_pet: true)` against the real chain (not
-///    genesis) round-trips correctly — the only place that would catch a
-///    proto tag mismatch between orbis-rs's prost types and Vera's gogoproto
-///    types for these fields, since neither side's unit tests cross a real
-///    wire boundary.
-///
-/// PET's own check-and-gate (Task 6: threshold PET verification before PRE
-/// release) doesn't exist yet, so this test stops at "both keys finalized" —
-/// it does not attempt PRE against a PET-gated document.
+/// Runs paired DKG to one atomic main/PET finalization, then verifies the
+/// PET authorization gate with both a genuine tagged document and a missing
+/// tag rejection. The adapter decides whether the ring is genesis-seeded or
+/// created through the live native command path.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_cli_calls_dkg_for_pet_ring() {
@@ -286,8 +67,6 @@ async fn test_cli_calls_dkg_for_pet_ring() {
     let environment = TestEnvironmentImpl::provision(fixture).await;
     let ring_id_handle = environment.fixture().rings[&ring].id.clone();
     let ring_id = ring_id_handle.0.clone();
-    let node_keys = environment.fixture().rings[&ring].members.clone();
-    let threshold = 2u32;
     let endpoint = environment.nodes()[0].grpc_endpoint.clone();
 
     let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id_handle).await;
@@ -605,46 +384,6 @@ resources:
         no_tag_error_message
     );
 
-    // A live MsgCreateRing(requires_pet: true) against the real chain also
-    // round-trips correctly (independent throwaway policy). This ring is
-    // never whitelisted or driven through DKG; it only exercises the
-    // create-and-read-back wire path. Both helpers need a raw `ChainConfig`
-    // and stay outside `environment`'s abstraction entirely — unlike a
-    // plain `environment.create_policy`, `create_orbis_ring_policy` also
-    // registers the policy's own id as a `ring_policy` ACP object (required
-    // for the signer to pass `create_ring`'s permission check below), and
-    // `create_ring_on_chain_with_trusted_relays` calls `cli_tool::create_ring`
-    // directly — `CosmosAdmin::register_ring` can't do this itself yet
-    // (`cli-tool` dependency boundary, see that method's doc comment).
-    let live_policy_id =
-        test_support::admin::cosmos::create_orbis_ring_policy(&environment.chain_config()).await;
-    let live_ring_id = crate::helpers::test_helpers::create_ring_on_chain_with_trusted_relays(
-        &environment.chain_config(),
-        &node_keys,
-        threshold,
-        &live_policy_id,
-        None,
-        vec![],
-        true,
-    )
-    .await;
-    let live_ring = environment
-        .read_ring(&test_support::admin::RingId(live_ring_id))
-        .await
-        .expect("live-created ring should exist");
-    assert!(
-        live_ring.requires_pet,
-        "live-created ring should have requires_pet set"
-    );
-    assert!(
-        live_ring.ring_pk.is_empty(),
-        "live-created ring should be pending (no ring_pk yet)"
-    );
-    assert!(
-        live_ring.pet_pk.is_none(),
-        "live-created ring should have no pet_pk yet"
-    );
-
     // Cleanup happens automatically when network is dropped
 }
 
@@ -751,6 +490,13 @@ async fn test_pet_ring_refresh_and_reshare() {
         Duration::from_millis(500),
     )
     .await;
+    environment
+        .force_refresh_due(
+            &ring_id_handle,
+            &ring_pk_hex,
+            &environment.fixture().rings[&ring].members,
+        )
+        .await;
     let refreshed_pet_states = wait_for_pet_pss_refresh_on_all_nodes(
         &node_endpoints,
         &ring_id,
@@ -818,8 +564,8 @@ async fn test_pet_ring_refresh_and_reshare() {
         .await;
 
     let reshared_payload = wait_for_reshare_bulletin_completion(
-        &environment.chain_config(),
-        &ring_id,
+        &environment,
+        &ring_id_handle,
         &ring_pk_hex,
         &reshare_peer_ids,
         reshare_threshold,
@@ -846,9 +592,9 @@ async fn test_pet_ring_refresh_and_reshare() {
     );
 
     let reshared_pet_states = pet_reshare::wait_for_pet_reshare(
-        &environment.chain_config(),
+        &environment,
+        &ring_id_handle,
         &node_endpoints[..2],
-        &ring_id,
         &reshared_payload,
         &pre_reshare_main_states,
         &pre_reshare_pet_states,
@@ -1223,49 +969,40 @@ async fn wait_for_ring_state_on_all_nodes(
 }
 
 async fn wait_for_reshare_bulletin_completion(
-    chain_config: &ChainConfig,
-    ring_id: &str,
+    environment: &TestEnvironmentImpl,
+    ring_id: &RingId,
     ring_pk_hex: &str,
     expected_peer_ids: &[String],
     expected_threshold: u32,
     timeout: Duration,
     poll_interval: Duration,
-) -> RingPayload {
+) -> RingView {
+    use test_support::fixture::BulletinTestDriver;
+
     let deadline = Instant::now() + timeout;
     let mut next_status_log = Instant::now() + Duration::from_secs(15);
     let expected_sorted = sorted_peer_ids(expected_peer_ids);
 
     loop {
-        let last_status = match cli_tool::read_bulletin_post_with_config(
-            ring_id.to_string(),
-            BulletinKind::Ring,
-            chain_config.clone(),
-        )
-        .await
-        {
-            Ok(payload_bytes) => match serde_json::from_slice::<RingPayload>(&payload_bytes) {
-                Ok(payload) => {
-                    let actual_sorted = sorted_peer_ids(&payload.peer_node_keys);
-                    let complete = payload.ring_pk == ring_pk_hex
-                        && actual_sorted == expected_sorted
-                        && payload.threshold == expected_threshold
-                        && payload.new_peer_node_keys.is_none()
-                        && payload.new_threshold.is_none();
-                    let status = format!(
-                        "peer_count={} threshold={} new_peer_node_keys_set={} new_threshold={:?}",
-                        payload.peer_node_keys.len(),
-                        payload.threshold,
-                        payload.new_peer_node_keys.is_some(),
-                        payload.new_threshold
-                    );
-                    if complete {
-                        return payload;
-                    }
-                    status
+        let last_status = match environment.read_ring(ring_id).await {
+            Some(payload) => {
+                let actual_sorted = sorted_peer_ids(&payload.peer_node_keys);
+                let complete = payload.ring_pk == ring_pk_hex
+                    && actual_sorted == expected_sorted
+                    && payload.threshold == expected_threshold
+                    && !payload.pending_reshare();
+                let status = format!(
+                    "peer_count={} threshold={} pending={}",
+                    payload.peer_node_keys.len(),
+                    payload.threshold,
+                    payload.pending_reshare()
+                );
+                if complete {
+                    return payload;
                 }
-                Err(e) => format!("parse error: {}", e),
-            },
-            Err(e) => e.to_string(),
+                status
+            }
+            None => "ring not found".to_string(),
         };
 
         let now = Instant::now();

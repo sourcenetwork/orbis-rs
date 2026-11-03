@@ -9,22 +9,21 @@
 //!
 //! - [`compose`] — Docker Compose subprocess helpers shared by the two below.
 //! - [`vera_container`] — [`VeraTestContainer`], a standalone Vera chain (Cosmos only).
-//! - [`network`] — [`IntegrationTestNetwork`]/[`IntegrationTestNetworkBuilder`],
-//!   dispatching over [`IntegrationBackend`] to either the Cosmos or native Vera
-//!   chain plus orbis-node instances. Backend-specific administration remains
-//!   outside this lifecycle wrapper until shared scenarios require it.
+//! - [`network`] — [`CosmosNetwork`]/[`NativeNetworkAdapter`], each backend's
+//!   own chain-plus-orbis-node-instances lifecycle type. Each backend's
+//!   `TestEnvironment` implementation constructs its own directly — no
+//!   shared runtime-dispatch wrapper; backend selection happens once, at
+//!   compile time, via which concrete environment a test registers.
 //! - `container` / `native_network` — native containers with explicit stop, crash
 //!   and restart control, enabled with the `native` feature.
 //! - [`fixture`] — backend-neutral [`fixture::ScenarioFixture`]/
-//!   [`fixture::TestEnvironment`] vocabulary; additive, not yet wired to
-//!   [`IntegrationBackend`] or any concrete backend.
+//!   [`fixture::TestEnvironment`] vocabulary.
 //! - [`environment`] (`cosmos` feature) — [`CosmosTestEnvironment`], the
 //!   compile-time-selected `fixture::TestEnvironment` for Cosmos. Native's
 //!   counterpart lives outside this crate; see that module's doc comment.
 //! - [`node_readiness`] — shared `InfoService`-polling helper both
 //!   `TestEnvironment` implementations use.
 
-mod backend;
 mod compose;
 #[cfg(feature = "cosmos")]
 mod environment;
@@ -33,14 +32,13 @@ mod network;
 pub mod node_readiness;
 
 pub use admin::BackendAdmin;
-pub use backend::IntegrationBackend;
 #[cfg(feature = "cosmos")]
 pub use environment::CosmosTestEnvironment;
 #[cfg(feature = "cosmos")]
 pub use network::CosmosNetwork;
 #[cfg(all(unix, feature = "native"))]
 pub use network::NativeNetworkAdapter;
-pub use network::{IntegrationTestNetwork, IntegrationTestNetworkBuilder, NodeInfo};
+pub use network::NodeInfo;
 
 #[cfg(feature = "cosmos")]
 mod vera_container;
@@ -60,7 +58,7 @@ mod native_network;
 pub use native_network::{NativeTestNetwork, NativeTestNode};
 // Free-function Compose primitives for callers outside this crate that hold
 // a long-lived handle to one named service (e.g.
-// `bin/orbis-node/tests/native_startup.rs`'s `Node`) — see
+// `bin/orbis-node/src/tests/support/native_lifecycle.rs`'s `Node`) — see
 // `native_network::compose_build`'s doc comment.
 #[cfg(all(unix, feature = "native"))]
 pub use native_network::{

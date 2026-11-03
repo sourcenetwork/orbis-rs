@@ -74,8 +74,8 @@ vera-harness = { workspace = true }
 vera-acp = { workspace = true }
 vera-modules = { workspace = true }
 alloy-sol-types = "1"
-authz = { path = "../../crates/authz", default-features = false, features = ["vera", "test-helpers"] }
-bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera", "dummy-type"] }
+authz = { path = "../../crates/authz", default-features = false, features = ["test-helpers"] }
+bulletin = { path = "../../crates/bulletin", default-features = false, features = ["dummy-type"] }
 bs58 = "0.5"
 serial_test = "3.2.0"
 ark-bls12-381 = "0.4"
@@ -90,22 +90,11 @@ tempfile = { workspace = true }
 # Docker Compose integration-test harness (Vera + orbis-node containers).
 test-support = { path = "../../crates/test-support", default-features = false }
 
-[[test]]
-name = "native_startup"
-# Decomposed form (harness-unification migration, PR 7) — Cargo checks the
-# final *resolved* feature set, not the literal CLI string, so the old
-# `integration-test-native` umbrella (which transitively enables both of
-# these) still satisfies this unchanged; it just isn't required by name
-# anymore.
-required-features = ["integration-test", "native", "native-test-fixture"]
-
 [features]
-# Combined convenience feature for the common "fully native" build, kept for
-# `native_startup`'s whole-system integration tests (which exercise native
-# authz+bulletin together and make no sense with only one side native).
+# Combined convenience feature for the common "fully native" build.
 # `authz-native`/`bulletin-native` below are independently selectable, so a
 # build can also mix one native side with the other's vera implementation.
-native = ["authz-native", "bulletin-native"]
+native = ["authz-native", "bulletin-native", "test-support/native"]
 authz-native = ["authz/native", "authz/select-native", "local-storage/redb"]
 bulletin-native = ["bulletin/native", "bulletin/select-native", "local-storage/redb"]
 default = ["local-storage/redb", "bls12-381", "authz-vera", "bulletin-vera", "network/iroh"]
@@ -113,32 +102,14 @@ bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "common/bls12-381", "bul
 jubjub = ["crypto/jubjub", "cli-tool?/jubjub", "common/jubjub", "bulletin/jubjub"]
 redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
-cosmos = ["common/cosmos", "bulletin/cosmos-identity"]
+cosmos = ["common/cosmos", "bulletin/cosmos-identity", "test-support/cosmos"]
 authz-vera = ["authz/vera", "authz/select-vera", "cosmos"]
 bulletin-vera = ["bulletin/vera", "bulletin/select-vera", "cosmos"]
 iroh = ["network/iroh"]
-# Shared E2E scenario machinery, backend-neutral (scenario fns, `BackendAdmin`
-# trait, `IntegrationBackend` enum). Pick a backend variant below to actually
-# run anything — this alone doesn't pull in either chain client.
-# `authz/test-helpers`+`bulletin/dummy-type`: `helpers::test_helpers`'s module
-# gate was widened from `#[cfg(test)]` to `any(test, feature =
-# "integration-test")` (harness-unification migration, PR 6) so
-# `tests/support/live_node.rs` could reach it from the separate
-# `native_startup` integration-test binary — but that file unconditionally
-# imports `authz::dummy`/`bulletin::dummy`. Before that widening, a plain
-# `cargo build --release` (no `cfg(test)`) never compiled the module at all;
-# now any `integration-test`-enabled build does, including
-# `docker/Dockerfile`'s `ENABLE_INTEGRATION_TEST=true` image build, which
-# never separately requests `scale-testing`/`harness` (the only other source
-# of these two). So `integration-test` itself must guarantee them.
-integration-test = ["cli-tool", "unsafe-testing", "authz/test-helpers", "bulletin/dummy-type"]
-# Adds Cosmos/SourceHub wiring on top of the shared base.
-integration-test-cosmos = ["integration-test", "authz-vera", "bulletin-vera", "bulletin/integration-test-cosmos", "test-support/cosmos"]
-# Adds native Vera wiring on top of the shared base — does NOT pull in
-# authz-vera/bulletin-vera/cosmos (see test-support's own `cosmos` default
-# feature, which this crate explicitly opts out of above).
-integration-test-native = ["integration-test", "native-test-fixture"]
-native-test-fixture = ["native", "test-support/native"]
+# Shared E2E scenario machinery and test-only startup behavior. The backend is
+# selected with the same production features (`authz-*` and `bulletin-*`) used
+# by the node; there are no test-only backend aliases.
+integration-test = ["cli-tool", "unsafe-testing", "bulletin/integration-test"]
 unsafe-testing = []
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead

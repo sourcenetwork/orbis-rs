@@ -36,7 +36,7 @@ def main():
     proof = {'curve': curve, 'complete': False, 'runs': [],
              'runner_source': git(Path(os.environ['GITHUB_WORKSPACE']), 'rev-parse', 'HEAD'),
              'toolchain': subprocess.check_output(['rustc', '+1.99.1', '--version'], text=True).strip(),
-             'profile': 'release', 'features': 'integration-test-native,redb,iroh,' + curve,
+             'profile': 'release', 'features': 'integration-test,native,redb,iroh,' + curve,
              'locked_dependencies': True}
     evidence = output / 'results.json'
     for source, expected_failures in ((BASELINE, FAILED_BEFORE), (FIXED, set())):
@@ -44,7 +44,7 @@ def main():
         if git(root, 'rev-parse', 'HEAD') != source or git(root, 'status', '--porcelain', '--untracked-files=no'):
             raise ValueError('qualification source changed')
         command = ['cargo', '+1.99.1', 'test', '--frozen', '--release', '-p', 'orbis-node',
-                   '--no-default-features', '--features', 'integration-test-native,redb,iroh,' + curve,
+                   '--no-default-features', '--features', 'integration-test,native,redb,iroh,' + curve,
                    '--lib', PREFIX, '--', '--test-threads=1']
         log = output / (source + '.private.log')
         with log.open('x') as stream:

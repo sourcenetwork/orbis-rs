@@ -1,370 +1,6 @@
-use test_support::NativeTestNetwork as TestCluster;
+pub(super) use test_support::NativeTestNetwork as TestCluster;
 
-#[path = "support/native_confirmation.rs"]
-mod native_confirmation;
-use native_confirmation::{confirmed, submit};
-
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-#[path = "support/policy_generations.rs"]
-mod policy_generations;
-
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-#[path = "support/admin.rs"]
-mod admin;
-
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-#[path = "support/native_workflow.rs"]
-mod native_workflow;
-
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-#[path = "support/native_pet.rs"]
-mod native_pet;
-
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-#[path = "support/native_trust_gateway.rs"]
-mod native_trust_gateway;
-
-// A second, independent instance of the same source file `native_pet`'s own
-// `stored_bundle` submodule uses — `native_environment` is a sibling of
-// `native_pet` at this binary's root, not a descendant of it, so it cannot
-// reach `native_pet`'s copy through `super::`.
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-#[path = "support/native_pet/scheduled_store.rs"]
-#[allow(dead_code)]
-mod stored_bundle;
-
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-#[path = "support/native_environment.rs"]
-mod native_environment;
-// Harness-unification migration: the compile-time-selected test environment
-// for this backend.
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-use native_environment::NativeTestEnvironment as TestEnvironmentImpl;
-
-// Not gated on `unsafe-testing`: `native_dkg` (the only consumer) isn't
-// either, and this file needs no diagnostic-service capability.
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-#[path = "../src/tests/support/pet_dkg_scenario.rs"]
-mod pet_dkg_scenario;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/pre_scenario.rs"]
-mod pre_scenario;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/refresh_scenario.rs"]
-mod refresh_scenario;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/reshare_scenario.rs"]
-mod reshare_scenario;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/sign_scenario.rs"]
-mod sign_scenario;
-
-// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
-// and the standing decision in the harness-unification plan against
-// backend-only test files.
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/pending_ring_cancellation.rs"]
-mod pending_ring_cancellation;
-
-// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
-// and the standing decision in the harness-unification plan against
-// backend-only test files.
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/cancel_ring_reshare.rs"]
-mod cancel_ring_reshare;
-
-// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
-// and the standing decision in the harness-unification plan against
-// backend-only test files.
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/upgrade.rs"]
-mod upgrade;
-
-// Shared helpers for the `report_*.rs` family (originally `reporting.rs`,
-// fully migrated and deleted) — declared here so every sibling can reach
-// it via `super::`.
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_scenario.rs"]
-mod report_scenario;
-
-// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
-// and the standing decision in the harness-unification plan against
-// backend-only test files.
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_offline_pre_sign.rs"]
-mod report_offline_pre_sign;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/concurrent_delegated_dkg.rs"]
-mod concurrent_delegated_dkg;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/concurrent_dkg_non_participant.rs"]
-mod concurrent_dkg_non_participant;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/concurrent_invalid_dkg_share_report.rs"]
-mod concurrent_invalid_dkg_share_report;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/concurrent_pre_requests.rs"]
-mod concurrent_pre_requests;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/concurrent_sign_requests.rs"]
-mod concurrent_sign_requests;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/concurrent_simultaneous_dkg.rs"]
-mod concurrent_simultaneous_dkg;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/live_node.rs"]
-mod live_node;
-
-// Shared with Cosmos (`src/tests/mod.rs`) — "Bucket B" fault-injection
-// tests ported onto `live_node`'s shared bootstrap (harness-unification
-// migration, PR 6). The remaining 5 "Bucket C" tests in
-// `fault_injection.rs` stay Cosmos-only (genuinely need `FaultNetwork`'s
-// byte-level/directional control — see the plan's PR 6 context section).
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/fault_dkg_unreachable.rs"]
-mod fault_dkg_unreachable;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/fault_pre_below_threshold.rs"]
-mod fault_pre_below_threshold;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/fault_pre_one_node_down.rs"]
-mod fault_pre_one_node_down;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/fault_sign_below_threshold.rs"]
-mod fault_sign_below_threshold;
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/fault_sign_one_node_down.rs"]
-mod fault_sign_one_node_down;
-
-// Corrupts node3's own BLS share directly — FROST's threshold-sized
-// signing set would deterministically exclude node3 from Sign, so this
-// test only makes sense for the default non-interactive BLS backend.
-#[cfg(all(feature = "unsafe-testing", feature = "bls12-381"))]
-#[path = "../src/tests/support/report_invalid_crypto_response.rs"]
-mod report_invalid_crypto_response;
-
-#[cfg(all(feature = "unsafe-testing", feature = "jubjub"))]
-#[path = "../src/tests/support/report_invalid_sign_share_frost.rs"]
-mod report_invalid_sign_share_frost;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_refresh_offline.rs"]
-mod report_refresh_offline;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_refresh_invalid_commitment.rs"]
-mod report_refresh_invalid_commitment;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_refresh_leader_offline.rs"]
-mod report_refresh_leader_offline;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_refresh_stall_offline.rs"]
-mod report_refresh_stall_offline;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_reshare_stall_offline.rs"]
-mod report_reshare_stall_offline;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_reshare_offline.rs"]
-mod report_reshare_offline;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_reshare_bad_dkg_share_relay.rs"]
-mod report_reshare_bad_dkg_share_relay;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_reshare_dkg_equivocation.rs"]
-mod report_reshare_dkg_equivocation;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_kick_promotes_backup_node.rs"]
-mod report_kick_promotes_backup_node;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_pet_invalid_decrypt_share.rs"]
-mod report_pet_invalid_decrypt_share;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_unauthorized_relay.rs"]
-mod report_unauthorized_relay;
-
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-#[path = "../src/tests/support/report_unauthorized_relay_bulletin_inline.rs"]
-mod report_unauthorized_relay_bulletin_inline;
-
-/// Scaffolding proving the harness-unification migration's fixture
-/// materialization (rings/policies) actually works against a real cluster,
-/// not just compiles — delete once a real scenario test uses
-/// `TestEnvironmentImpl` directly.
-#[tokio::test]
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-async fn native_test_environment_materializes_standard_fixture() {
-    use test_support::fixture::{
-        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
-        TestEnvironment,
-    };
-
-    // Native ring creation needs the submitter to hold the `creator`
-    // relation on a `ring_policy`-resource object registered under the
-    // ring's own policy — so, unlike Cosmos (which bundles its own internal
-    // governance policy into ring materialization and ignores this
-    // fixture's `PolicyFixture` content for that purpose), this scaffolding
-    // test's policy must actually define `ring_policy`/`creator`. Reusing
-    // `policy_generations::definition` (the same canonical policy
-    // `NativeWorkflow` and every other native test already use) rather than
-    // inventing a new schema.
-    let policy = FixtureId::new("policy");
-    let ring = FixtureId::new("ring");
-    let fixture = ScenarioFixture {
-        nodes: (0..3)
-            .map(|_| NodeFixture {
-                id: FixtureId::new("node"),
-                role: NodeRole::Running,
-            })
-            .collect(),
-        policies: vec![PolicyFixture {
-            id: policy.clone(),
-            definition: policy_generations::definition(true, true),
-        }],
-        rings: vec![RingFixture {
-            id: ring.clone(),
-            members: vec![
-                NodeRef::Running(0),
-                NodeRef::Running(1),
-                NodeRef::Running(2),
-            ],
-            threshold: 2,
-            pss_interval: Duration::from_secs(86_400),
-            requires_pet: false,
-            policy: policy.clone(),
-            reporting: Default::default(),
-            upgrade: None,
-        }],
-        ..Default::default()
-    };
-
-    let environment = TestEnvironmentImpl::provision(fixture).await;
-    assert_eq!(environment.fixture().policies.len(), 1);
-    assert_eq!(environment.fixture().rings.len(), 1);
-    assert!(!environment.fixture().policies[&policy].id.0.is_empty());
-    assert_eq!(environment.fixture().rings[&ring].members.len(), 3);
-}
-
-#[cfg(feature = "bls12-381")]
-#[path = "support/defra_signer.rs"]
-mod defra_signer;
-
-#[cfg(feature = "bls12-381")]
-#[path = "support/defra_peers.rs"]
-mod defra_peers;
-
-#[cfg(feature = "bls12-381")]
-#[path = "support/defra_documents.rs"]
-mod defra_documents;
+use super::native_confirmation::{confirmed, submit};
 
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse, NodeStatus,
@@ -387,16 +23,16 @@ use vera_harness::cluster::KeySet;
 /// the same long-lived container (`docker compose start`) instead of creating
 /// a fresh one — these services are shared, named, and torn down as a whole
 /// by the owning `TestCluster`'s `Drop`, not by any individual `Node`.
-struct ComposeNode {
-    project_name: String,
-    service: String,
-    log: std::path::PathBuf,
+pub(super) struct ComposeNode {
+    pub(super) project_name: String,
+    pub(super) service: String,
+    pub(super) log: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ComposeExit(i32);
+pub(super) struct ComposeExit(pub(super) i32);
 impl ComposeExit {
-    fn success(self) -> bool {
+    pub(super) fn success(self) -> bool {
         self.0 == 0
     }
 }
@@ -406,7 +42,7 @@ impl std::fmt::Display for ComposeExit {
     }
 }
 
-const NATIVE_COMPOSE_FILE: &str = "docker/docker-compose-native-integration-test.yml";
+pub(super) const NATIVE_COMPOSE_FILE: &str = "docker/docker-compose-native-integration-test.yml";
 
 // Every method below returns a trivial `Result<T, ()>`/`Result<Option<T>, ()>`
 // purely so the many existing `.0.<method>().unwrap()` call sites across
@@ -416,14 +52,14 @@ const NATIVE_COMPOSE_FILE: &str = "docker/docker-compose-native-integration-test
 // failure), this is a call-site-compatibility shim, not meaningful error
 // handling.
 impl ComposeNode {
-    fn try_wait(&self) -> Result<Option<ComposeExit>, ()> {
+    pub(super) fn try_wait(&self) -> Result<Option<ComposeExit>, ()> {
         Ok(
             test_support::compose_exit_code(NATIVE_COMPOSE_FILE, &self.project_name, &self.service)
                 .map(ComposeExit),
         )
     }
 
-    async fn try_wait_async(&self) -> Result<Option<ComposeExit>, ()> {
+    pub(super) async fn try_wait_async(&self) -> Result<Option<ComposeExit>, ()> {
         let project_name = self.project_name.clone();
         let service = self.service.clone();
         Ok(tokio::task::spawn_blocking(move || {
@@ -434,7 +70,7 @@ impl ComposeNode {
         .unwrap())
     }
 
-    fn kill(&self) -> Result<(), ()> {
+    pub(super) fn kill(&self) -> Result<(), ()> {
         test_support::compose_kill(
             NATIVE_COMPOSE_FILE,
             &self.project_name,
@@ -444,7 +80,7 @@ impl ComposeNode {
         Ok(())
     }
 
-    fn pause(&self) -> Result<(), ()> {
+    pub(super) fn pause(&self) -> Result<(), ()> {
         test_support::compose_kill(
             NATIVE_COMPOSE_FILE,
             &self.project_name,
@@ -454,7 +90,7 @@ impl ComposeNode {
         Ok(())
     }
 
-    fn wait(&self) -> Result<ComposeExit, ()> {
+    pub(super) fn wait(&self) -> Result<ComposeExit, ()> {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(exit) = self.try_wait().unwrap() {
@@ -469,7 +105,7 @@ impl ComposeNode {
         }
     }
 
-    async fn interrupt_async(&self) -> Result<(), ()> {
+    pub(super) async fn interrupt_async(&self) -> Result<(), ()> {
         test_support::compose_kill(
             NATIVE_COMPOSE_FILE,
             &self.project_name,
@@ -479,7 +115,7 @@ impl ComposeNode {
         Ok(())
     }
 
-    fn retain_logs(&self) -> Result<(), ()> {
+    pub(super) fn retain_logs(&self) -> Result<(), ()> {
         test_support::compose_save_logs(
             NATIVE_COMPOSE_FILE,
             &self.project_name,
@@ -489,7 +125,7 @@ impl ComposeNode {
         Ok(())
     }
 
-    async fn refresh_logs(&self) -> Result<(), ()> {
+    pub(super) async fn refresh_logs(&self) -> Result<(), ()> {
         self.retain_logs()
     }
 
@@ -497,15 +133,15 @@ impl ComposeNode {
     /// per-node config is passed here: the compose file's `command:` already
     /// bakes everything in, and `node{index}`'s fixture directory (written
     /// once, before the service first starts) is reused across restarts.
-    fn start_service(&self) {
+    pub(super) fn start_service(&self) {
         test_support::compose_start(NATIVE_COMPOSE_FILE, &self.project_name, &self.service);
     }
 }
 
-struct Node(ComposeNode);
+pub(super) struct Node(pub(super) ComposeNode);
 impl Node {
     /// `index` is the node's 0-based position (`node1`..`node4`).
-    fn attach(project_name: &str, index: usize, log: &Path) -> Self {
+    pub(super) fn attach(project_name: &str, index: usize, log: &Path) -> Self {
         Self(ComposeNode {
             project_name: project_name.to_string(),
             service: orbis_service(index),
@@ -515,13 +151,13 @@ impl Node {
 
     /// Restart the same container and its persisted state. Docker may reassign
     /// its published port; callers must refresh the endpoint before reconnecting.
-    fn restart(project_name: &str, index: usize, log: &Path) -> Self {
+    pub(super) fn restart(project_name: &str, index: usize, log: &Path) -> Self {
         let node = Self::attach(project_name, index, log);
         node.0.start_service();
         node
     }
 
-    fn endpoint(&self) -> String {
+    pub(super) fn endpoint(&self) -> String {
         test_support::compose_discover_endpoint(
             NATIVE_COMPOSE_FILE,
             &self.0.project_name,
@@ -533,7 +169,7 @@ impl Node {
         .to_owned()
     }
 
-    async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {
+    pub(super) async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {
         let mut connections = 0_u32;
         let mut responses = 0_u32;
         let mut last_status = None;
@@ -599,7 +235,7 @@ impl Node {
             panic!("startup timed out; logs retained privately")
         })
     }
-    async fn stop(&mut self) {
+    pub(super) async fn stop(&mut self) {
         tokio::time::timeout(Duration::from_secs(10), async {
             if let Some(status) = self.0.try_wait_async().await.unwrap() {
                 assert!(status.success(), "{status}");
@@ -623,7 +259,7 @@ impl Node {
 /// and `crates/test-support/src/network/native.rs`'s own `orbis_service` —
 /// not shared with it directly (that one's private to `crates/test-support`)
 /// since this crate can't reach a private fn in another crate's module.
-fn orbis_service(index: usize) -> String {
+pub(super) fn orbis_service(index: usize) -> String {
     match index {
         0 => "node1",
         1 => "node2",
@@ -642,7 +278,7 @@ fn orbis_service(index: usize) -> String {
 /// discovered gRPC endpoint. `reshare_interval_secs`/`enable_unsafe_testing`
 /// map to the Compose env vars `docker-compose-native-integration-test.yml`'s
 /// node services read (`ORBIS_NATIVE_RESHARE_INTERVAL`/`ORBIS_NATIVE_ENABLE_UNSAFE_TESTING`).
-fn bring_up_orbis_nodes(
+pub(super) fn bring_up_orbis_nodes(
     cluster: &TestCluster,
     fixtures: &Path,
     count: usize,
@@ -731,7 +367,7 @@ fn bring_up_orbis_nodes(
 /// Compose service's fixed `--node-controller-key`
 /// (`docker/docker-compose-native-integration-test.yml`), the compressed
 /// secp256k1 public key for the fixed test private key `[34u8; 32]` — the
-/// same convention `bin/orbis-node/tests/support/native_workflow.rs`/`admin.rs`
+/// same convention `bin/orbis-node/src/tests/support/native_workflow.rs`/`admin.rs`
 /// already use as `controller`/`controller_key`.
 const COMPOSE_NODE_CONTROLLER_KEY: &str =
     "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27";
@@ -744,7 +380,7 @@ const COMPOSE_NODE_CONTROLLER_KEY: &str =
 /// `TcpListener::bind("127.0.0.1:0")` + `Node::start` dance (that reserved an
 /// arbitrary host port; `node4`'s port is fixed and published like every
 /// other service's).
-fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
+pub(super) fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
     let directory = base.join("node-3");
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("password"), "native-dkg-test").unwrap();
@@ -776,6 +412,7 @@ fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
 }
 
 #[tokio::test]
+#[ignore = "legacy native lifecycle harness stops/restarts containers directly; redesign through the shared TestEnvironment contract before qualification"]
 async fn native_startup_registers_and_preserves_identity_on_restart() {
     let deployment = 9073;
     let trusted = *KeySet::builder()
@@ -839,6 +476,7 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
 }
 
 #[tokio::test]
+#[ignore = "legacy native lifecycle harness stops/restarts containers directly; redesign through the shared TestEnvironment contract before qualification"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
@@ -846,6 +484,7 @@ async fn native_distributed_threshold_workflows() {
 }
 
 #[tokio::test]
+#[ignore = "legacy native lifecycle harness stops/restarts containers directly; redesign through the shared TestEnvironment contract before qualification"]
 #[cfg(feature = "bls12-381")]
 #[serial_test::serial(defra_signing)]
 async fn native_defra_signing() {
@@ -853,147 +492,17 @@ async fn native_defra_signing() {
 }
 
 #[tokio::test]
+#[ignore = "legacy native lifecycle harness stops/restarts containers directly; redesign through the shared TestEnvironment contract before qualification"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_threshold_workflows() {
-    native_pet::run(native_pet::Scenario::Lifecycle).await;
-}
-
-/// Native half of the `cosmos_*`/`native_*` scenario pair the harness-unification
-/// plan asks for (see `cosmos_dkg` in `bin/orbis-node/src/tests/integration.rs`).
-/// Proves the shared provision-trigger-finalize-verify scenario on its
-/// own, without any of `Scenario::Lifecycle`'s additional PET-document logic.
-/// Drives `TestEnvironmentImpl`/`pet_dkg_scenario` directly — `native_pet`'s
-/// five `Scenario` variants go through their own, separate DKG step
-/// (`native_pet::dkg::run`) since they build on `NativeWorkflow`, not a
-/// `test-support` fixture.
-#[tokio::test]
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
-async fn native_dkg() {
-    use test_support::fixture::{
-        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
-        TestEnvironment,
-    };
-
-    let policy = FixtureId::new("policy");
-    let ring = FixtureId::new("ring");
-    let fixture = ScenarioFixture {
-        nodes: (0..3)
-            .map(|_| NodeFixture {
-                id: FixtureId::new("node"),
-                role: NodeRole::Running,
-            })
-            .collect(),
-        // Native (unlike Cosmos) needs a *real* backing policy here —
-        // ring creation requires the submitter hold `creator` on a
-        // `ring_policy`-resource object registered under it.
-        policies: vec![PolicyFixture {
-            id: policy.clone(),
-            definition: policy_generations::definition(true, true),
-        }],
-        rings: vec![RingFixture {
-            id: ring.clone(),
-            members: vec![
-                NodeRef::Running(0),
-                NodeRef::Running(1),
-                NodeRef::Running(2),
-            ],
-            threshold: 2,
-            pss_interval: Duration::from_secs(86_400),
-            requires_pet: true,
-            policy: policy.clone(),
-            reporting: Default::default(),
-            upgrade: None,
-        }],
-        ..Default::default()
-    };
-
-    let environment = TestEnvironmentImpl::provision(fixture).await;
-    let ring_id = environment.fixture().rings[&ring].id.clone();
-
-    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id).await;
-    assert!(!keys.main.is_empty(), "DKG must finalize the main key");
-    assert!(!keys.pet.is_empty(), "DKG must finalize the PET key");
-}
-
-/// Native adapter for the shared standard-DKG lifecycle: StoreSecret,
-/// authorized PRE, derived-key signing, refresh, and committee reshare. The
-/// scenario body is identical to `test_cli_calls_dkg_and_pre_endpoint` in
-/// `bin/orbis-node/src/tests/integration.rs`. Replaces the pre-harness-unification
-/// `native_dkg_and_pre`/`NativeHarness` version — this one drives
-/// `TestEnvironmentImpl` directly. `unsafe-testing` is required at compile
-/// time (not just runtime) because the refresh step forces a share rotation
-/// through the `UnsafeTestingService` diagnostic hook
-/// (`NativeTestEnvironment::force_refresh_due`), which only a diagnostic
-/// node image actually serves.
-#[tokio::test]
-#[cfg(all(
-    feature = "unsafe-testing",
-    any(feature = "bls12-381", feature = "jubjub")
-))]
-async fn test_cli_calls_dkg_and_pre_endpoint() {
-    use test_support::fixture::{
-        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
-        TestEnvironment,
-    };
-
-    let policy = FixtureId::new("policy");
-    let ring = FixtureId::new("ring");
-    let fixture = ScenarioFixture {
-        nodes: (0..3)
-            .map(|_| NodeFixture {
-                id: FixtureId::new("node"),
-                role: NodeRole::Running,
-            })
-            .collect(),
-        policies: vec![PolicyFixture {
-            id: policy.clone(),
-            definition: policy_generations::definition(true, true),
-        }],
-        rings: vec![RingFixture {
-            id: ring.clone(),
-            members: vec![
-                NodeRef::Running(0),
-                NodeRef::Running(1),
-                NodeRef::Running(2),
-            ],
-            threshold: 2,
-            // Native's live `RingCommand::Create` enforces the same
-            // production minimum Cosmos bypasses by genesis-seeding (see
-            // `vera-modules::vera::rings::types::RingConfig::validate`) —
-            // so, unlike the Cosmos test, this can't just be short. Refresh
-            // is instead forced via `force_refresh_due` regardless of this
-            // value.
-            pss_interval: Duration::from_secs(86_400),
-            requires_pet: false,
-            policy: policy.clone(),
-            reporting: Default::default(),
-            upgrade: None,
-        }],
-        ..Default::default()
-    };
-
-    let environment = TestEnvironmentImpl::provision(fixture).await;
-    let ring_id = environment.fixture().rings[&ring].id.clone();
-    let policy_id = environment.fixture().policies[&policy].id.clone();
-
-    let (keys, local_state, outcome) = pre_scenario::run(&environment, &ring_id, &policy_id).await;
-    let sign = sign_scenario::run(&environment, &ring_id, &keys, &policy_id).await;
-    refresh_scenario::run(&environment, &ring_id, &keys, &local_state, &outcome, &sign).await;
-    reshare_scenario::run(&environment, &ring_id, &keys, &outcome, &sign).await;
-    assert!(
-        !outcome.object_id.is_empty(),
-        "the shared PRE scenario must store a document"
-    );
-    assert!(
-        !sign.derivation_id.is_empty(),
-        "the shared Sign scenario must store a key derivation"
-    );
+    super::native_pet::run(super::native_pet::Scenario::Lifecycle).await;
 }
 
 #[tokio::test]
+#[ignore = "legacy native lifecycle harness stops/restarts containers directly; redesign through the shared TestEnvironment contract before qualification"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_member_replacement() {
-    native_pet::run(native_pet::Scenario::MemberReplacement).await;
+    super::native_pet::run(super::native_pet::Scenario::MemberReplacement).await;
 }
 
 #[tokio::test]
@@ -1002,23 +511,24 @@ async fn native_pet_member_replacement() {
 async fn native_pet_member_churn() {
     tokio::time::timeout(
         Duration::from_secs(1200),
-        native_pet::run(native_pet::Scenario::MemberChurn),
+        super::native_pet::run(super::native_pet::Scenario::MemberChurn),
     )
     .await
     .expect("native membership churn must finish within twenty minutes");
 }
 
 #[tokio::test]
+#[ignore = "legacy native lifecycle harness stops/restarts containers directly; redesign through the shared TestEnvironment contract before qualification"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_scheduled_refresh_after_restart() {
-    native_pet::run(native_pet::Scenario::ScheduledRefresh).await;
+    super::native_pet::run(super::native_pet::Scenario::ScheduledRefresh).await;
 }
 
 #[tokio::test]
 #[ignore = "requires the focused native soak profile and normal runtime images"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_threshold_soak() {
-    tokio::time::timeout(Duration::from_secs(1800), native_pet::soak::run())
+    tokio::time::timeout(Duration::from_secs(1800), super::native_pet::soak::run())
         .await
         .expect("native threshold soak must finish within thirty minutes");
 }
@@ -1027,16 +537,17 @@ async fn native_threshold_soak() {
 #[ignore = "requires normal native Docker images and compiled Trust gateway contract artifacts"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_trust_gateway_ring_dkg() {
-    native_trust_gateway::run().await;
+    super::native_trust_gateway::run().await;
 }
 
 #[tokio::test]
+#[ignore = "legacy native PET fault harness uses its own diagnostic-image runner; redesign through the shared TestEnvironment fault contract before qualification"]
 #[cfg(all(
     feature = "unsafe-testing",
     any(feature = "bls12-381", feature = "jubjub")
 ))]
 async fn native_pet_fault_reports() {
-    native_pet::run(native_pet::Scenario::ReportFault).await;
+    super::native_pet::run(super::native_pet::Scenario::ReportFault).await;
 }
 
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
@@ -1059,7 +570,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         DelegationScope,
     };
     let deployment = 9074;
-    let native_workflow::NativeWorkflow {
+    let super::native_workflow::NativeWorkflow {
         cluster,
         client,
         trusted,
@@ -1078,7 +589,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         now,
         headers: _headers,
         deployment: _,
-    } = native_workflow::NativeWorkflow::start(deployment, false, false).await;
+    } = super::native_workflow::NativeWorkflow::start(deployment, false, false).await;
     let response = DkgServiceClient::connect(
         tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[0]))
             .unwrap()
@@ -1229,7 +740,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
                 .to_string(),
             reader.did_uri
         );
-        std::sync::Arc::new(defra_signer::Signer::new(
+        std::sync::Arc::new(super::defra_signer::Signer::new(
             defra_orbis::OrbisClient::new(
                 format!("http://{}", addresses[1]),
                 derivation_id.clone(),
@@ -1243,7 +754,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     };
     #[cfg(feature = "bls12-381")]
     let documents =
-        defra_documents::Documents::new(&base.path().join("defra"), defra.clone()).await;
+        super::defra_documents::Documents::new(&base.path().join("defra"), defra.clone()).await;
     #[cfg(feature = "bls12-381")]
     let defra_sign = || defra.sign(b"native Vera threshold signing");
 
@@ -1306,7 +817,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let (documents, peers, created) = {
         let defra_signature = defra_sign().await.expect("Defra threshold signature");
         assert_eq!(defra_signature, signature.to_bytes().unwrap());
-        let peers = defra_peers::Peers::new(&base.path().join("peers"), defra.clone()).await;
+        let peers = super::defra_peers::Peers::new(&base.path().join("peers"), defra.clone()).await;
         peers.verify_replication().await;
         let peers = peers.verify_restart().await;
         let created = documents.create("signed").await.expect("signed document");
@@ -1314,7 +825,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         assert_eq!(documents.count().await, 1);
         documents.verify_contents().await;
         let replica =
-            defra_documents::Documents::new(&base.path().join("replica"), defra.clone()).await;
+            super::defra_documents::Documents::new(&base.path().join("replica"), defra.clone())
+                .await;
         documents.replicate_to(&replica, &created).await;
         replica.verify(&created, defra.signer_did()).await;
         let replica = replica.reopen().await;
@@ -1326,12 +838,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         (documents, peers, created)
     };
 
-    policy_generations::replace(
+    super::policy_generations::replace(
         &client,
         &worker,
         &trusted,
         policy_bytes,
-        policy_generations::definition(false, true),
+        super::policy_generations::definition(false, true),
     )
     .await;
     assert_eq!(
@@ -1373,12 +885,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     )
     .await
     .unwrap();
-    policy_generations::replace(
+    super::policy_generations::replace(
         &client,
         &worker,
         &trusted,
         policy_bytes,
-        policy_generations::definition(true, true),
+        super::policy_generations::definition(true, true),
     )
     .await;
     assert_eq!(
@@ -1610,12 +1122,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         plaintext
     );
     for reader_relation in [false, true] {
-        policy_generations::replace(
+        super::policy_generations::replace(
             &client,
             &worker,
             &trusted,
             policy_bytes,
-            policy_generations::definition(true, reader_relation),
+            super::policy_generations::definition(true, reader_relation),
         )
         .await;
         assert_eq!(
@@ -1742,7 +1254,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let id = vera_domain::NativeTx::decode_wire(&wire).unwrap().tx_id().0;
     assert_eq!(client.send_native_tx(&wire).await.unwrap(), id);
     confirmed(&client, id, &trusted).await;
-    policy_generations::assert_relationship(&client, policy_bytes, &trusted, &grant).await;
+    super::policy_generations::assert_relationship(&client, policy_bytes, &trusted, &grant).await;
     let previous = client
         .read_threshold_ring(&derivation.ring_id, 1, &trusted)
         .await

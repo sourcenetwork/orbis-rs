@@ -4,7 +4,7 @@
 //! Spins up real orbis nodes IN-PROCESS (no Docker node images) against a
 //! chain-only Docker container — Cosmos/Vera via [`test_support::VeraTestContainer`],
 //! native Vera via [`test_support::NativeTestNetwork`] directly (not through
-//! `IntegrationTestNetwork`, which also launches `node1..4` Docker images this
+//! `NativeNetworkAdapter`, which also launches `node1..4` Docker images this
 //! layer doesn't want). Every per-node gRPC server is a bare
 //! `tonic::transport::Server` built from an `InitializedNode`
 //! ([`spawn_test_grpc_server`]), giving test code a direct, in-process handle
@@ -24,7 +24,7 @@
 // `orbis-node` lib's own `#[cfg(test)]` tree (Cosmos's entry point,
 // `src/tests/mod.rs`). When it's instead included into the separate
 // `native_startup` integration-test *binary* crate, `crate::` means that
-// binary's own root — the lib has to be named explicitly as `orbis_node::`
+// binary's own root — the lib has to be named explicitly as `crate::`
 // there. Same two-sided cfg-gating this migration already uses for
 // `pending_ring_cancellation.rs`'s `RingIndexEntry` import, just covering a
 // much larger import list this time.
@@ -48,13 +48,8 @@ use crate::{
     store_secret::StoreSecretServiceImpl,
     Args, InitializedNode, NetworkIngressArgs, NodeConfig,
 };
-use authz::r#trait::Authz;
-use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo, RingPayload};
-use crypto::DkgImpl;
-use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
-use network::{Network, NetworkImpl};
 #[cfg(all(feature = "integration-test", feature = "native"))]
-use orbis_node::{
+use crate::{
     app_state::AppState,
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
@@ -72,6 +67,11 @@ use orbis_node::{
     store_secret::StoreSecretServiceImpl,
     Args, InitializedNode, NetworkIngressArgs, NodeConfig,
 };
+use authz::r#trait::Authz;
+use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo, RingPayload};
+use crypto::DkgImpl;
+use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
+use network::{Network, NetworkImpl};
 use proto::info_service::{info_service_client::InfoServiceClient, GetRingStateRequest};
 use proto::{
     info_service::info_service_server::InfoServiceServer,
@@ -703,7 +703,7 @@ impl Chain {
     }
 
     /// Poll until a submitted native transaction is certified (or panic).
-    /// Mirrors `bin/orbis-node/tests/support/native_confirmation.rs`'s own
+    /// Mirrors `bin/orbis-node/src/tests/support/native_confirmation.rs`'s own
     /// `confirmed`/`wait` helpers — duplicated here (parameterized, not
     /// re-invented) since that file lives in the separate `native_startup`
     /// test binary and isn't reachable from this shared, lib-and-binary file.

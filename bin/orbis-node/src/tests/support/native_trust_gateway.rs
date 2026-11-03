@@ -1,6 +1,8 @@
 //! Real Trust gateway ring admission and DKG against the shared native network.
 
-use super::{confirmed, native_workflow::NativeWorkflow, TestCluster};
+use super::native_confirmation::confirmed;
+use super::native_lifecycle::TestCluster;
+use super::native_workflow::NativeWorkflow;
 use commonware_codec::Encode as _;
 use crypto::r#trait::{CryptoDeserialize as _, CryptoSerialize as _};
 use local_storage::{r#trait::LocalStorage as _, LocalStorageImpl};

@@ -35,43 +35,71 @@ FIXTURE_FILES = {
     "docs/native-trust-ring-fixture.md", "docs/native-trust-hosted.md",
     "crates/test-support/src/container.rs", "crates/test-support/src/lib.rs",
     "crates/test-support/src/native_network.rs", "crates/test-support/src/network/native.rs",
-    "bin/orbis-node/tests/native_startup.rs",
+    "bin/orbis-node/src/tests/support/native_lifecycle.rs",
     "bin/orbis-node/src/sign/v0/coordinator/network_tests.rs",
-    "bin/orbis-node/tests/support/defra_signer.rs",
-    "bin/orbis-node/tests/support/defra_signer_tests.rs",
-    "bin/orbis-node/tests/support/defra_documents.rs",
-    "bin/orbis-node/tests/support/defra_peers.rs",
-    "bin/orbis-node/tests/support/native_pet.rs",
-    "bin/orbis-node/tests/support/native_pet/document.rs",
-    "bin/orbis-node/tests/support/native_pet/member_replacement.rs",
-    "bin/orbis-node/tests/support/native_pet/member_churn.rs",
-    "bin/orbis-node/tests/support/native_pet/signing.rs",
-    "bin/orbis-node/tests/support/native_pet/scheduled_refresh.rs",
-    "bin/orbis-node/tests/support/native_pet/soak.rs",
-    "bin/orbis-node/tests/support/native_pet/polynomial_state.rs",
-    "bin/orbis-node/tests/support/native_trust_gateway/runner.rs",
-    "bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs",
+    "bin/orbis-node/src/tests/support/defra_signer.rs",
+    "bin/orbis-node/src/tests/support/defra_signer_tests.rs",
+    "bin/orbis-node/src/tests/support/defra_documents.rs",
+    "bin/orbis-node/src/tests/support/defra_peers.rs",
+    "bin/orbis-node/src/tests/support/native_pet.rs",
+    "bin/orbis-node/src/tests/support/native_pet/document.rs",
+    "bin/orbis-node/src/tests/support/native_pet/member_replacement.rs",
+    "bin/orbis-node/src/tests/support/native_pet/member_churn.rs",
+    "bin/orbis-node/src/tests/support/native_pet/signing.rs",
+    "bin/orbis-node/src/tests/support/native_pet/scheduled_refresh.rs",
+    "bin/orbis-node/src/tests/support/native_pet/soak.rs",
+    "bin/orbis-node/src/tests/support/native_pet/polynomial_state.rs",
+    "bin/orbis-node/src/tests/support/native_trust_gateway/runner.rs",
+    "bin/orbis-node/src/tests/support/native_trust_gateway/go_diagnostics.rs",
     "scripts/native_trust_hosted.py", "scripts/test-native-trust-hosted.py",
     "docker/docker-compose-native-integration-test.yml",
     "docker/NATIVE_VERA_REF",
 }
 
 
+def _runtime_manifest_lines(content):
+    """Return only manifest entries that can affect a production node build."""
+    if not isinstance(content, str):
+        return None
+    ignored_features = {
+        "integration-test",
+        "integration-test-cosmos",
+        "integration-test-native",
+        "native-test-fixture",
+        "unsafe-testing",
+    }
+    lines = []
+    section = ""
+    skip_test_target = False
+    for raw in content.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("[[") and stripped[-2:] == "]]":
+            skip_test_target = stripped == "[[test]]"
+            section = stripped
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            skip_test_target = False
+            section = stripped
+            if section != "[dev-dependencies]":
+                lines.append(section)
+            continue
+        if skip_test_target or section == "[dev-dependencies]":
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        if section == "[features]" and "=" in stripped:
+            if stripped.split("=", 1)[0].strip() in ignored_features:
+                continue
+        lines.append(stripped)
+    return lines
+
+
 def safe_fixture_manifest_change(before, after):
-    if not isinstance(before, str) or not isinstance(after, str):
-        return False
-    required = 'required-features = ["integration-test-native"]'
-    feature = 'integration-test-native = ["integration-test", "native", "test-support/native"]'
-    if before.count(required) != 1 or before.count(feature) != 1:
-        return False
-    expected = before.replace(required, 'required-features = ["native-test-fixture"]', 1)
-    expected = expected.replace(
-        feature,
-        'integration-test-native = ["integration-test", "native-test-fixture"]\n'
-        'native-test-fixture = ["native", "test-support/native"]',
-        1,
+    return (
+        isinstance(before, str)
+        and isinstance(after, str)
+        and _runtime_manifest_lines(before) == _runtime_manifest_lines(after)
     )
-    return after == expected
 
 
 def verify_fixture_changes(changed, manifest_before=None, manifest_after=None):
@@ -241,7 +269,12 @@ def lifecycle_results(report, selected):
         return {"complete": False, "cases": []}
     cases = []
     for name in selected:
-        matches = [case for case in root.iter("testcase") if case.get("name") == name]
+        qualified_name = "tests::native_lifecycle::" + name
+        matches = [
+            case
+            for case in root.iter("testcase")
+            if case.get("name") in (name, qualified_name)
+        ]
         if len(matches) != 1:
             cases.append({"case": name, "status": "missing" if not matches else "duplicate"})
             continue
@@ -259,7 +292,7 @@ def lifecycle_results(report, selected):
             content = "\n".join(element.get("message", "") + "\n" +
                                 "".join(element.itertext()) for element in case)
             filenames = (
-                "native_startup.rs", "support/native_workflow.rs", "support/native_pet.rs",
+                "support/native_lifecycle.rs", "support/native_workflow.rs", "support/native_pet.rs",
                 "support/native_pet/dkg.rs", "support/native_pet/document.rs",
                 "support/native_pet/member_replacement.rs", "support/native_pet/scheduled_refresh.rs",
                 "support/native_pet/member_churn.rs",
@@ -271,7 +304,7 @@ def lifecycle_results(report, selected):
                 "support/refresh_scenario.rs", "support/reshare_scenario.rs",
                 "support/native_confirmation.rs",
             )
-            locations = re.findall(r"(?:bin/orbis-node/tests/|tests/)(" +
+            locations = re.findall(r"(?:bin/orbis-node/src/tests/|tests/)(" +
                                    "|".join(re.escape(source) for source in filenames) +
                                    r"):(\d{1,6}):(\d{1,6})", content)
             record["locations"] = [{"source": source, "line": int(line), "column": int(column)}
@@ -620,19 +653,19 @@ def qualify():
     unit_flags = ["--lib", "container::tests::bind_mount_user_rejects_files_and_symlinks", "--", "--exact"]
     if suite in ("threshold", "soak"):
         unit_flags = ["--features", "native", "--lib", "native_network::tests::"]
-    focused_ignored = suite == "soak" or churn
-    profile = "native-soak" if focused_ignored else "ci"
-    ignored_flags = ["--run-ignored", "only", "--success-output", "immediate"] if focused_ignored else []
+    run_ignored = suite in ("restart", "fault", "threshold", "soak") or churn
+    profile = "native-soak" if suite == "soak" or churn else "ci"
+    ignored_flags = ["--run-ignored", "only", "--success-output", "immediate"] if run_ignored else []
     commands = [
         ["cargo", "test", "--release", "--locked", "-p", "test-support", "--no-default-features", *unit_flags],
         ["cargo", "test", "--release", "--locked", "-p", "orbis-node", "--no-default-features",
-         "--features", "integration-test-native,redb,iroh," + curve,
-         "--test", "native_startup", "native_polynomial_state_"],
+         "--features", "integration-test,native,redb,iroh," + curve,
+         "--lib", "native_polynomial_state_"],
         ["cargo", "nextest", "run", "--release", "--locked", "--profile", profile,
          "--retries", "0", "--no-tests", "fail", "--test-threads", "1", "-p", "orbis-node", "--no-default-features",
-         "--features", "integration-test-native,redb,iroh," + curve,
-         "--test", "native_startup", *ignored_flags,
-         "-E", " | ".join("test(=" + name + ")" for name in selected)],
+         "--features", "integration-test,native,redb,iroh," + curve,
+         "--lib", *ignored_flags,
+         "-E", " | ".join("test(=tests::native_lifecycle::" + name + ")" for name in selected)],
     ]
     report = Path(env.get("CARGO_TARGET_DIR", "target")) / "nextest" / profile / "junit.xml"
     codes = []
@@ -682,7 +715,7 @@ def qualify():
                 stream.seek(max(0, log.stat().st_size - 65536))
                 tail = stream.read().decode("utf-8", errors="replace")
             locations = re.findall(
-                r"(?:bin/orbis-node/tests/)?(native_startup\.rs|support/native_workflow\.rs|support/native_pet\.rs):(\d+):(\d+)",
+                r"bin/orbis-node/src/tests/(support/native_lifecycle\.rs|support/native_workflow\.rs|support/native_pet\.rs):(\d+):(\d+)",
                 tail,
             )
             for source, line, column in sorted(set(locations))[:8]:

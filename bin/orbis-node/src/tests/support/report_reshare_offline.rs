@@ -5,9 +5,8 @@
 //! and the resulting `node_offline` report lands on chain against the
 //! offline pending member — no stop/injection needed, this is fully organic.
 //!
-//! `NodeRole::Offline` is Cosmos-only (same gap as
-//! `report_reshare_stall_offline.rs`/`cancel_ring_reshare.rs`), so this is
-//! Cosmos-real/native-`#[ignore]`d.
+//! Both adapters register the unreachable fixture identity without launching
+//! a process for it.
 
 use super::report_scenario::{wait_for_demerits, STANDARD_RING_POLICY_YAML};
 use super::{pre_scenario, TestEnvironmentImpl};
@@ -24,12 +23,6 @@ const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a1
 
 #[tokio::test]
 #[serial_test::serial]
-#[cfg_attr(
-    all(feature = "integration-test", feature = "native"),
-    ignore = "commonware/native's NativeTestEnvironment::provision doesn't \
-              support NodeRole::Offline yet; fix when native grows that \
-              capability (same gap as cancel_ring_reshare.rs)"
-)]
 async fn test_reshare_offline_triggers_on_chain_report() {
     println!("Starting PSS reshare offline reporting integration test...");
 

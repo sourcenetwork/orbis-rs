@@ -1,24 +1,15 @@
-//! Native's concrete `test_support::fixture::TestEnvironment`. Lives here
-//! (not in `crates/test-support`) for the same reason `NativeAdmin` does —
-//! see `support/admin.rs`'s doc comment: protocol-level calls need
+//! Native's concrete `test_support::fixture::TestEnvironment`. It lives here
+//! rather than in `crates/test-support` because protocol-level calls need
 //! `vera-client`/`vera-domain`/`alloy-primitives`/`k256`/`acp-light-client`,
 //! none of which are `test-support` dependencies.
 //!
-//! Its `provision()` bootstrap is lifted from `native_pet::dkg::NativeHarness`
-//! (the earlier DKG/PRE-migration proof) verbatim, with the node-readiness
-//! poll replaced by the shared `test_support::node_readiness` helper instead
-//! of a hand-rolled one. `NativeHarness`/`NativeWorkflow` are untouched —
-//! every other native scenario still uses them until it migrates too.
-//!
-//! Scope limit matching `CosmosTestEnvironment`: `provision()` only brings up
-//! the network. Fixture-driven ring/policy/document/key-derivation/demerit
-//! materialization is the harness-unification migration's next PR.
-//!
-//! Unused for now (`#![allow(dead_code)]` below): nothing constructs a
-//! `NativeTestEnvironment` yet since that's a later migration PR.
-#![allow(dead_code)]
+//! `provision()` materializes policies, relationships, rings, and synthetic
+//! offline/backup node identities through native Vera administration. Vera's
+//! current genesis schema cannot seed Orbis module records, so placeholder
+//! documents, key derivations, upgrades, and arbitrary demerit scores remain
+//! explicit capability gaps instead of being faked in this adapter.
 
-use super::{confirmed, stored_bundle, submit};
+use super::native_confirmation::{confirmed, submit};
 use alloy_primitives::B256;
 use commonware_codec::Encode;
 use crypto::r#trait::CryptoDeserialize;
@@ -26,7 +17,7 @@ use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
     LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use test_support::admin::{DocumentId, PolicyId, RingId, RingSpec, RingView};
 use test_support::fixture::{
@@ -34,10 +25,13 @@ use test_support::fixture::{
     PolicyHandle, ProvisionedFixture, RingHandle, ScenarioFixture, TestEnvironment,
 };
 use test_support::node_readiness::wait_for_nodes_ready;
-use test_support::{IntegrationBackend, IntegrationTestNetwork, NativeTestNetwork, NodeInfo};
+use test_support::{NativeNetworkAdapter, NativeTestNetwork, NodeInfo};
 use vera_client::{
     create_scoped_bearer_token,
-    nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, NodeTarget},
+    nodes::{
+        encode_node_request, sign_node_request, NodeCommand, NodeInfo as VeraNodeInfo, NodeRequest,
+        NodeTarget,
+    },
     rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig, RingState, RingUpdate},
     threshold_objects::{encode_threshold_object, KeyDerivation, ObjectKind, ThresholdObject},
     BlsSigner, DelegationScope, VeraClient,
@@ -46,9 +40,34 @@ use vera_domain::ConsensusPublicKey;
 use vera_harness::cluster::KeySet;
 
 const DEPLOYMENT: u64 = 9000;
+const OFFLINE_NODE_SECRET: [u8; 32] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6,
+];
+const BACKUP_NODE_SECRET: [u8; 32] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
+];
+const OFFLINE_NODE_PEER: &str =
+    "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f@node-offline:4242";
+const BACKUP_NODE_PEER: &str = "backup-node-4-peer-id";
+const RING_POLICY_YAML: &str = r#"
+name: native-test-ring-policy
+resources:
+  - name: ring_policy
+    relations:
+      - name: creator
+    permissions:
+      - name: create_ring
+        expr: creator
+  - name: ring
+    relations:
+      - name: operator
+    permissions:
+      - name: update_ring
+        expr: operator
+"#;
 
 pub struct NativeTestEnvironment {
-    network: IntegrationTestNetwork,
+    network: NativeNetworkAdapter,
     client: VeraClient,
     trusted: ConsensusPublicKey,
     root: B256,
@@ -64,11 +83,65 @@ impl NativeTestEnvironment {
     }
 }
 
+fn fixture_node(
+    secret: [u8; 32],
+    peer: &str,
+    controller_key: &str,
+    allowed_policy_ids: Vec<String>,
+) -> (k256::ecdsa::SigningKey, NodeInfo, VeraNodeInfo) {
+    let signing_key = k256::ecdsa::SigningKey::from_slice(&secret).unwrap();
+    let node_key = hex::encode(signing_key.verifying_key().to_sec1_bytes());
+    (
+        signing_key,
+        NodeInfo {
+            grpc_endpoint: String::new(),
+            node_key: node_key.clone(),
+            peer_id: peer.split('@').next().unwrap_or(peer).to_string(),
+            p2p_address: peer.to_string(),
+            public_address: node_key.clone(),
+        },
+        VeraNodeInfo {
+            peer_id: peer.to_string(),
+            controller_key: controller_key.to_string(),
+            allowed_policy_ids,
+            allowed_ring_ids: Vec::new(),
+        },
+    )
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+async fn create_policy(
+    client: &VeraClient,
+    worker: &BlsSigner,
+    trusted: &ConsensusPublicKey,
+    definition: &[u8],
+) -> PolicyId {
+    let before: HashSet<String> = client.get_policy_ids().await.unwrap().into_iter().collect();
+    let created = client
+        .native_create_policy(worker, definition, 1)
+        .await
+        .unwrap();
+    confirmed(client, created.transaction_hash, trusted).await;
+    let mut added = client
+        .get_policy_ids()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|id| !before.contains(id));
+    let id = added
+        .next()
+        .expect("created policy must appear in catalogue");
+    assert!(
+        added.next().is_none(),
+        "one policy creation added multiple ids"
+    );
+    PolicyId(id)
 }
 
 /// Shared by `provision()` (fixture-driven rings) and
@@ -85,6 +158,7 @@ async fn create_ring(
     root: B256,
     cluster: &NativeTestNetwork,
     spec: RingSpec,
+    reporting: ReportingConfig,
 ) -> RingId {
     let mut members = spec.node_keys;
     members.sort();
@@ -92,16 +166,22 @@ async fn create_ring(
         policy_id: spec.policy_id.0,
         peer_node_keys: members,
         threshold: spec.threshold,
-        pss_interval: spec.pss_interval.as_secs(),
+        // Native creates rings through the live production command, whose
+        // validator rejects short PSS intervals. Shared fixtures may use a
+        // short interval because the Cosmos adapter can seed it in genesis;
+        // native's `force_refresh_due` diagnostic hook provides the same test
+        // semantics without weakening the live chain configuration.
+        pss_interval: spec.pss_interval.as_secs().max(86_400),
         current_version: 0,
         requires_pet: spec.requires_pet,
         // `spec.nonce` is Cosmos-shaped (a string); native's ring-id
         // derivation nonce is a fixed-size byte array and isn't threaded
-        // through yet — matches the previous `NativeAdmin`'s own hardcoded
+        // through yet — matches the legacy native workflow's hardcoded
         // `[2; 32]`.
         nonce: [2; 32],
-        trusted_auth_relay_dids: None,
-        reporting: ReportingConfig::default(),
+        trusted_auth_relay_dids: (!spec.trusted_auth_relay_dids.is_empty())
+            .then_some(spec.trusted_auth_relay_dids),
+        reporting,
     };
     let ring_id = config.id(root.0, actor).unwrap();
     let now = unix_now();
@@ -129,8 +209,8 @@ async fn create_ring(
 #[async_trait::async_trait]
 impl TestEnvironment for NativeTestEnvironment {
     async fn provision(fixture: ScenarioFixture) -> Self {
-        // Fixture-driven document/key-derivation/demerit materialization and
-        // non-`Running` nodes aren't implemented yet — both need either a
+        // Fixture-driven document/key-derivation/demerit materialization
+        // isn't implemented yet — those records need either a
         // finalized ring (live DKG, which only happens in the scenario
         // itself, after provisioning) or genesis-injection support that
         // doesn't exist in Vera today. See the harness-unification plan.
@@ -141,24 +221,18 @@ impl TestEnvironment for NativeTestEnvironment {
             "NativeTestEnvironment::provision: fixture-driven document/key-derivation/\
              demerit materialization isn't implemented yet"
         );
-        assert!(
-            fixture
-                .nodes
-                .iter()
-                .all(|node| node.role == NodeRole::Running),
-            "NativeTestEnvironment::provision: only NodeRole::Running is supported today"
-        );
-        let node_count = fixture.nodes.len();
+        let node_count = fixture
+            .nodes
+            .iter()
+            .filter(|node| node.role == NodeRole::Running)
+            .count();
 
         // Deployment seed is not yet part of `ScenarioFixture` — every
         // `NativeTestEnvironment` currently gets the builder's default
         // (9000). Revisit if/when a fixture needs to run more than one
         // native environment in the same process.
-        let network = IntegrationTestNetwork::builder()
-            .with_backend(IntegrationBackend::NativeVera)
-            .with_node_count(node_count)
-            .build_async()
-            .await;
+        let network =
+            NativeNetworkAdapter::start_configured(DEPLOYMENT, node_count, false, true).await;
 
         let trusted = *KeySet::builder()
             .seed(DEPLOYMENT)
@@ -168,7 +242,7 @@ impl TestEnvironment for NativeTestEnvironment {
             .output
             .public()
             .public();
-        let url = network.native().cluster().node(0).rpc_url();
+        let url = network.cluster().node(0).rpc_url();
         let client = VeraClient::new(&url);
         let first = client.read_finalized_revision(1, &trusted).await.unwrap();
         let headers = acp_light_client::header_sync::HeaderChain::connect(
@@ -194,7 +268,7 @@ impl TestEnvironment for NativeTestEnvironment {
         // these directly (same convention `CosmosTestEnvironment` uses; it
         // builds its own `tonic::transport::Endpoint` rather than taking a
         // bare host:port the way `vera_client`'s helpers in this file do).
-        let endpoints: Vec<String> = network.native().node_endpoints();
+        let endpoints: Vec<String> = network.node_endpoints();
         let nodes = wait_for_nodes_ready(&endpoints).await;
 
         // `fixture.policies`/`relationships` are fully live on native — no
@@ -203,13 +277,19 @@ impl TestEnvironment for NativeTestEnvironment {
         // since `Self` hasn't been constructed yet at this point.
         let mut policies: HashMap<FixtureId, PolicyId> = HashMap::new();
         for policy in &fixture.policies {
-            let created = client
-                .native_create_policy(&worker, policy.definition.as_bytes(), 1)
-                .await
-                .unwrap();
-            confirmed(&client, created.transaction_hash, &trusted).await;
-            let id = PolicyId(client.get_policy_ids().await.unwrap().pop().unwrap());
+            let id = create_policy(&client, &worker, &trusted, policy.definition.as_bytes()).await;
             policies.insert(policy.id.clone(), id);
+        }
+        // A scenario may name a ring policy without separately caring about
+        // its concrete policy fixture. Cosmos materializes such governance
+        // policies internally; native does the equivalent here so the
+        // scenario vocabulary stays backend-neutral.
+        for ring in &fixture.rings {
+            if policies.contains_key(&ring.policy) {
+                continue;
+            }
+            let id = create_policy(&client, &worker, &trusted, RING_POLICY_YAML.as_bytes()).await;
+            policies.insert(ring.policy.clone(), id);
         }
         let resolve = |id: &FixtureId| -> String {
             policies
@@ -234,6 +314,47 @@ impl TestEnvironment for NativeTestEnvironment {
             confirmed(&client, outcome.transaction_hash, &trusted).await;
         }
 
+        let controller_key = hex::encode(controller.verifying_key().to_sec1_bytes());
+        let mut allowed_policy_ids: Vec<String> = fixture
+            .rings
+            .iter()
+            .map(|ring| resolve(&ring.policy))
+            .collect();
+        allowed_policy_ids.sort();
+        allowed_policy_ids.dedup();
+        let mut non_running_nodes: HashMap<FixtureId, NodeInfo> = HashMap::new();
+        for node in &fixture.nodes {
+            let (secret, peer) = match node.role {
+                NodeRole::Running => continue,
+                NodeRole::Offline => (OFFLINE_NODE_SECRET, OFFLINE_NODE_PEER),
+                NodeRole::Backup => (BACKUP_NODE_SECRET, BACKUP_NODE_PEER),
+            };
+            let (signing_key, info, chain_info) =
+                fixture_node(secret, peer, &controller_key, allowed_policy_ids.clone());
+            let request = NodeRequest {
+                deployment_root: root.0,
+                deployment_id: DEPLOYMENT,
+                node_key: info.node_key.clone(),
+                sequence: 0,
+                expires_at: unix_now() + 300,
+                command: NodeCommand::Register(chain_info),
+            };
+            let signed = sign_node_request(request, &signing_key).unwrap();
+            submit(
+                &client,
+                &worker,
+                &trusted,
+                encode_node_request(&signed).unwrap(),
+                "register fixture-only node",
+                network.cluster(),
+            )
+            .await;
+            assert!(
+                non_running_nodes.insert(node.id.clone(), info).is_none(),
+                "fixture-only node ids must be unique"
+            );
+        }
+
         let mut ring_policy_registered: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut rings: HashMap<FixtureId, RingHandle> = HashMap::new();
@@ -247,10 +368,9 @@ impl TestEnvironment for NativeTestEnvironment {
                 .iter()
                 .map(|node_ref| match node_ref {
                     NodeRef::Running(index) => &nodes[*index],
-                    NodeRef::Offline(_) | NodeRef::Backup(_) => panic!(
-                        "NativeTestEnvironment::provision: NodeRole::Offline/Backup isn't \
-                         supported yet"
-                    ),
+                    NodeRef::Offline(id) | NodeRef::Backup(id) => non_running_nodes
+                        .get(id)
+                        .unwrap_or_else(|| panic!("unknown fixture-only node {}", id.0)),
                 })
                 .collect();
             let policy_id = PolicyId(resolve(&ring.policy));
@@ -282,7 +402,11 @@ impl TestEnvironment for NativeTestEnvironment {
             }
 
             let now = unix_now();
-            for info in &members {
+            // Authorize every running fixture node for the policy, not only
+            // the initial committee. Shared reshare scenarios deliberately
+            // introduce a running non-member later; that candidate must be
+            // prepared by the adapter just like a genesis-whitelisted node.
+            for info in &nodes {
                 for command in [
                     NodeCommand::SetPeer(info.p2p_address.clone()),
                     NodeCommand::Allow(NodeTarget::Policy(policy_id.0.clone())),
@@ -311,7 +435,7 @@ impl TestEnvironment for NativeTestEnvironment {
                         &trusted,
                         encode_node_request(&signed).unwrap(),
                         "authorize node for fixture ring",
-                        network.native().cluster(),
+                        network.cluster(),
                     )
                     .await;
                 }
@@ -324,7 +448,7 @@ impl TestEnvironment for NativeTestEnvironment {
                 &controller,
                 &actor,
                 root,
-                network.native().cluster(),
+                network.cluster(),
                 RingSpec {
                     node_keys: node_keys.clone(),
                     threshold: ring.threshold,
@@ -333,6 +457,30 @@ impl TestEnvironment for NativeTestEnvironment {
                     nonce: None,
                     trusted_auth_relay_dids: Vec::new(),
                     requires_pet: ring.requires_pet,
+                },
+                ReportingConfig {
+                    node_offline_demerits: ring.reporting.node_offline_demerits,
+                    invalid_crypto_response_demerits: ring
+                        .reporting
+                        .invalid_crypto_response_demerits,
+                    unauthorized_request_demerits: ring.reporting.unauthorized_request_demerits,
+                    reset_interval_seconds: ring.reporting.reset_interval.as_secs(),
+                    kick_threshold: ring.reporting.kick_threshold,
+                    backup_node_keys: ring
+                        .reporting
+                        .backup_node_keys
+                        .iter()
+                        .map(|node| match node {
+                            NodeRef::Running(index) => nodes[*index].node_key.clone(),
+                            NodeRef::Offline(id) | NodeRef::Backup(id) => non_running_nodes
+                                .get(id)
+                                .unwrap_or_else(|| {
+                                    panic!("unknown fixture-only backup node {}", id.0)
+                                })
+                                .node_key
+                                .clone(),
+                        })
+                        .collect(),
                 },
             )
             .await;
@@ -381,28 +529,28 @@ impl NetworkTestDriver for NativeTestEnvironment {
     }
 
     async fn stop_node(&self, index: usize) {
-        self.network.native().stop_node(index);
+        self.network.stop_node(index);
     }
 
     async fn start_node(&self, index: usize) -> String {
-        self.network.native().start_node(index)
+        self.network.start_node(index)
     }
 
     async fn restart_nodes(&self) -> Vec<String> {
-        self.network.native().restart_nodes()
+        self.network.restart_nodes()
     }
 }
 
 #[async_trait::async_trait]
 impl AuthorizationTestDriver for NativeTestEnvironment {
     async fn create_policy(&self, definition: &str) -> PolicyId {
-        let created = self
-            .client
-            .native_create_policy(&self.worker, definition.as_bytes(), 1)
-            .await
-            .unwrap();
-        confirmed(&self.client, created.transaction_hash, &self.trusted).await;
-        PolicyId(self.client.get_policy_ids().await.unwrap().pop().unwrap())
+        create_policy(
+            &self.client,
+            &self.worker,
+            &self.trusted,
+            definition.as_bytes(),
+        )
+        .await
     }
 
     async fn register_object(&self, policy: &PolicyId, resource: &str, object_id: &str) {
@@ -476,8 +624,9 @@ impl BulletinTestDriver for NativeTestEnvironment {
             &self.controller,
             &self.actor,
             self.root,
-            self.network.native().cluster(),
+            self.network.cluster(),
             spec,
+            ReportingConfig::default(),
         )
         .await
     }
@@ -592,7 +741,7 @@ impl BulletinTestDriver for NativeTestEnvironment {
             &self.trusted,
             encode_threshold_object(&object, &token).expect("encode native key derivation"),
             "store shared Sign key derivation",
-            self.network.native().cluster(),
+            self.network.cluster(),
         )
         .await;
         derivation_id
@@ -633,7 +782,7 @@ impl BulletinTestDriver for NativeTestEnvironment {
             )
             .expect("encode native shared reshare"),
             "start shared native reshare",
-            self.network.native().cluster(),
+            self.network.cluster(),
         )
         .await;
     }
@@ -643,42 +792,56 @@ impl BulletinTestDriver for NativeTestEnvironment {
     /// adapters, force a refresh due by backdating each member's persisted
     /// bundle through the `UnsafeTestingService` diagnostic hook instead of
     /// waiting out the real interval.
-    async fn force_refresh_due(&self, _ring: &RingId, ring_pk: &str, members: &[String]) {
-        let ring_key =
+    async fn force_refresh_due(&self, ring: &RingId, ring_pk: &str, members: &[String]) {
+        let main_storage_key =
             crypto::GroupAffine::from_bytes(&hex::decode(ring_pk).expect("ring public key is hex"))
                 .expect("ring public key must decode")
                 .to_string();
+        let view = self
+            .read_ring(ring)
+            .await
+            .expect("refresh target ring must exist");
+        let mut bundles = vec![(
+            LocalStorageKeyType::RingKey,
+            main_storage_key,
+            ring_pk.to_string(),
+        )];
+        if let Some(pet_pk) = view.pet_pk {
+            bundles.push((LocalStorageKeyType::PetRingKey, ring.0.clone(), pet_pk));
+        }
         for node in self.nodes() {
             let member = members
                 .iter()
                 .position(|node_key| node_key == &node.node_key)
                 .expect("native node must remain a ring member") as u32
                 + 1;
-            let storage_key = LocalStorageKey {
-                key_type: LocalStorageKeyType::RingKey as i32,
-                ring_key: ring_key.clone(),
-            };
             let mut control = UnsafeTestingServiceClient::connect(node.grpc_endpoint.clone())
                 .await
                 .expect("connect native refresh test control");
-            let stored = control
-                .get_local_storage(GetLocalStorageRequest {
-                    key: Some(storage_key.clone()),
-                    access_mode: LocalStorageAccessMode::Encrypted as i32,
-                })
-                .await
-                .expect("read live native main bundle")
-                .into_inner();
-            assert!(stored.found, "native main bundle must exist");
-            let due = stored_bundle::Bundle::backdated(stored.value, ring_pk, member);
-            control
-                .set_local_storage(SetLocalStorageRequest {
-                    key: Some(storage_key),
-                    access_mode: LocalStorageAccessMode::Encrypted as i32,
-                    value: due,
-                })
-                .await
-                .expect("backdate live native main bundle");
+            for (key_type, storage_ring_key, public_key) in &bundles {
+                let storage_key = LocalStorageKey {
+                    key_type: *key_type as i32,
+                    ring_key: storage_ring_key.clone(),
+                };
+                let stored = control
+                    .get_local_storage(GetLocalStorageRequest {
+                        key: Some(storage_key.clone()),
+                        access_mode: LocalStorageAccessMode::Encrypted as i32,
+                    })
+                    .await
+                    .expect("read live native refresh bundle")
+                    .into_inner();
+                assert!(stored.found, "native refresh bundle must exist");
+                let due = super::stored_bundle::Bundle::backdated(stored.value, public_key, member);
+                control
+                    .set_local_storage(SetLocalStorageRequest {
+                        key: Some(storage_key),
+                        access_mode: LocalStorageAccessMode::Encrypted as i32,
+                        value: due,
+                    })
+                    .await
+                    .expect("backdate live native refresh bundle");
+            }
         }
     }
 

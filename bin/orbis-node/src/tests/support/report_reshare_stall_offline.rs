@@ -23,11 +23,8 @@
 //! injected report's `ring_state_sha256` (computed from the pending-reshare
 //! snapshot) stale by the time its tx lands on chain.
 //!
-//! `NodeRole::Offline` is Cosmos-only (`CosmosTestEnvironment::provision`'s
-//! genesis-seeding, added for `cancel_ring_reshare.rs`) — native's
-//! `NativeTestEnvironment::provision` panics immediately on seeing any
-//! non-`Running` role, so this is Cosmos-real/native-`#[ignore]`d, same
-//! precedent as `cancel_ring_reshare.rs`/`report_pet_invalid_decrypt_share.rs`.
+//! Each adapter registers the synthetic offline identity without launching a
+//! process, so the same pending-committee fixture works on both backends.
 
 use super::report_scenario::{wait_for_demerits, STANDARD_RING_POLICY_YAML};
 use super::{pre_scenario, TestEnvironmentImpl};
@@ -47,12 +44,6 @@ const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a1
 
 #[tokio::test]
 #[serial_test::serial]
-#[cfg_attr(
-    all(feature = "integration-test", feature = "native"),
-    ignore = "commonware/native's NativeTestEnvironment::provision doesn't \
-              support NodeRole::Offline yet; fix when native grows that \
-              capability (same gap as cancel_ring_reshare.rs)"
-)]
 async fn test_reshare_stall_offline_triggers_on_chain_report() {
     println!("Starting PSS reshare stall→offline reporting integration test...");
 

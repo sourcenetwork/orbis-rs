@@ -14,13 +14,13 @@
 // `crate::` means two different things depending on which backend's entry
 // point `#[path]`-included this file: Cosmos includes it from inside
 // `orbis-node`'s own `#[cfg(test)]` tree (so `crate::` reaches it directly),
-// native includes it from the separate `tests/native_startup.rs` binary
+// native includes it from the same compile-time-selected library test tree
 // (which only sees `orbis-node`'s public API, hence `ring_state` is `pub
 // mod` in `lib.rs` and reached here via the crate's own external name).
 #[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use crate::ring_state::RingIndexEntry;
 #[cfg(all(feature = "integration-test", feature = "native"))]
-use orbis_node::ring_state::RingIndexEntry;
+use crate::ring_state::RingIndexEntry;
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
     LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,

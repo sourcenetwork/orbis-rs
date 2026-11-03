@@ -1,13 +1,10 @@
 //! Cosmos's concrete [`TestEnvironment`]. Compiled only under this crate's
 //! `cosmos` feature — native's counterpart lives in
-//! `bin/orbis-node/tests/support/native_environment.rs` instead (it needs
+//! `bin/orbis-node/src/tests/support/native_environment.rs` instead (it needs
 //! `vera-client`/`vera-domain`/`k256`/`acp-light-client`, which this crate
 //! deliberately excludes; see `admin/mod.rs`'s doc comment). Each backend
-//! defines its own `TestEnvironmentImpl` alias at its own test-tree entry
-//! point — there is no single shared module path for both, since Cosmos's
-//! tests live in the `orbis-node` library's `#[cfg(test)]` tree while
-//! native's live in a separate `tests/native_startup.rs` binary; the two are
-//! never compiled together.
+//! defines its own `TestEnvironmentImpl` alias at the shared test-tree entry
+//! point. Exactly one concrete environment is selected per backend build.
 
 use crate::admin::{
     cosmos::create_ring_governance_with_ring, BackendAdmin, DocumentId, PolicyId, RingId, RingSpec,

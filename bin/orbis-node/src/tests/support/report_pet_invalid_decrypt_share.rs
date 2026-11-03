@@ -26,20 +26,6 @@ use tokio::time::Duration;
 
 #[tokio::test]
 #[serial_test::serial]
-#[cfg_attr(
-    all(feature = "integration-test", feature = "native"),
-    ignore = "native's PET-gated inline-PRE document-id scheme isn't ported \
-              yet (Cosmos's generate_document_id vs. native's \
-              ThresholdObject::Document::id() — not interchangeable); fix \
-              when that porting work happens"
-)]
-// Everything after the `unimplemented!()` document-id stub is genuinely
-// unreachable on native (the whole point of `#[ignore]`-gating it above)
-// — the lints are correct but noisy for a deliberately-stubbed branch.
-#[cfg_attr(
-    all(feature = "integration-test", feature = "native"),
-    allow(unreachable_code, unused_variables, clippy::diverging_sub_expression)
-)]
 async fn test_pet_invalid_decrypt_share_triggers_on_chain_report() {
     println!("Starting PET invalid-decrypt-share reporting integration test...");
 
@@ -179,15 +165,10 @@ resources:
         .try_into()
         .expect("serialize tag proof");
 
-    // `generate_document_id` is Cosmos's own content-addressed document-id
-    // scheme (`common::blockchain::orbis`, gated on the `cosmos` feature —
-    // confirmed unavailable to native builds); native's own PET scenarios
-    // (`native_pet.rs`) use a completely different one
-    // (`ThresholdObject::Document::id()`), and `do_pre_with_inline_document`'s
-    // server-side id validation is bulletin-backend-specific, so these
-    // aren't interchangeable. Not yet ported for native — see the
-    // `#[cfg_attr(ignore)]` on this test.
-    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
+    // This is the canonical Orbis object-id encoding for both backends.
+    // Native's `ThresholdObject::Document::id()` intentionally produces the
+    // same value (covered by bulletin's cross-backend ID vectors), so the
+    // scenario never needs to branch on the selected chain.
     let pet_object_id = common::blockchain::orbis::generate_document_id(
         &ring_id.0,
         &document_json,
@@ -201,11 +182,6 @@ resources:
         Some(&tag_proof_json),
     )
     .expect("generate PET-gated document id");
-    #[cfg(all(feature = "integration-test", feature = "native"))]
-    let pet_object_id: String = unimplemented!(
-        "native PET-gated inline-PRE document-id scheme not yet ported from \
-         native_pet.rs's ThresholdObject::Document::id()"
-    );
 
     environment
         .register_object(&pet_audit_policy_id, document_resource, &pet_object_id)

@@ -60,7 +60,7 @@ pub async fn replace(
         .sign_native_tx(vera_client::ACP_ADDRESS, call.abi_encode().into())
         .unwrap();
     let id = client.send_native_tx(&wire).await.unwrap();
-    super::confirmed(client, id, trusted).await;
+    super::native_confirmation::confirmed(client, id, trusted).await;
 }
 
 pub async fn assert_relationship(

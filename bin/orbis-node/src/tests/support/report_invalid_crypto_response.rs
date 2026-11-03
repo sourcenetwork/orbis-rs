@@ -30,7 +30,7 @@ use zeroize::Zeroizing;
 #[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use crate::ring_state::RingShareBundle;
 #[cfg(all(feature = "integration-test", feature = "native"))]
-use orbis_node::ring_state::RingShareBundle;
+use crate::ring_state::RingShareBundle;
 
 #[tokio::test]
 #[serial_test::serial]

@@ -6,7 +6,7 @@
 //!
 //! `CosmosAdmin` (this crate, [`cosmos`]) implements it directly against
 //! `common`'s Cosmos chain client. Native's implementation does **not** live
-//! here — it lives in `bin/orbis-node/tests/support/admin.rs`, alongside the
+//! here — it lives in `bin/orbis-node/src/tests/support/admin.rs`, alongside the
 //! `vera-client`/`vera-domain`/`alloy-primitives`/`k256`/`acp-light-client`
 //! dependencies its protocol-level calls need. Pulling those into this crate
 //! would be a much larger, riskier dependency change than a behavior-preserving

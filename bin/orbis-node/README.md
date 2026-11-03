@@ -289,8 +289,9 @@ Linux host networking; build the images described below first.
 
 ```sh
 cargo test -p orbis-node --release --locked --no-default-features \
-  --features native,redb,iroh,bls12-381 --test native_startup \
-  native_startup_registers_and_preserves_identity_on_restart -- --ignored --exact
+  --features integration-test,native,redb,iroh,bls12-381 --lib \
+  tests::native_lifecycle::native_startup_registers_and_preserves_identity_on_restart \
+  -- --ignored --exact
 ```
 
 This fixture does not qualify distributed DKG, signing, or decryption. Migration of
@@ -325,8 +326,8 @@ for healthy members.
 
 ```sh
 cargo test -p orbis-node --release --locked --no-default-features \
-  --features native,redb,iroh,bls12-381 --test native_startup \
-  native_distributed_threshold_workflows -- --ignored --exact
+  --features integration-test,native,redb,iroh,bls12-381 --lib \
+  tests::native_lifecycle::native_distributed_threshold_workflows -- --ignored --exact
 ```
 
 The ignored `native_pet_scheduled_refresh_after_restart` scenario uses normal
@@ -340,8 +341,8 @@ state coverage, not a 24-hour soak or the production one-hour polling cadence.
 
 ```sh
 cargo test -p orbis-node --release --locked --no-default-features \
-  --features native,redb,iroh,bls12-381 --test native_startup \
-  native_pet_scheduled_refresh_after_restart -- --ignored --exact
+  --features integration-test,native,redb,iroh,bls12-381 --lib \
+  tests::native_lifecycle::native_pet_scheduled_refresh_after_restart -- --ignored --exact
 ```
 
 The ignored `native_pet_member_replacement` scenario admits a fresh fourth node,
@@ -371,8 +372,8 @@ reads the persisted KDF headers: 262,144 KiB, three passes, one lane and version
 ```sh
 ORBIS_NATIVE_DIAGNOSTIC_IMAGE=orbis-node-native-diagnostic:local \
   cargo test -p orbis-node --release --locked --no-default-features \
-  --features native,redb,iroh,bls12-381,unsafe-testing \
-  --test native_startup native_pet_fault_reports -- --ignored --exact
+  --features integration-test,native,redb,iroh,bls12-381 \
+  --lib tests::native_lifecycle::native_pet_fault_reports -- --ignored --exact
 ```
 
 Signing and PRE apply their 10-second peer deadline to connection setup, sending
@@ -389,7 +390,7 @@ evidence types require their own checks.
 
 The **Rust** workflow builds Cosmos, normal native and diagnostic native images
 through the existing Docker build. For each curve, one `cargo nextest` invocation
-selects every `native_startup` scenario by name (startup/restart identity,
+selects every native lifecycle scenario in the library test tree (startup/restart identity,
 distributed threshold workflows, Defra signing, the paired-DKG lifecycle,
 member replacement, scheduled refresh, and the diagnostic fault-report
 scenario — which switches to the diagnostic image via `ORBIS_NATIVE_DIAGNOSTIC_IMAGE`
@@ -421,10 +422,11 @@ docker build -f docker/Dockerfile --target native-diagnostic \
   --build-arg BACKEND=native --build-arg RUST_IMAGE=rust:1.99.1-bookworm \
   --build-arg CRYPTO_FEATURE="$curve" -t orbis-node-native-diagnostic:local .
 cargo +1.99.1 nextest run --profile ci --release --locked --build-jobs 2 \
+  --retries 0 \
   -p orbis-node --no-default-features \
-  --features "integration-test,native,test-support/native,redb,iroh,$curve" \
-  --test native_startup \
-  -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
+  --features "integration-test,native,redb,iroh,$curve" \
+  --lib \
+  -E "test(/^tests::/) & not test(=tests::native_lifecycle::native_trust_gateway_ring_dkg)"
 ```
 
 The `native-diagnostic` target reuses the normal native builder and adds
@@ -466,6 +468,6 @@ DKG setup and stops before the PRE and resharing portions of the broader fixture
 
 ```sh
 cargo test -p orbis-node --release --locked --no-default-features \
-  --features native,redb,iroh,bls12-381 --test native_startup \
-  native_defra_signing -- --ignored --exact
+  --features integration-test,native,redb,iroh,bls12-381 --lib \
+  tests::native_lifecycle::native_defra_signing -- --ignored --exact
 ```

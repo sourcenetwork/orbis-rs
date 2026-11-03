@@ -1,10 +1,4 @@
 //! A Vera (Cosmos/SourceHub) chain plus orbis-node instances, all via Docker Compose.
-//!
-//! Mechanical rename of the crate's original (pre-dispatch) `IntegrationTestNetwork`/
-//! `IntegrationTestNetworkBuilder` — same fields, same methods, same behavior.
-//! The public dispatch wrapper now reached via `test_support::IntegrationTestNetwork`
-//! lives one level up in `network.rs`; this type is its Cosmos arm, reachable via
-//! `.cosmos()`.
 
 use crate::admin::cosmos::CosmosAdmin;
 use crate::compose::{

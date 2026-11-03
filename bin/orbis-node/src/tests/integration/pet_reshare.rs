@@ -1,17 +1,17 @@
 use super::{sorted_peer_ids, RingStateSnapshot};
-use bulletin::r#trait::{BulletinKind, RingPayload};
-use common::blockchain::ChainConfig;
 use sha2::{Digest, Sha256};
+use test_support::admin::{RingId, RingView};
+use test_support::fixture::BulletinTestDriver;
 use tokio::time::{sleep_until, timeout_at, Duration, Instant};
 
 // Info snapshots expose polynomials, not ceremony IDs. A timestamp can advance
 // on an independent refresh while other members still hold different shares.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn wait_for_pet_reshare(
-    chain_config: &ChainConfig,
+    environment: &impl BulletinTestDriver,
+    ring_id: &RingId,
     endpoints: &[String],
-    ring_id: &str,
-    expected: &RingPayload,
+    expected: &RingView,
     main_baselines: &[RingStateSnapshot],
     pet_baselines: &[RingStateSnapshot],
     timeout: Duration,
@@ -22,34 +22,29 @@ pub(super) async fn wait_for_pet_reshare(
     assert_eq!(endpoints.len(), main_baselines.len());
     assert_eq!(endpoints.len(), pet_baselines.len());
     assert!(expected.requires_pet && expected.pet_pk.is_some());
-    assert!(expected.new_peer_node_keys.is_none() && expected.new_threshold.is_none());
+    assert!(!expected.pending_reshare());
 
     let deadline = Instant::now() + timeout;
     let mut next_status_log = Instant::now() + Duration::from_secs(15);
     let mut last_status = "no observation completed".to_string();
     loop {
         let observation = async {
-            let payload = cli_tool::read_bulletin_post_with_config(
-                ring_id.to_string(),
-                BulletinKind::Ring,
-                chain_config.clone(),
-            )
-            .await
-            .map_err(|error| format!("bulletin read: {error}"))?;
-            let payload: RingPayload = serde_json::from_slice(&payload)
-                .map_err(|error| format!("bulletin decode: {error}"))?;
+            let payload = environment
+                .read_ring(ring_id)
+                .await
+                .ok_or_else(|| "ring not found".to_string())?;
             let committee_matches = same_finalized_committee(&payload, expected);
             let mut states = Vec::with_capacity(endpoints.len());
             let mut status = format!(
                 "committee_matches={committee_matches} members={} threshold={} pending={}",
                 payload.peer_node_keys.len(),
                 payload.threshold,
-                payload.new_peer_node_keys.is_some() || payload.new_threshold.is_some(),
+                payload.pending_reshare(),
             );
             for (index, endpoint) in endpoints.iter().enumerate() {
                 let (main, pet) = tokio::try_join!(
                     cli_tool::query_ring_state(endpoint.clone(), expected.ring_pk.clone()),
-                    cli_tool::query_pet_ring_state(endpoint.clone(), ring_id.to_string()),
+                    cli_tool::query_pet_ring_state(endpoint.clone(), ring_id.0.clone()),
                 )
                 .map_err(|error| format!("node{} state: {error}", index + 1))?;
                 status.push_str(&format!(
@@ -105,14 +100,13 @@ pub(super) async fn wait_for_pet_reshare(
     }
 }
 
-fn same_finalized_committee(current: &RingPayload, expected: &RingPayload) -> bool {
+fn same_finalized_committee(current: &RingView, expected: &RingView) -> bool {
     current.ring_pk == expected.ring_pk
         && current.pet_pk == expected.pet_pk
         && current.requires_pet
         && current.threshold == expected.threshold
         && sorted_peer_ids(&current.peer_node_keys) == sorted_peer_ids(&expected.peer_node_keys)
-        && current.new_peer_node_keys.is_none()
-        && current.new_threshold.is_none()
+        && !current.pending_reshare()
 }
 
 fn polynomials_converged(
@@ -170,13 +164,15 @@ fn convergence_rejects_timestamp_only_and_mixed_generations() {
 
 #[test]
 fn convergence_requires_the_exact_finalized_committee() {
-    let expected = RingPayload {
+    let expected = RingView {
         ring_pk: "main-key".into(),
         pet_pk: Some("pet-key".into()),
         requires_pet: true,
         peer_node_keys: vec!["node1".into(), "node2".into()],
         threshold: 2,
-        ..RingPayload::default()
+        confirmations: 0,
+        new_peer_node_keys: Vec::new(),
+        new_threshold: None,
     };
     let mut current = expected.clone();
     current.peer_node_keys.reverse();

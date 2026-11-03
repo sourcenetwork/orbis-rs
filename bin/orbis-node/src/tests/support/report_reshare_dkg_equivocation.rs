@@ -12,9 +12,8 @@
 
 #[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use super::pre_scenario;
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use super::TestEnvironmentImpl;
-#[cfg(all(feature = "integration-test", feature = "native"))]
-use test_support::fixture::TestEnvironment;
 use test_support::fixture::{
     FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
 };
@@ -30,11 +29,7 @@ const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a1
 #[serial_test::serial]
 #[cfg_attr(
     all(feature = "integration-test", feature = "native"),
-    ignore = "NodeRole::Offline isn't supported by NativeTestEnvironment:: \
-              provision yet, and the Cosmos-deterministic-signing-key \
-              evidence forgery this test depends on hasn't been verified \
-              against native's own node-identity scheme; fix when native \
-              grows both"
+    ignore = "the Cosmos-deterministic-signing-key evidence forgery has not been ported to native node identities"
 )]
 async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
     println!("Starting PSS reshare DKG equivocation reporting integration test...");
@@ -76,10 +71,8 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
 
     #[cfg(all(feature = "integration-test", feature = "native"))]
     {
-        let _environment = TestEnvironmentImpl::provision(fixture).await;
-        unimplemented!(
-            "native: NodeRole::Offline + Cosmos-signing-key reshare evidence forgery not ported"
-        );
+        let _ = fixture;
+        unimplemented!("native node-identity reshare evidence forgery is not ported");
     }
 
     #[cfg(all(feature = "integration-test", feature = "cosmos"))]

@@ -13,9 +13,5 @@ pub mod response_manager;
 pub mod ring;
 pub mod wire;
 
-// Widened from `#[cfg(test)]` so `src/tests/support/live_node.rs` can reach
-// this as `orbis_node::helpers::test_helpers` from the separate
-// `native_startup` integration-test binary crate (same reach exception as
-// elsewhere in the harness-unification migration).
-#[cfg(any(test, feature = "integration-test"))]
+#[cfg(test)]
 pub mod test_helpers;

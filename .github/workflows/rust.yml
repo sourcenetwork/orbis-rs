@@ -67,13 +67,7 @@ env:
     binary(blockchain_vera)
     | (package(authz) & test(/^vera::tests::/))
     | (package(bulletin) & test(/^vera::tests::/))
-    | (package(orbis-node) & (test(/^tests::concurrent::/)
-    | test(/^tests::reporting::/)
-    | test(/^tests::fault_injection::/)
-    | test(/^tests::integration::/)
-    | test(/^tests::upgrade::/)
-    | test(/^tests::cancel_ring_reshare::/)
-    | test(/^tests::pending_ring_cancellation::/)
+    | (package(orbis-node) & (test(/^tests::/)
     | test(/^unsafe_testing::tests::/)))
 
 jobs:
@@ -139,9 +133,9 @@ jobs:
       matrix:
         include:
           - crypto: bls12-381
-            cargo_flags: --features=integration-test,cosmos,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --features=integration-test,cosmos,fault-injection,scale-testing
           - crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,bulletin/integration-test-cosmos,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:
@@ -188,11 +182,11 @@ jobs:
       if: matrix.crypto == 'bls12-381'
       run: cargo test --locked -p authz --no-default-features --features native --lib native::tests -- --test-threads=1
     - name: Compile native lifecycle scenarios
-      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --test native_startup --no-run
+      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --lib --no-run
     - name: Check private Go failure diagnostics
-      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --test native_startup trust_go_failure_
+      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --lib trust_go_failure_
     - name: Check bounded polynomial observations
-      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --test native_startup native_polynomial_state_
+      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --lib native_polynomial_state_
     - name: Check bootstrap handoff, shutdown and identity storage
       run: |
         cargo test --locked -p common --no-default-features --lib node_signing
@@ -287,15 +281,15 @@ jobs:
             extra_flags: ""
           - backend: cosmos
             crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,bulletin/integration-test-cosmos,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,test-support/cosmos,fault-injection,scale-testing
             extra_flags: ""
           - backend: native
             crypto: bls12-381
-            cargo_flags: --no-default-features --features=integration-test,native,test-support/native,redb,iroh,bls12-381
+            cargo_flags: --no-default-features --features=integration-test,native,redb,iroh,bls12-381
             extra_flags: --release --locked --build-jobs 2
           - backend: native
             crypto: jubjub
-            cargo_flags: --no-default-features --features=integration-test,native,test-support/native,redb,iroh,jubjub
+            cargo_flags: --no-default-features --features=integration-test,native,redb,iroh,jubjub
             extra_flags: --release --locked --build-jobs 2
     steps:
     - uses: actions/checkout@v4
@@ -338,7 +332,7 @@ jobs:
           - crypto: bls12-381
             cargo_flags: --features=integration-test,cosmos,test-support/cosmos,fault-injection,scale-testing
           - crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,bulletin/integration-test-cosmos,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,test-support/cosmos,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:
@@ -388,12 +382,12 @@ jobs:
 
   # Unified Docker-backed integration pipeline for both backends. Cosmos
   # cells run the `-p orbis-node --lib` subset matched by `DOCKER_TESTS`;
-  # native cells run the dedicated `native_startup` test binary (minus the
+  # native cells run the same library test tree (minus the
   # gateway-only fixture test, which needs the separate Trust-ring artifact
   # pipeline — `scope == 'gateway'`). Sharded 3-way on both sides now —
   # native's suite has grown substantially through the harness-unification
   # migration (PRs 4-6 moved dozens of dual-backend tests into
-  # `native_startup`), so it benefits from the same partitioning Cosmos's
+  # `tests` module), so it benefits from the same partitioning Cosmos's
   # side already used. Previously two separately-shaped jobs
   # (`integration`, Cosmos-only; `native-lifecycle`, native-only,
   # unsharded, its own narrower dependency-download-only cache) — merged
@@ -423,7 +417,7 @@ jobs:
             extra_flags: ""
           - backend: cosmos
             crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,bulletin/integration-test-cosmos,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,test-support/cosmos,fault-injection,scale-testing
             extra_flags: ""
           - backend: native
             crypto: bls12-381
@@ -482,8 +476,8 @@ jobs:
       # same reason Cosmos stays unscoped (DOCKER_TESTS needs authz/bulletin
       # built too).
       run: >-
-        cargo nextest run --profile ci ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
-        -E "${{ matrix.backend == 'native' && 'binary(native_startup) & not test(=native_trust_gateway_ring_dkg)' || env.DOCKER_TESTS }}"
+        cargo nextest run --profile ci --retries 0 ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
+        -E "${{ matrix.backend == 'native' && 'test(/^tests::/) & not test(=tests::native_lifecycle::native_trust_gateway_ring_dkg)' || env.DOCKER_TESTS }}"
         --partition count:${{ matrix.shard }}/3
 
   sign-peer-recovery:

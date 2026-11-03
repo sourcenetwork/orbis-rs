@@ -18,7 +18,7 @@ import time
 VERA = '696538b9e3be3be058ff159d93878264807a925d'
 VERA_SDK = '696538b9e3be3be058ff159d93878264807a925d'
 DEFRA = '2ac736debff5d82bf58b702b9ebdc91ca6704a24'
-SELECTOR = 'native_trust_gateway_ring_dkg'
+SELECTOR = 'tests::native_lifecycle::native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
 COMPLETED = 0
@@ -364,9 +364,9 @@ def test_binary(path, target, curve):
     found = []
     for line in path.read_text().splitlines():
         event = json.loads(line)
-        if event.get('reason') == 'compiler-artifact' and event['target']['name'] == 'native_startup' and event.get('executable'):
+        if event.get('reason') == 'compiler-artifact' and event['target']['name'] == 'orbis_node' and event.get('executable'):
             features = set(event['features'])
-            if not {'native-test-fixture', 'native', 'redb', 'iroh', curve} <= features or {'unsafe-testing', 'integration-test', {'bls12-381': 'jubjub', 'jubjub': 'bls12-381'}[curve]} & features:
+            if not {'integration-test', 'native', 'redb', 'iroh', curve} <= features or {{'bls12-381': 'jubjub', 'jubjub': 'bls12-381'}[curve]} & features:
                 raise Failure()
             binary = Path(event['executable']).resolve()
             if not binary.is_relative_to(target.resolve()):
@@ -393,15 +393,15 @@ def launch_fixture(root, private, run_env, env, log):
     command(['sudo', '--user', 'trust-native-ring', '--', 'env', '-i',
              *[key + '=' + value for key, value in run_env.items()],
              '/bin/sh', '-c', 'cd "$1" || exit; shift; exec "$@"', 'native-trust-fixture',
-             str(private), str(private / 'bin/native_startup'), SELECTOR,
+             str(private), str(private / 'bin/orbis-node-tests'), SELECTOR,
              '--exact', '--ignored', '--nocapture', '--test-threads=1'],
             root, env, log, 600)
 
 
 def fixture_compile_command(curve):
     return ['cargo', '+1.99.1', 'test', '--release', '--locked', '-j2', '-p', 'orbis-node',
-            '--no-default-features', '--features', 'native-test-fixture,redb,iroh,' + curve,
-            '--test', 'native_startup', '--no-run', '--message-format=json']
+            '--no-default-features', '--features', 'integration-test,native,redb,iroh,' + curve,
+            '--lib', '--no-run', '--message-format=json']
 
 
 def run(root, args, output):
@@ -485,8 +485,8 @@ def run(root, args, output):
                 dst = private / name
                 shutil.copy2(artifacts / name, dst)
                 dst.chmod(0o555)
-            shutil.copy2(binary, private / 'bin/native_startup')
-            (private / 'bin/native_startup').chmod(0o555)
+            shutil.copy2(binary, private / 'bin/orbis-node-tests')
+            (private / 'bin/orbis-node-tests').chmod(0o555)
             run_env = {**images, 'PATH': env['PATH'], 'HOME': str(private / 'home'),
                        'RUST_LOG': 'warn', 'VERA_E2E_KEEP': '1',
                        'VERA_E2E_DIR': str(private / 'state'), 'ORBIS_NATIVE_E2E_DIR': str(private / 'state'),
@@ -498,7 +498,7 @@ def run(root, args, output):
             command(['sudo', 'chown', '-R', '65532:65532', str(private)], root, env, output / (mode + '-ownership.log'), 30)
             launch_fixture(root, private, run_env, env, output / (mode + '.log'))
             outcome(output / (mode + '.log'))
-            staged = [name for name in FILES if not name.endswith('.h')] + ['bin/native_startup']
+            staged = [name for name in FILES if not name.endswith('.h')] + ['bin/orbis-node-tests']
             hashes = capture(['sudo', 'sha256sum', *[str(private / name) for name in staged]]).splitlines()
             expected = [manifest['binary_sha256'].get(name, binary_hash) for name in staged]
             if [line.split()[0] for line in hashes] != expected:

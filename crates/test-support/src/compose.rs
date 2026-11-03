@@ -1,5 +1,5 @@
-//! Docker Compose subprocess helpers shared by [`super::VeraTestContainer`] and
-//! [`super::IntegrationTestNetwork`].
+//! Docker Compose subprocess helpers shared by [`super::VeraTestContainer`],
+//! [`super::CosmosNetwork`], and [`super::NativeNetworkAdapter`].
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -39,7 +39,7 @@ use crate::{
     },
 };
 #[cfg(all(feature = "integration-test", feature = "native"))]
-use orbis_node::{
+use crate::{
     app_state::AppState,
     dkg::v0::helpers::serialize_commitment_coefficients,
     reporting::v0::{

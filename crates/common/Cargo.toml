@@ -52,9 +52,9 @@ bls12-381 = []
 jubjub = []
 # StartupProgress/PrepareContext shared by the `authz`/`bulletin` factory traits.
 startup = ["dep:local-storage"]
-# Devnet-only account funding (`blockchain::cosmos::funding`), used by
-# `cli-tool`'s integration-test helpers and `bulletin`'s Vera backend.
-integration-test-cosmos = ["cosmos"]
+# Explicit devnet funding capability. This is orthogonal to the transport:
+# enabling it never selects Cosmos by itself.
+funding = []
 
 [dev-dependencies]
 rcgen = "0.14"

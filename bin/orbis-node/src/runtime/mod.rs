@@ -38,12 +38,8 @@ use proto::v0::sign::sign_service_server::SignServiceServer;
 use proto::v0::store_secret::store_secret_service_server::StoreSecretServiceServer;
 
 /// Configuration for running the node, allowing dependency injection for
-/// testing. `pub` (not just `pub(crate)`): the shared, in-process node
-/// bootstrap at `src/tests/support/live_node.rs` constructs this directly as
-/// `orbis_node::NodeConfig` from the separate `native_startup` integration-
-/// test binary crate — same test-only-reach exception as `ring_state`'s own
-/// promotion in the harness-unification migration.
-pub struct NodeConfig {
+/// testing.
+pub(crate) struct NodeConfig {
     pub args: Args,
     pub cors_policy: CorsPolicy,
     pub identity: NodeIdentity,
@@ -57,9 +53,8 @@ pub struct NodeConfig {
     pub authorized_peers: Option<Arc<RingAuthorizedPeers>>,
 }
 
-/// Result of initializing the node (before starting the server). `pub` for
-/// the same reason as `NodeConfig` above.
-pub struct InitializedNode {
+/// Result of initializing the node (before starting the server).
+pub(crate) struct InitializedNode {
     #[cfg(feature = "unsafe-testing")]
     pet_fault: Option<Arc<crate::unsafe_testing::pet_fault::PetFaultControl>>,
     pub identity: NodeIdentity,

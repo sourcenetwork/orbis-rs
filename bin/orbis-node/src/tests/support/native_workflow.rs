@@ -1,4 +1,5 @@
-use super::{bring_up_orbis_nodes, confirmed, submit, Node};
+use super::native_confirmation::{confirmed, submit};
+use super::native_lifecycle::{bring_up_orbis_nodes, Node};
 use alloy_primitives::B256;
 use commonware_codec::Encode;
 use proto::info_service::GetNodeInfoResponse;
@@ -38,24 +39,6 @@ pub(super) struct NativeWorkflow {
 }
 
 impl NativeWorkflow {
-    /// `test_support::BackendAdmin` facade over this workflow's already-running
-    /// client/worker/controller, for shared E2E scenario code (Phase C of the
-    /// harness-unification plan). See `super::admin`'s doc comment for why this
-    /// lives here rather than in `crates/test-support`.
-    #[allow(dead_code)]
-    pub fn admin(&self) -> super::admin::NativeAdmin<'_> {
-        super::admin::NativeAdmin {
-            client: &self.client,
-            worker: &self.worker,
-            trusted: &self.trusted,
-            controller: &self.controller,
-            actor: &self.actor,
-            root: self.root,
-            deployment: self.deployment,
-            cluster: &self.cluster,
-        }
-    }
-
     pub async fn start(deployment: u64, requires_pet: bool, report_fault: bool) -> Self {
         let cluster = TestCluster::start(deployment).await;
         Self::start_with_network(deployment, requires_pet, report_fault, cluster).await

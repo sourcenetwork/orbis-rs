@@ -1,49 +1,32 @@
 #!/usr/bin/env bash
-#
-# Run the canonical DKG/PRE E2E scenario against one backend, or both.
-#
-# The scenario implementation is shared (bin/orbis-node/tests/support/{pre,
-# sign,refresh,reshare}_scenario.rs); only which adapter/Cargo feature set and
-# which test binary gets invoked differs per backend. `--backend all` runs
-# cosmos then native sequentially and fails on the first failure — no retries.
+# Run the same backend-neutral E2E test tree against Cosmos or native Vera.
 
 set -Eeuo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPOSITORY_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repository_root=$(cd "$script_dir/.." && pwd)
 
-BACKEND=
-SCENARIO=
-CRYPTO=bls12-381
-TOOLCHAIN=+1.98.0
+backend=
+crypto=bls12-381
 
 usage() {
   cat <<'EOF'
-Usage: scripts/test-e2e.sh --backend <cosmos|native|all> --scenario <dkg-pre> [options]
+Usage: scripts/test-e2e.sh --backend <cosmos|native|all> [--crypto <bls12-381|jubjub>]
 
-Options:
-  --crypto <bls12-381|jubjub>   Crypto implementation, default: bls12-381
-  -h, --help                    Show this help
-
-Examples:
-  scripts/test-e2e.sh --backend cosmos --scenario dkg-pre
-  scripts/test-e2e.sh --backend native --scenario dkg-pre --crypto jubjub
-  scripts/test-e2e.sh --backend all    --scenario dkg-pre
+The backend changes only the compile-time adapter. Both variants execute the
+same `tests` module and backend-neutral scenario contracts. Tests are never
+retried, so a qualification failure cannot be hidden by nextest's CI profile.
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --backend)
-      BACKEND="$2"
-      shift 2
-      ;;
-    --scenario)
-      SCENARIO="$2"
+      backend=${2:?missing backend}
       shift 2
       ;;
     --crypto)
-      CRYPTO="$2"
+      crypto=${2:?missing crypto implementation}
       shift 2
       ;;
     -h | --help)
@@ -51,64 +34,57 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      echo "Unknown argument: $1" >&2
+      echo "unknown argument: $1" >&2
       usage >&2
-      exit 1
+      exit 2
       ;;
   esac
 done
 
-case "$BACKEND" in
+case "$backend" in
   cosmos | native | all) ;;
   *)
-    echo "--backend must be one of: cosmos, native, all (got: ${BACKEND:-<none>})" >&2
-    exit 1
+    echo "--backend must be cosmos, native, or all" >&2
+    exit 2
     ;;
 esac
 
-case "$SCENARIO" in
-  dkg-pre) ;;
-  *)
-    echo "--scenario must be one of: dkg-pre (got: ${SCENARIO:-<none>})" >&2
-    exit 1
-    ;;
-esac
-
-case "$CRYPTO" in
+case "$crypto" in
   bls12-381 | jubjub) ;;
   *)
-    echo "--crypto must be one of: bls12-381, jubjub (got: $CRYPTO)" >&2
-    exit 1
+    echo "--crypto must be bls12-381 or jubjub" >&2
+    exit 2
     ;;
 esac
 
-run_cosmos_dkg_pre() {
-  echo "==> cosmos dkg-pre (crypto=$CRYPTO)"
-  cargo "$TOOLCHAIN" test --locked -p orbis-node \
-    --features "integration-test,cosmos,test-support/cosmos,$CRYPTO" \
-    --lib -- tests::integration::cosmos_dkg_and_pre --exact --nocapture
+run_backend() {
+  local selected=$1
+  local features
+  local default_flags=()
+
+  case "$selected" in
+    cosmos)
+      features="integration-test,authz-vera,bulletin-vera,fault-injection,$crypto"
+      if [[ "$crypto" == jubjub ]]; then
+        default_flags=(--no-default-features)
+      fi
+      ;;
+    native)
+      features="integration-test,native,redb,iroh,$crypto"
+      default_flags=(--no-default-features)
+      ;;
+  esac
+
+  echo "==> E2E backend=$selected crypto=$crypto"
+  cargo nextest run --locked --profile ci --retries 0 -p orbis-node --lib \
+    "${default_flags[@]}" --features "$features" \
+    -E 'test(/^tests::/)'
 }
 
-run_native_dkg_pre() {
-  echo "==> native dkg-pre (crypto=$CRYPTO)"
-  cargo "$TOOLCHAIN" nextest run --locked -p orbis-node \
-    --no-default-features \
-    --features "integration-test,native,test-support/native,redb,iroh,$CRYPTO" \
-    --test native_startup \
-    -E 'test(=native_dkg_and_pre)'
-}
-
-cd "$REPOSITORY_ROOT"
-
-case "$BACKEND" in
-  cosmos)
-    run_cosmos_dkg_pre
-    ;;
-  native)
-    run_native_dkg_pre
-    ;;
-  all)
-    run_cosmos_dkg_pre
-    run_native_dkg_pre
-    ;;
-esac
+cd "$repository_root"
+if [[ "$backend" == all ]]; then
+  run_backend cosmos
+  run_backend native
+else
+  run_backend "$backend"
+fi

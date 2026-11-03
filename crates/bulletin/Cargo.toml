@@ -35,9 +35,10 @@ zeroize = { workspace = true, optional = true }
 default = ["vera"]
 vera = ["cosmos-identity"]
 cosmos-identity = ["common/cosmos", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
-# Devnet-only account funding inside the Vera factory's `connect_and_register`
-# (see `common::blockchain::cosmos::funding`). Not part of a production build.
-integration-test-cosmos = ["common/integration-test-cosmos"]
+# Selects test-only startup behavior for whichever production backend is
+# selected. It intentionally pulls in no backend: a native test build must
+# remain free of Cosmos dependencies.
+integration-test = ["common/funding"]
 native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
 # Selects `DummyBulletin` as the production `BulletinImpl` (mutually
 # exclusive with `vera`, enforced below). Implies `dummy-type` since that's

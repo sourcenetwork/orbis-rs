@@ -20,7 +20,7 @@ pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 // here; see their doc comments below.
 // `test` (not just the feature) is required here specifically: `test_support`
 // is a dev-dependency, available to the lib's own unit-test build but not to
-// the plain lib artifact `tests/native_startup.rs` links against — unlike
+// the library test tree links against — unlike
 // most of this module (widened below), this one re-export must stay
 // invisible there.
 #[cfg(all(test, feature = "integration-test", feature = "cosmos"))]

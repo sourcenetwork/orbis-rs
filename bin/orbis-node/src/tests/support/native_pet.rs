@@ -1,4 +1,5 @@
-use super::{add_orbis_node4, confirmed, submit, Node};
+use super::native_confirmation::{confirmed, submit};
+use super::native_lifecycle::{add_orbis_node4, Node};
 use alloy_primitives::B256;
 use alloy_sol_types::SolCall;
 use proto::info_service::{
@@ -92,13 +93,13 @@ impl Drop for ChurnFailureLogs {
                             "--project-name",
                             &self.project,
                             "-f",
-                            super::NATIVE_COMPOSE_FILE,
+                            super::native_lifecycle::NATIVE_COMPOSE_FILE,
                             "logs",
                             "--tail",
                             "10000",
                             "--no-color",
                             "--no-log-prefix",
-                            &super::orbis_service(member),
+                            &super::native_lifecycle::orbis_service(member),
                         ])
                         .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
                         .stdout(Stdio::from(file))
@@ -284,7 +285,7 @@ pub async fn run(scenario: Scenario) {
         }
         for index in 0..nodes.len() {
             let directory = base.path().join(format!("node-{index}"));
-            let storage = stored_bundle::open(&directory);
+            let storage = super::stored_bundle::open(&directory);
             assert_eq!(
                 storage.stored_kdf_params().unwrap(),
                 local_storage::common::StoredKdfParams {
