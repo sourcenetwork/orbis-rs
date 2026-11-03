@@ -76,7 +76,7 @@ run_backend() {
   esac
 
   echo "==> E2E backend=$selected crypto=$crypto"
-  cargo nextest run --locked --profile ci --retries 0 -p orbis-node --lib \
+  cargo nextest run --locked --profile ci --retries 0 --no-tests fail -p orbis-node --lib \
     "${default_flags[@]}" --features "$features" \
     -E 'test(/^tests::e2e::/)'
 }

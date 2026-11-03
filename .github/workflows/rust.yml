@@ -317,6 +317,12 @@ jobs:
       # `DOCKER_TESTS` spans `authz`'s/`bulletin`'s own `vera::tests::`
       # binaries too, not just orbis-node's.
       run: cargo nextest run --no-run --profile ci ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
+    - name: Verify shared E2E inventory (${{ matrix.backend }}, ${{ matrix.crypto }})
+      # This compiles/discovers tests but never executes their bodies. The
+      # sentinel assertions catch stale filters and cfg drift that `--no-run`
+      # alone cannot detect, including shared scenarios disappearing from one
+      # backend or crypto build.
+      run: bash scripts/check-e2e-inventory.sh ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
 
   unit:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
@@ -475,7 +481,7 @@ jobs:
       # same reason Cosmos stays unscoped (DOCKER_TESTS needs authz/bulletin
       # built too).
       run: >-
-        cargo nextest run --profile ci --retries 0 ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
+        cargo nextest run --profile ci --retries 0 --no-tests fail ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
         -E "${{ matrix.backend == 'native' && '(test(/^tests::e2e::/) & not test(=tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg)) | test(/^tests::node::/)' || env.DOCKER_TESTS }}"
         --partition count:${{ matrix.shard }}/3
 
