@@ -18,13 +18,7 @@ crypto = { path = "../../crates/crypto", default-features = false }
 futures = { workspace = true }
 hex = { workspace = true }
 network = { path = "../../crates/network", features = ["shaping"] }
-orbis-node = { path = "../orbis-node", default-features = false, features = [
-    "redb",
-    "authz-vera",
-    "bulletin-vera",
-    "iroh",
-    "harness",
-] }
+orbis-node = { path = "../orbis-node", default-features = false, optional = true }
 prost = { workspace = true }
 proto = { path = "../../crates/proto" }
 rand = { workspace = true }
@@ -40,7 +34,18 @@ tracing-subscriber = { version = "0.3", features = ["tracing-log", "fmt", "env-f
 uuid = { version = "1", features = ["v4"] }
 
 [features]
-default = ["bls12-381"]
+default = ["bls12-381", "orbis-node"]
+# The Vera-backed benchmark. Kept out of an unscoped `--no-default-features`
+# build so it does not force `authz`/`bulletin` `select-vera` into a native
+# `orbis-node` test resolve.
+orbis-node = [
+    "dep:orbis-node",
+    "orbis-node/redb",
+    "orbis-node/authz-vera",
+    "orbis-node/bulletin-vera",
+    "orbis-node/iroh",
+    "orbis-node/harness",
+]
 bls12-381 = [
     "bulletin/bls12-381",
     "cli-tool/bls12-381",
@@ -52,7 +57,22 @@ jubjub = [
     "cli-tool/jubjub",
     "common/jubjub",
     "crypto/jubjub",
+    "orbis-node",
 ]
+
+[[bin]]
+name = "orbis-bench"
+path = "src/main.rs"
+required-features = ["orbis-node"]
+
+[[bin]]
+name = "orbis-upgrade-driver"
+path = "src/bin/orbis-upgrade-driver.rs"
+required-features = ["orbis-node"]
+
+[[test]]
+name = "docker_smoke"
+required-features = ["orbis-node"]
 
 [lints]
 workspace = true
