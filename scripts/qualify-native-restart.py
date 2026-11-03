@@ -35,22 +35,22 @@ FIXTURE_FILES = {
     "docs/native-trust-ring-fixture.md", "docs/native-trust-hosted.md",
     "crates/test-support/src/container.rs", "crates/test-support/src/lib.rs",
     "crates/test-support/src/native_network.rs", "crates/test-support/src/network/native.rs",
-    "bin/orbis-node/src/tests/support/native_lifecycle.rs",
+    "bin/orbis-node/src/tests/e2e/native_lifecycle.rs",
     "bin/orbis-node/src/sign/v0/coordinator/network_tests.rs",
-    "bin/orbis-node/src/tests/support/defra_signer.rs",
-    "bin/orbis-node/src/tests/support/defra_signer_tests.rs",
-    "bin/orbis-node/src/tests/support/defra_documents.rs",
-    "bin/orbis-node/src/tests/support/defra_peers.rs",
-    "bin/orbis-node/src/tests/support/native_pet.rs",
-    "bin/orbis-node/src/tests/support/native_pet/document.rs",
-    "bin/orbis-node/src/tests/support/native_pet/member_replacement.rs",
-    "bin/orbis-node/src/tests/support/native_pet/member_churn.rs",
-    "bin/orbis-node/src/tests/support/native_pet/signing.rs",
-    "bin/orbis-node/src/tests/support/native_pet/scheduled_refresh.rs",
-    "bin/orbis-node/src/tests/support/native_pet/soak.rs",
-    "bin/orbis-node/src/tests/support/native_pet/polynomial_state.rs",
-    "bin/orbis-node/src/tests/support/native_trust_gateway/runner.rs",
-    "bin/orbis-node/src/tests/support/native_trust_gateway/go_diagnostics.rs",
+    "bin/orbis-node/src/tests/e2e/defra_signer/mod.rs",
+    "bin/orbis-node/src/tests/e2e/defra_signer/tests.rs",
+    "bin/orbis-node/src/tests/e2e/defra_documents/mod.rs",
+    "bin/orbis-node/src/tests/e2e/defra_peers/mod.rs",
+    "bin/orbis-node/src/tests/e2e/native_pet/mod.rs",
+    "bin/orbis-node/src/tests/e2e/native_pet/document.rs",
+    "bin/orbis-node/src/tests/e2e/native_pet/member_replacement.rs",
+    "bin/orbis-node/src/tests/e2e/native_pet/member_churn.rs",
+    "bin/orbis-node/src/tests/e2e/native_pet/signing.rs",
+    "bin/orbis-node/src/tests/e2e/native_pet/scheduled_refresh.rs",
+    "bin/orbis-node/src/tests/e2e/native_pet/soak.rs",
+    "bin/orbis-node/src/tests/e2e/native_pet/polynomial_state.rs",
+    "bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/mod.rs",
+    "bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/go_diagnostics.rs",
     "scripts/native_trust_hosted.py", "scripts/test-native-trust-hosted.py",
     "docker/docker-compose-native-integration-test.yml",
     "docker/NATIVE_VERA_REF",
@@ -269,7 +269,7 @@ def lifecycle_results(report, selected):
         return {"complete": False, "cases": []}
     cases = []
     for name in selected:
-        qualified_name = "tests::native_lifecycle::" + name
+        qualified_name = "tests::e2e::native_lifecycle::" + name
         matches = [
             case
             for case in root.iter("testcase")
@@ -292,17 +292,17 @@ def lifecycle_results(report, selected):
             content = "\n".join(element.get("message", "") + "\n" +
                                 "".join(element.itertext()) for element in case)
             filenames = (
-                "support/native_lifecycle.rs", "support/native_workflow.rs", "support/native_pet.rs",
-                "support/native_pet/dkg.rs", "support/native_pet/document.rs",
-                "support/native_pet/member_replacement.rs", "support/native_pet/scheduled_refresh.rs",
-                "support/native_pet/member_churn.rs",
-                "support/native_pet/scheduled_store.rs", "support/native_pet/report_fault.rs",
-                "support/native_pet/report_acceptance.rs",
-                "support/native_pet/soak.rs", "support/native_pet/signing.rs",
-                "support/native_pet/polynomial_state.rs", "support/pet_dkg_contract.rs",
-                "support/pre_scenario.rs", "support/sign_scenario.rs",
-                "support/refresh_scenario.rs", "support/reshare_scenario.rs",
-                "support/native_confirmation.rs",
+                "e2e/native_lifecycle.rs", "e2e/native_workflow.rs", "e2e/native_pet/mod.rs",
+                "e2e/native_pet/dkg.rs", "e2e/native_pet/document.rs",
+                "e2e/native_pet/member_replacement.rs", "e2e/native_pet/scheduled_refresh.rs",
+                "e2e/native_pet/member_churn.rs",
+                "e2e/stored_bundle.rs", "e2e/native_pet/report_fault/mod.rs",
+                "e2e/native_pet/report_fault/report_acceptance.rs",
+                "e2e/native_pet/soak.rs", "e2e/native_pet/signing.rs",
+                "e2e/native_pet/polynomial_state.rs", "e2e/pet_dkg_contract.rs",
+                "e2e/pre_scenario.rs", "e2e/sign_scenario.rs",
+                "e2e/refresh_scenario.rs", "e2e/reshare_scenario.rs",
+                "e2e/native_confirmation.rs",
             )
             locations = re.findall(r"(?:bin/orbis-node/src/tests/|tests/)(" +
                                    "|".join(re.escape(source) for source in filenames) +
@@ -665,7 +665,7 @@ def qualify():
          "--retries", "0", "--no-tests", "fail", "--test-threads", "1", "-p", "orbis-node", "--no-default-features",
          "--features", "integration-test,native,redb,iroh," + curve,
          "--lib", *ignored_flags,
-         "-E", " | ".join("test(=tests::native_lifecycle::" + name + ")" for name in selected)],
+         "-E", " | ".join("test(=tests::e2e::native_lifecycle::" + name + ")" for name in selected)],
     ]
     report = Path(env.get("CARGO_TARGET_DIR", "target")) / "nextest" / profile / "junit.xml"
     codes = []
@@ -715,7 +715,7 @@ def qualify():
                 stream.seek(max(0, log.stat().st_size - 65536))
                 tail = stream.read().decode("utf-8", errors="replace")
             locations = re.findall(
-                r"bin/orbis-node/src/tests/(support/native_lifecycle\.rs|support/native_workflow\.rs|support/native_pet\.rs):(\d+):(\d+)",
+                r"bin/orbis-node/src/tests/(e2e/native_lifecycle\.rs|e2e/native_workflow\.rs|e2e/native_pet/mod\.rs):(\d+):(\d+)",
                 tail,
             )
             for source, line, column in sorted(set(locations))[:8]:

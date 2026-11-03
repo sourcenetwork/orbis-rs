@@ -28,7 +28,7 @@ class FixtureSource(unittest.TestCase):
         self.git('init', '--quiet')
         self.git('config', 'diff.renames', 'true')
         self.production = Path('bin/orbis-node/src/node.rs')
-        self.fixture = Path('bin/orbis-node/src/tests/support/native_lifecycle.rs')
+        self.fixture = Path('bin/orbis-node/src/tests/e2e/native_lifecycle.rs')
         self.production.parent.mkdir(parents=True)
         self.production.write_text('original production source\n' * 100)
         self.manifest = Path('bin/orbis-node/Cargo.toml')
@@ -203,9 +203,9 @@ class FixtureChanges(unittest.TestCase):
         verify([
             '.github/actions/docker-builder/action.yml',
             '.github/workflows/upgrade-compatibility.yml',
-            'bin/orbis-node/src/tests/support/native_trust_gateway/runner.rs',
-            'bin/orbis-node/src/tests/support/native_trust_gateway/go_diagnostics.rs',
-            'bin/orbis-node/src/tests/support/defra_signer_tests.rs',
+            'bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/mod.rs',
+            'bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/go_diagnostics.rs',
+            'bin/orbis-node/src/tests/e2e/defra_signer/tests.rs',
         ])
 
     def test_runtime_change_is_rejected_even_with_approved_fixtures(self):
@@ -217,12 +217,12 @@ class FixtureChanges(unittest.TestCase):
     def test_unknown_workflow_or_fixture_is_not_implicitly_approved(self):
         for path in ['.github/actions/docker-builder/other.sh',
                      '.github/workflows/other.yml',
-                     'bin/orbis-node/src/tests/support/native_trust_gateway/other.rs']:
+                     'bin/orbis-node/src/tests/e2e/native_trust_gateway/other.rs']:
             with self.subTest(path=path), self.assertRaises(ValueError):
                 verify([path])
 
     def test_similar_paths_do_not_bypass_exact_matching(self):
-        path = 'bin/orbis-node/src/tests/support/native_trust_gateway/runner.rs'
+        path = 'bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/mod.rs'
         for changed in ['../' + path, './' + path, path + '.bak', path + '/../../src/node.rs']:
             with self.subTest(path=changed), self.assertRaises(ValueError):
                 verify([changed])
@@ -313,12 +313,12 @@ class ChurnResult(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / 'junit.xml'
             report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
-                              '<failure>panicked at bin/orbis-node/src/tests/support/native_pet/member_churn.rs:42:17: '
+                              '<failure>panicked at bin/orbis-node/src/tests/e2e/native_pet/member_churn.rs:42:17: '
                               'private-value</failure></testcase></testsuite>')
             result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
         self.assertFalse(result['complete'])
         self.assertEqual(result['cases'][0]['locations'], [
-            {'source': 'support/native_pet/member_churn.rs', 'line': 42, 'column': 17}])
+            {'source': 'e2e/native_pet/member_churn.rs', 'line': 42, 'column': 17}])
         self.assertNotIn('private-value', json.dumps(result))
 
     def test_shared_helper_failure_retains_only_known_source_and_phase(self):
@@ -328,15 +328,15 @@ class ChurnResult(unittest.TestCase):
                               '<failure>native PET phase=paired-dkg private-key=private-value\n'
                               'native PET phase=member-replacement-restart\n'
                               'native PET phase=/private/secret\n'
-                              'panicked at tests/support/native_pet/signing.rs:97:62: private-value\n'
-                              'tests/support/pre_scenario.rs:14:3 private-value'
+                              'panicked at tests/e2e/native_pet/signing.rs:97:62: private-value\n'
+                              'tests/e2e/pre_scenario.rs:14:3 private-value'
                               '</failure></testcase></testsuite>')
             result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
         self.assertFalse(result['complete'])
         self.assertEqual(result['cases'][0]['pet_phase'], 'member-replacement-restart')
         self.assertEqual(result['cases'][0]['locations'], [
-            {'source': 'support/native_pet/signing.rs', 'line': 97, 'column': 62},
-            {'source': 'support/pre_scenario.rs', 'line': 14, 'column': 3}])
+            {'source': 'e2e/native_pet/signing.rs', 'line': 97, 'column': 62},
+            {'source': 'e2e/pre_scenario.rs', 'line': 14, 'column': 3}])
         for private in ('private-value', 'private-key', '/private/secret'):
             self.assertNotIn(private, json.dumps(result))
 
@@ -344,7 +344,7 @@ class ChurnResult(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / 'junit.xml'
             report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
-                              '<failure>panicked at tests/support/native_pet/signing.rs:95:65: '
+                              '<failure>panicked at tests/e2e/native_pet/signing.rs:95:65: '
                               'Status { code: DeadlineExceeded, message: "Timeout waiting for responses: private-value" }\n'
                               'Status { code: PrivateUnknown, message: "private-value" }\n'
                               'Status { code: Unavailable, message: "Ring reshare in progress, try again shortly" }'
@@ -440,12 +440,14 @@ class SigningRestartDiagnostics(unittest.TestCase):
                               'native PET phase=churn-round-start round=1\n'
                               'native PET phase=churn-finalized round=1\n'
                               'native PET phase=/private/key round=123\n'
-                              'panicked at tests/support/native_pet.rs:646:9: private-value'
+                              'panicked at tests/e2e/native_pet/mod.rs:646:9: private-value'
                               '</failure></testcase></testsuite>')
             result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
         self.assertFalse(result['complete'])
         self.assertEqual(result['cases'][0]['pet_phase'], 'churn-finalized')
         self.assertEqual(result['cases'][0]['churn_round'], 1)
+        self.assertEqual(result['cases'][0]['locations'], [
+            {'source': 'e2e/native_pet/mod.rs', 'line': 646, 'column': 9}])
         self.assertNotIn('private', json.dumps(result))
 
 

@@ -67,8 +67,8 @@ env:
     binary(blockchain_vera)
     | (package(authz) & test(/^vera::tests::/))
     | (package(bulletin) & test(/^vera::tests::/))
-    | (package(orbis-node) & (test(/^tests::/)
-    | test(/^unsafe_testing::tests::/)))
+    | (package(orbis-node) & (test(/^tests::e2e::/) | test(/^tests::node::/)
+    | test(/^tests::scale_testing::/) | test(/^unsafe_testing::tests::/)))
 
 jobs:
   common:
@@ -310,13 +310,12 @@ jobs:
         tool: cargo-nextest
     - name: Compile test binaries (${{ matrix.backend }}, ${{ matrix.crypto }})
       # `-p orbis-node` on native cells only: an unscoped `cargo nextest run`
-      # unifies features across the *whole workspace*, and `cli-tool`'s
-      # unconditional default dependency on `authz`/`bulletin` pulls in
-      # `vera`/`select-vera` alongside native's `select-native` — the
-      # `AuthzFactoryImpl` double-import `compile_error!`. Cosmos cells stay
-      # workspace-wide on purpose: `DOCKER_TESTS` (the `unit`/`integration`
-      # filter) spans `authz`'s/`bulletin`'s own `vera::tests::` binaries too,
-      # not just orbis-node's.
+      # unifies features across the workspace. `orbis-bench`'s `bls12-381` and
+      # `jubjub` features enable its optional node dependency with
+      # `authz-vera`/`bulletin-vera` (`select-vera`), which cannot unify with
+      # native `select-native`. Cosmos cells stay workspace-wide on purpose:
+      # `DOCKER_TESTS` spans `authz`'s/`bulletin`'s own `vera::tests::`
+      # binaries too, not just orbis-node's.
       run: cargo nextest run --no-run --profile ci ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
 
   unit:
@@ -386,8 +385,8 @@ jobs:
   # gateway-only fixture test, which needs the separate Trust-ring artifact
   # pipeline — `scope == 'gateway'`). Sharded 3-way on both sides now —
   # native's suite has grown substantially through the harness-unification
-  # migration (PRs 4-6 moved dozens of dual-backend tests into
-  # `tests` module), so it benefits from the same partitioning Cosmos's
+  # migration (PRs 4-6 moved dozens of dual-backend tests into the
+  # `tests::e2e` module), so it benefits from the same partitioning Cosmos's
   # side already used. Previously two separately-shaped jobs
   # (`integration`, Cosmos-only; `native-lifecycle`, native-only,
   # unsharded, its own narrower dependency-download-only cache) — merged
@@ -477,7 +476,7 @@ jobs:
       # built too).
       run: >-
         cargo nextest run --profile ci --retries 0 ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
-        -E "${{ matrix.backend == 'native' && 'test(/^tests::/) & not test(=tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg)' || env.DOCKER_TESTS }}"
+        -E "${{ matrix.backend == 'native' && '(test(/^tests::e2e::/) & not test(=tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg)) | test(/^tests::node::/)' || env.DOCKER_TESTS }}"
         --partition count:${{ matrix.shard }}/3
 
   sign-peer-recovery:

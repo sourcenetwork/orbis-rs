@@ -126,7 +126,7 @@ class Qualification(unittest.TestCase):
 
     def test_runtime_reuse_allows_only_exact_fixture_changes(self):
         root = Path(__file__).resolve().parents[1]
-        fixture = 'bin/orbis-node/src/tests/support/native_trust_gateway/go_diagnostics.rs'
+        fixture = 'bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/go_diagnostics.rs'
         with patch.object(driver, 'capture', return_value=fixture + '\n') as capture:
             self.assertEqual(driver.runtime_revision(root, 'a' * 40, 'b' * 40), 'b' * 40)
             self.assertEqual(capture.call_args.args[0], [
@@ -258,7 +258,7 @@ class Qualification(unittest.TestCase):
                      'code': {'code': 'E0308'}, 'rendered': '\x1b[31msecret /private/key'}}
             invalid = {'reason': 'compiler-message', 'message': {'level': 'error', 'code': {'code': '/private/secret'}}}
             (root / 'compile.jsonl').write_text(json.dumps(event) + '\nmalformed\n' + json.dumps(invalid) + '\n[]\n')
-            (root / 'executable.log').write_text("thread panicked at tests/support/native_trust_gateway.rs:123:4:\nsecret /private/key Elapsed\nthread panicked at /secret/file.rs:8:2:\n")
+            (root / 'executable.log').write_text("thread panicked at tests/e2e/native_trust_gateway/mod.rs:123:4:\nsecret /private/key Elapsed\nthread panicked at /secret/file.rs:8:2:\n")
             result = driver.safe_diagnostics(root)
             self.assertEqual(result, {'compiler_errors': 2, 'compiler_codes': ['E0308'],
                                      'panics': 2, 'elapsed': 1, 'locations': [[1, 123]],
@@ -270,6 +270,17 @@ class Qualification(unittest.TestCase):
             encoded = json.dumps(result)
             for forbidden in ('secret', '/private', '/secret', '\x1b', 'rendered'):
                 self.assertNotIn(forbidden, encoded)
+
+    def test_runner_panic_uses_location_two(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'executable.log').write_text(
+                "thread panicked at bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/mod.rs:40:2:\n"
+                "thread panicked at /secret/file.rs:8:2:\n")
+            result = driver.safe_diagnostics(root)
+            self.assertEqual(result['panics'], 2)
+            self.assertEqual(result['locations'], [[2, 40]])
+            self.assertNotIn('/secret', json.dumps(result))
 
     def test_requires_immutable_input(self):
         for value in ('main', 'a' * 39, 'A' * 40, 'a' * 40 + '\n', 'secret;$(command)'):

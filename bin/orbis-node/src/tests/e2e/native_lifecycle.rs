@@ -46,7 +46,7 @@ pub(super) const NATIVE_COMPOSE_FILE: &str = "docker/docker-compose-native-integ
 
 // Every method below returns a trivial `Result<T, ()>`/`Result<Option<T>, ()>`
 // purely so the many existing `.0.<method>().unwrap()` call sites across
-// `native_pet.rs`/`member_replacement.rs`/this file keep compiling unchanged
+// `native_pet`/`member_replacement.rs`/this file keep compiling unchanged
 // — there's no real fallible-vs-panic distinction left to preserve (the
 // underlying `compose_*` free functions already panic on a Docker-level
 // failure), this is a call-site-compatibility shim, not meaningful error

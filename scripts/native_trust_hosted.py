@@ -18,7 +18,7 @@ import time
 VERA = '696538b9e3be3be058ff159d93878264807a925d'
 VERA_SDK = '696538b9e3be3be058ff159d93878264807a925d'
 DEFRA = '2ac736debff5d82bf58b702b9ebdc91ca6704a24'
-SELECTOR = 'tests::native_lifecycle::native_trust_gateway_ring_dkg'
+SELECTOR = 'tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
 COMPLETED = 0
@@ -559,9 +559,11 @@ def safe_diagnostics(output):
             content = stream.read(4 * 1024 * 1024)
         result['panics'] += content.count('panicked at ')
         result['elapsed'] += len(re.findall(r'\bElapsed\b', content))
-        for filename, number in re.findall(r'panicked at (?:bin/orbis-node/)?(tests/support/native_trust_gateway(?:/runner)?\.rs):([0-9]{1,6}):[0-9]{1,6}:', content):
+        for filename, number in re.findall(
+                r'panicked at (?:bin/orbis-node/src/)?(tests/e2e/native_trust_gateway(?:/mod\.rs|/runner/mod\.rs)):([0-9]{1,6}):[0-9]{1,6}:',
+                content):
             if 0 < int(number) < 1000000:
-                locations.add((2 if '/runner.rs' in filename else 1, int(number)))
+                locations.add((2 if '/runner/' in filename else 1, int(number)))
     result['compiler_codes'] = sorted(codes)[:16]
     result['locations'] = [list(value) for value in sorted(locations)[:16]]
     result['build'] = build_diagnostics(output)

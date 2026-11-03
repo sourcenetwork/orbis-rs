@@ -35,9 +35,12 @@ uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = ["bls12-381", "orbis-node"]
-# The Vera-backed benchmark. Kept out of an unscoped `--no-default-features`
-# build so it does not force `authz`/`bulletin` `select-vera` into a native
-# `orbis-node` test resolve.
+# Vera-backed benchmark node. Each crypto feature enables it, so the default
+# build, `--no-default-features --features bls12-381`, and
+# `--no-default-features --features jubjub` all still build the full benchmark.
+# An unscoped workspace test that also passes `bls12-381` activates this
+# package's feature of the same name; native integration tests stay on
+# `-p orbis-node` so this Vera selection is not unified into that resolve.
 orbis-node = [
     "dep:orbis-node",
     "orbis-node/redb",
@@ -51,6 +54,7 @@ bls12-381 = [
     "cli-tool/bls12-381",
     "common/bls12-381",
     "crypto/bls12-381",
+    "orbis-node",
 ]
 jubjub = [
     "bulletin/jubjub",

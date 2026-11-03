@@ -3,7 +3,7 @@
 //! `requires_pet: true`; no scenario here ever requests a standard ring),
 //! triggers DKG, and waits for both the main and PET polynomials to settle
 //! on every node. Parallel to, but independent of, Cosmos's
-//! `pet_dkg_scenario.rs` — downstream `Scenario` variants in `native_pet.rs`
+//! `pet_dkg_scenario.rs` — downstream `Scenario` variants in `native_pet/mod.rs`
 //! consume the returned `NativeWorkflow` directly, not a `test-support`
 //! fixture, so there's no shared code to reuse across backends here.
 

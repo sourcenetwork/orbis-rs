@@ -14,7 +14,7 @@ usage() {
 Usage: scripts/test-e2e.sh --backend <cosmos|native|all> [--crypto <bls12-381|jubjub>]
 
 The backend changes only the compile-time adapter. Both variants execute the
-same `tests` module and backend-neutral scenario contracts. Tests are never
+same `tests::e2e` module and backend-neutral scenario contracts. Tests are never
 retried, so a qualification failure cannot be hidden by nextest's CI profile.
 EOF
 }
@@ -78,7 +78,7 @@ run_backend() {
   echo "==> E2E backend=$selected crypto=$crypto"
   cargo nextest run --locked --profile ci --retries 0 -p orbis-node --lib \
     "${default_flags[@]}" --features "$features" \
-    -E 'test(/^tests::/)'
+    -E 'test(/^tests::e2e::/)'
 }
 
 cd "$repository_root"

@@ -20,14 +20,10 @@
 //! `native_environment.rs`'s own module-level `#![allow(dead_code)]`.
 #![allow(dead_code)]
 
-// `crate::` resolves here when this file is `#[path]`-included inside the
-// `orbis-node` lib's own `#[cfg(test)]` tree (Cosmos's entry point,
-// `src/tests/mod.rs`). When it's instead included into the separate
-// `native_startup` integration-test *binary* crate, `crate::` means that
-// binary's own root — the lib has to be named explicitly as `crate::`
-// there. Same two-sided cfg-gating this migration already uses for
-// `pending_ring_cancellation.rs`'s `RingIndexEntry` import, just covering a
-// much larger import list this time.
+// `crate::` is the `orbis-node` lib. This module is part of that lib's
+// `#[cfg(test)]` tree (`src/tests/e2e/mod.rs`). The two import lists stay
+// cfg-gated on the backend the same way `pending_ring_cancellation.rs`
+// gates `RingIndexEntry`, covering a much larger import list.
 #[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use crate::{
     app_state::AppState,
@@ -704,9 +700,8 @@ impl Chain {
 
     /// Poll until a submitted native transaction is certified (or panic).
     /// Mirrors `bin/orbis-node/src/tests/e2e/native_confirmation.rs`'s own
-    /// `confirmed`/`wait` helpers — duplicated here (parameterized, not
-    /// re-invented) since that file lives in the separate `native_startup`
-    /// test binary and isn't reachable from this shared, lib-and-binary file.
+    /// `confirmed`/`wait` helpers — duplicated here, parameterized on this
+    /// cluster's client, rather than re-invented.
     async fn confirmed(&self, id: B256) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {

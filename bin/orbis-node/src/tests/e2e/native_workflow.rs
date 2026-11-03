@@ -85,7 +85,7 @@ impl NativeWorkflow {
         );
         // Writes each node's `services.json`/`password` fixture, builds the shared
         // node image once, and brings `node1..node3` up together — see
-        // `bring_up_orbis_nodes`'s doc comment (native_startup.rs). `1`:
+        // `bring_up_orbis_nodes`'s doc comment (`native_lifecycle.rs`). `1`:
         // matches this function's pre-migration hardcoded
         // `--reshare-interval-secs 1`.
         let addresses = bring_up_orbis_nodes(&cluster, base.path(), 3, 1, report_fault);
