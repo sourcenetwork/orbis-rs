@@ -2,10 +2,14 @@
 //! -offline path, distinct from `report_refresh_stall_offline.rs` (which
 //! injects a synthetic `AbandonedPssSession` report directly). Here, a real
 //! refresh ceremony is made due via `BulletinTestDriver::force_refresh_due`
-//! (backdating every node's locally-persisted `last_pss`, same mechanism
-//! PR4's `refresh_scenario.rs` already relies on), node3 is then stopped, and
-//! the ceremony's own co-signer reachability check organically discovers and
-//! reports it — no test-only report-injection RPC involved.
+//! (backdating every running node's locally-persisted `last_pss`, same
+//! mechanism PR4's `refresh_scenario.rs` already relies on). Node3 is stopped
+//! first. The native scheduler polls every few seconds, so backdating while
+//! node3 is still up lets the refresh pass Prepare; a participant that dies
+//! after that is only reported at the 15-minute attempt deadline, past this
+//! test's wait. With node3 already down, the ceremony's own co-signer
+//! reachability check discovers and reports it — no test-only
+//! report-injection RPC involved.
 //!
 //! `pss_interval` is deliberately backend-split: native's live
 //! `RingCommand::Create` enforces a >=86400s minimum (`vera-modules::vera::
@@ -86,17 +90,19 @@ async fn test_refresh_offline_triggers_on_chain_report() {
         &keys.main[..40.min(keys.main.len())]
     );
 
-    // Make every node's refresh become due *before* stopping node3 — native's
-    // backdate reads/writes every node's local storage, so all three must
-    // still be reachable when this runs. Cosmos's own implementation is a
-    // no-op; its short `pss_interval` already made this organically true.
-    println!("Forcing PSS refresh due on all nodes...");
+    // Stop node3 before any live bundle is made due. Native's scheduler
+    // polls every 5s, and a refresh that has already passed Prepare only
+    // reports a later death at the 15-minute attempt deadline. The stopped
+    // member is skipped by the backdate; its scheduler is not running.
+    // Cosmos's own implementation is a no-op; its short `pss_interval`
+    // already made the refresh due.
+    println!("Stopping node3 so the refresh ceremony finds it unreachable...");
+    environment.stop_node(2).await;
+
+    println!("Forcing PSS refresh due on the running nodes...");
     environment
         .force_refresh_due(&ring_id, &keys.main, &members)
         .await;
-
-    println!("Stopping node3 so the refresh ceremony finds it unreachable...");
-    environment.stop_node(2).await;
 
     println!("Waiting for the organic PSS-refresh node_offline report to land on node3...");
     let demerits = wait_for_demerits(

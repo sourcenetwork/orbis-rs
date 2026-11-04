@@ -842,7 +842,9 @@ impl BulletinTestDriver for NativeTestEnvironment {
     /// ring (unlike Cosmos's genesis seed) — so, same as the pre-migration
     /// adapters, force a refresh due by backdating each member's persisted
     /// bundle through the `UnsafeTestingService` diagnostic hook instead of
-    /// waiting out the real interval.
+    /// waiting out the real interval. A member whose container is already
+    /// stopped is left alone: its scheduler is not running, and the live
+    /// store is not reachable.
     async fn force_refresh_due(&self, ring: &RingId, ring_pk: &str, members: &[String]) {
         let main_storage_key =
             crypto::GroupAffine::from_bytes(&hex::decode(ring_pk).expect("ring public key is hex"))
@@ -860,7 +862,14 @@ impl BulletinTestDriver for NativeTestEnvironment {
         if let Some(pet_pk) = view.pet_pk {
             bundles.push((LocalStorageKeyType::PetRingKey, ring.0.clone(), pet_pk));
         }
-        for node in self.nodes() {
+        let mut backdated = 0usize;
+        for (index, node) in self.nodes().iter().enumerate() {
+            if !members.iter().any(|key| key == &node.node_key) {
+                continue;
+            }
+            if !self.network.node_is_running(index) {
+                continue;
+            }
             let member = share_member_id(members, &node.node_key);
             let mut control = UnsafeTestingServiceClient::connect(node.grpc_endpoint.clone())
                 .await
@@ -889,7 +898,12 @@ impl BulletinTestDriver for NativeTestEnvironment {
                     .await
                     .expect("backdate live native refresh bundle");
             }
+            backdated += 1;
         }
+        assert!(
+            backdated > 0,
+            "native refresh backdate requires a running member"
+        );
     }
 
     /// Native's chain module has no reshare-cancellation command at all —

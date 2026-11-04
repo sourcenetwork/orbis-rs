@@ -165,6 +165,17 @@ impl NativeNetworkAdapter {
         }
     }
 
+    pub fn node_is_running(&self, index: usize) -> bool {
+        let service = orbis_service(index);
+        self.compose_command()
+            .args(["ps", "--status", "running", "--format", "json", service])
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+            })
+    }
+
     pub fn start_node(&self, index: usize) -> String {
         let service = orbis_service(index);
         let status = self

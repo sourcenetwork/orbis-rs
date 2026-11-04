@@ -3,10 +3,13 @@
 //! `report_refresh_offline.rs` (which stops a non-leader mid-Prepare-fanout).
 //! With the canonical leader (lexicographically smallest node key —
 //! `dkg::v0::transport::digest::canonical_leader`, confirmed backend-neutral
-//! production code operating purely on `peer_node_keys`) stopped before
-//! `pss_interval` elapses, a non-leader's periodic health check forwards
+//! production code operating purely on `peer_node_keys`) stopped before the
+//! refresh is made due, a non-leader's periodic health check forwards
 //! `StartRefresh` to the dead leader and hits `PssOfflineStage::StartForward`
 //! (`network.rs`) — a report path that fires before a Prepare is ever sent.
+//! Backdating first lets the native scheduler start that refresh while the
+//! leader is still up; a leader that dies after the start was accepted is
+//! only reported at the 15-minute attempt deadline.
 //!
 //! Which fixture-declared node actually becomes the canonical leader depends
 //! on each backend's own node-identity-key assignment (Cosmos's is a fixed,
@@ -96,16 +99,17 @@ async fn test_refresh_leader_offline_before_preparation_triggers_on_chain_report
         .expect("leader key must be a ring member");
     println!("Resolved canonical refresh leader: {leader_key}");
 
-    // Make every node's refresh become due *before* stopping the leader —
-    // native's backdate reads/writes every node's local storage, so all
-    // three must still be reachable when this runs.
-    println!("Forcing PSS refresh due on all nodes...");
+    // Stop the leader before any live bundle is made due. Native's
+    // scheduler polls every 5s, and a refresh whose start the leader
+    // already accepted only reports that leader at the 15-minute attempt
+    // deadline. The stopped member is skipped by the backdate.
+    println!("Stopping the refresh leader before preparation begins...");
+    environment.stop_node(leader_index).await;
+
+    println!("Forcing PSS refresh due on the running nodes...");
     environment
         .force_refresh_due(&ring_id, &keys.main, &members)
         .await;
-
-    println!("Stopping the refresh leader before preparation begins...");
-    environment.stop_node(leader_index).await;
 
     println!("Waiting for the organic PSS-refresh node_offline report against the leader...");
     let demerits = wait_for_demerits(
