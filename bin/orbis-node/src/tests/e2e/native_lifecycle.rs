@@ -296,7 +296,6 @@ pub(super) fn bring_up_orbis_nodes(
 
 #[tokio::test]
 #[ignore = "requires normal native Docker images and compiled Trust gateway contract artifacts"]
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_trust_gateway_ring_dkg() {
     super::native_trust_gateway::run().await;
 }

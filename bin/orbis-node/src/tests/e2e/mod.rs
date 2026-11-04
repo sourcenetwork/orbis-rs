@@ -78,14 +78,14 @@ use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
 // operations; they are not a second copy of the shared scenarios.
 #[cfg(feature = "native")]
 mod native_confirmation;
-#[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
+#[cfg(feature = "native")]
 mod native_environment;
-#[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
+#[cfg(feature = "native")]
 mod native_trust_gateway;
-#[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
+#[cfg(feature = "native")]
 mod policy_generations;
 // Host-side store codec for the native adapter's refresh and KDF checks.
-#[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
+#[cfg(feature = "native")]
 #[allow(dead_code)]
 mod stored_bundle;
 // Node startup for the hosted Trust gateway. The external runner launches
@@ -93,11 +93,7 @@ mod stored_bundle;
 #[cfg(feature = "native")]
 mod native_lifecycle;
 
-#[cfg(all(
-    feature = "native",
-    not(feature = "cosmos"),
-    any(feature = "bls12-381", feature = "jubjub")
-))]
+#[cfg(all(feature = "native", not(feature = "cosmos")))]
 use native_environment::NativeTestEnvironment as TestEnvironmentImpl;
 
 // In-process FaultNetwork qualifications. Isolated from the shared scenario

@@ -785,7 +785,14 @@ impl BulletinTestDriver for NativeTestEnvironment {
         derivation_id
     }
 
-    async fn update_membership(&self, ring: &RingId, new_members: Vec<String>, new_threshold: u32) {
+    async fn update_membership(
+        &self,
+        ring: &RingId,
+        mut new_members: Vec<String>,
+        new_threshold: u32,
+    ) {
+        // The chain rejects a StartReshare whose member list is not strictly sorted.
+        new_members.sort();
         let record = self
             .client
             .read_threshold_ring(&ring.0, 1, &self.trusted)

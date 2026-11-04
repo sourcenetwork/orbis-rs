@@ -728,7 +728,14 @@ impl BulletinTestDriver for CosmosTestEnvironment {
         self.whitelist_node_for_ring(ring, node_index).await;
     }
 
-    async fn update_membership(&self, ring: &RingId, new_members: Vec<String>, new_threshold: u32) {
+    async fn update_membership(
+        &self,
+        ring: &RingId,
+        mut new_members: Vec<String>,
+        new_threshold: u32,
+    ) {
+        // The chain rejects a reshare whose member list is not strictly sorted.
+        new_members.sort();
         let client = VeraClient::with_signer(
             self.network.chain_config(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
