@@ -1,21 +1,24 @@
 //! Shared integration test: FROST-only variant of the Sign invalid-crypto
 //! test (`report_invalid_crypto_response.rs`'s non-interactive-BLS sibling,
 //! `#[cfg(not(feature = "jubjub"))]`-gated there). Under jubjub the signing
-//! set is exactly threshold-sized and chosen from whichever nonces arrive
-//! first, so a corrupted node is only exercised when the nonce race selects
-//! it — and when it IS selected, FROST cannot recover the signature (shares
-//! are bound to the commitment set), so the sign fails outright instead of
-//! succeeding around the bad node like BLS does.
+//! set is exactly threshold-sized: the coordinator keeps itself, then fills
+//! from the lowest canonical ids among the nonces in hand. When the
+//! corrupted partner is in that set, FROST cannot recover the signature
+//! (shares are bound to the commitment set), so the sign fails outright
+//! instead of succeeding around the bad node like BLS does.
 //!
-//! The test embraces both properties: it corrupts node2 (the favourite of
-//! the sorted, self-preferring selection), fires single store-with-proof
-//! attempts until one fails — the failure itself is the signal that node2
-//! was selected and its bad share observed — then asserts the invalid-crypto
-//! report landed on chain with exactly one demerit. A 3-of-3 ring would make
-//! selection deterministic but could never report: the ring must be able to
-//! threshold-sign the report envelope without the accused (the chain
-//! enforces threshold <= peers - 1 when the accused sits in the signing
-//! committee).
+//! The partner is the other member with the smaller key. Canonical id is
+//! that key's rank, not the fixture index, so on native it is not always
+//! node 1. The test corrupts that share, then fires single
+//! store-with-proof attempts until one fails — the failure itself is the
+//! signal that the partner was selected and its bad share observed — then
+//! asserts the invalid-crypto report landed on chain with exactly one
+//! demerit. A retry covers a nonce that has not arrived yet; once every
+//! nonce is in hand the choice does not change between attempts. A 3-of-3
+//! ring would make selection include every member but could never report:
+//! the ring must be able to threshold-sign the report envelope without the
+//! accused (the chain enforces threshold <= peers - 1 when the accused sits
+//! in the signing committee).
 //!
 //! Corruption/report-detection is the same backend-neutral production code
 //! `report_invalid_crypto_response.rs` already proved dual-backend, so this
@@ -90,9 +93,17 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
     let environment = TestEnvironmentImpl::provision(fixture).await;
     let ring_id = environment.fixture().rings[&ring].id.clone();
     let members = environment.fixture().rings[&ring].members.clone();
-    let node2_key = members[1].clone();
+    // StoreSecret is sent to nodes[0], and that node keeps itself in the
+    // FROST set. The other seat goes to the lowest canonical id among the
+    // rest. Fixture index 1 is that seat only when its key sorts first.
+    let partner = frost_partner_index(&members, 0);
+    let partner_key = members[partner].clone();
     let endpoint = environment.nodes()[0].grpc_endpoint.clone();
-    let node2_endpoint = environment.nodes()[1].grpc_endpoint.clone();
+    let partner_endpoint = environment.nodes()[partner].grpc_endpoint.clone();
+    println!(
+        "FROST partner is fixture node {partner} ({})",
+        &partner_key[..partner_key.len().min(16)]
+    );
     let policy_id = environment.fixture().policies[&policy].id.clone();
 
     println!("Starting DKG for ring {}...", ring_id.0);
@@ -133,9 +144,9 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
     .await;
     println!("Baseline store succeeded.");
 
-    // Corrupt node2's stored ring share: bump the secret scalar by one. Node2,
-    // not node3: the FROST selection prefers self plus the lowest node IDs, so
-    // node2 is the likeliest network pick.
+    // Corrupt the partner's stored ring share: bump the secret scalar by one.
+    // Selection will not substitute another member once the set is chosen, so
+    // the bad share fails the sign instead of being skipped.
     let ring_pk_bytes = hex::decode(&keys.main).expect("decode ring pk hex");
     let aggregate_pk =
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("parse ring pk");
@@ -143,20 +154,20 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         key_type: LocalStorageKeyType::RingKey as i32,
         ring_key: aggregate_pk.to_string(),
     };
-    let mut unsafe_client = UnsafeTestingServiceClient::connect(node2_endpoint)
+    let mut unsafe_client = UnsafeTestingServiceClient::connect(partner_endpoint)
         .await
-        .expect("connect unsafe-testing client to node2");
+        .expect("connect unsafe-testing client to the FROST partner");
     let stored = unsafe_client
         .get_local_storage(GetLocalStorageRequest {
             key: Some(storage_key.clone()),
             access_mode: LocalStorageAccessMode::Encrypted as i32,
         })
         .await
-        .expect("read node2 ring share bundle")
+        .expect("read partner ring share bundle")
         .into_inner();
-    assert!(stored.found, "node2 ring share bundle should exist");
+    assert!(stored.found, "partner ring share bundle should exist");
     let bundle = RingShareBundle::from_bytes(&stored.value).expect("parse ring share bundle");
-    let pri_share = bundle.pri_share().expect("deserialize node2 share");
+    let pri_share = bundle.pri_share().expect("deserialize partner share");
     let corrupted_share = PriShare {
         i: pri_share.i,
         v: pri_share.v + ScalarField::from(1u64),
@@ -176,13 +187,13 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         })
         .await
         .expect("store corrupted ring share bundle");
-    println!("node2 ring share corrupted.");
+    println!("partner ring share corrupted.");
 
-    // Fire single-shot store attempts. Each attempt runs a fresh FROST round:
-    // if the nonce race selects node3, the sign succeeds and nothing is
-    // reported; once it selects node2, its bad share is observed (queued for
-    // reporting) and the sign fails with InsufficientShares. Break on the
-    // first failure so exactly one report is minted (demerits stay at 1).
+    // Fire single-shot store attempts. A round whose nonce set does not yet
+    // include the partner signs with the other member and reports nothing.
+    // Once the partner's nonce is in hand, selection keeps that share, the
+    // bad share is observed, and the sign fails. Break on the first failure
+    // so exactly one report is minted (demerits stay at 1).
     let mut sign_failed = false;
     for attempt in 1..=10usize {
         match cli_tool::store_prepared_secret(
@@ -197,12 +208,12 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         {
             Ok(_) => {
                 println!(
-                    "attempt {attempt}: FROST set skipped corrupted node2 (sign succeeded); retrying..."
+                    "attempt {attempt}: FROST set skipped corrupted partner (sign succeeded); retrying..."
                 );
                 sleep(Duration::from_secs(1)).await;
             }
             Err(e) => {
-                println!("attempt {attempt}: sign failed with corrupted node2 selected: {e}");
+                println!("attempt {attempt}: sign failed with corrupted partner selected: {e}");
                 sign_failed = true;
                 break;
             }
@@ -210,21 +221,56 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
     }
     assert!(
         sign_failed,
-        "corrupted node2 was never selected into the FROST signing set in 10 attempts"
+        "corrupted partner was never selected into the FROST signing set in 10 attempts"
     );
 
-    println!("Waiting for node2's demerits to reflect the invalid-crypto report...");
+    println!("Waiting for the partner's demerits to reflect the invalid-crypto report...");
     let demerits = wait_for_demerits(
         &environment,
         &ring_id,
-        &node2_key,
+        &partner_key,
         1,
         Duration::from_secs(120),
     )
     .await;
     assert_eq!(
         demerits, 1,
-        "node2 should have exactly 1 demerit: attempts stop at the first failed sign, got {demerits}"
+        "partner should have exactly 1 demerit: attempts stop at the first failed sign, got {demerits}"
     );
-    println!("node2 demerit points: {demerits}");
+    println!("partner demerit points: {demerits}");
+}
+
+/// Index of the non-coordinator signer `select_signing_commitments` keeps.
+///
+/// The coordinator is preferred, then seats fill from the lowest canonical
+/// ids. Canonical id is the key's rank in sorted order, so the partner is
+/// the other member with the smaller key.
+fn frost_partner_index(member_keys: &[String], coordinator: usize) -> usize {
+    member_keys
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != coordinator)
+        .min_by(|(_, left), (_, right)| left.cmp(right))
+        .map(|(index, _)| index)
+        .expect("threshold signing needs a second member")
+}
+
+#[test]
+fn frost_partner_follows_canonical_id_not_fixture_index() {
+    // Native CI: nodes[0] coordinated, nodes[1] had the highest key, and the
+    // signer that was actually kept was nodes[2].
+    let native = vec![
+        "026dc4dfbc01eb0fefff7f421a765e3963b05a0fe7a6c2f681961451c1692cd485".to_string(),
+        "036f83170854da2d4db05b52ee5d3caf5d905de5e7587d193e31e057440365487e".to_string(),
+        "021bc3470b838c29c62c825d458dfad39cdff19301e4f90aa84126acb1a78b8622".to_string(),
+    ];
+    assert_eq!(frost_partner_index(&native, 0), 2);
+
+    // Cosmos keys are fixed and already sorted, so fixture index 1 is the partner.
+    let cosmos = vec![
+        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".to_string(),
+        "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5".to_string(),
+        "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9".to_string(),
+    ];
+    assert_eq!(frost_partner_index(&cosmos, 0), 1);
 }
