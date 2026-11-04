@@ -293,9 +293,20 @@ pub async fn wait_for_live_ring_states(nodes: &[&LiveNodeHandle], ring_pk_hex: &
 
 /// Build and spawn a gRPC server from an `InitializedNode`.
 ///
-/// Returns a `JoinHandle<()>` — abort it to stop the server.
-/// Unlike `run_server`, this skips metrics registration (test-only).
-pub fn spawn_test_grpc_server(node: InitializedNode) -> tokio::task::JoinHandle<()> {
+/// Listens on an ephemeral loopback port. The fixed ports these tests used to
+/// request sit inside the kernel's ephemeral range, so an iroh or Docker bind
+/// of port 0 can take one before this server starts and every readiness probe
+/// is connection-refused.
+///
+/// Returns the bound address and a `JoinHandle<()>` — abort the handle to stop
+/// the server. Unlike `run_server`, this skips metrics registration (test-only).
+pub fn spawn_test_grpc_server(
+    node: InitializedNode,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listen_addr: std::net::SocketAddr = "127.0.0.1:0".parse().expect("loopback ephemeral addr");
+    let incoming =
+        tonic::transport::server::TcpIncoming::bind(listen_addr).expect("bind test gRPC server");
+    let local_addr = incoming.local_addr().expect("test gRPC local addr");
     let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
     let pre_service = PreServiceImpl::<DkgImpl, crypto::PreImpl>::with_routes(
         node.app_state.clone(),
@@ -312,8 +323,8 @@ pub fn spawn_test_grpc_server(node: InitializedNode) -> tokio::task::JoinHandle<
         &network::V0,
     );
 
-    tokio::spawn(async move {
-        let _ = tonic::transport::Server::builder()
+    let task = tokio::spawn(async move {
+        let result = tonic::transport::Server::builder()
             .add_service(
                 DkgServiceServer::new(dkg_service)
                     .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
@@ -333,24 +344,24 @@ pub fn spawn_test_grpc_server(node: InitializedNode) -> tokio::task::JoinHandle<
                 SignServiceServer::new(sign_service)
                     .max_decoding_message_size(MAX_SIGN_REQUEST_BYTES),
             )
-            .serve(node.grpc_addr)
+            .serve_with_incoming(incoming)
             .await;
+        if let Err(error) = result {
+            eprintln!("test gRPC server on {local_addr} stopped: {error}");
+        }
         // Best-effort router cleanup when the server stops (e.g. on task abort)
         let _ = node.router.shutdown().await;
-    })
+    });
+    (local_addr, task)
 }
 
 /// Start Vera (chain only, no orbis-node images) and `node_count` in-process
 /// orbis nodes. Each node gets a unique signing key, its own local-storage DB
-/// at `test_dbs/<db_prefix>_<i>.redb`, a gRPC server on
-/// `127.0.0.1:(base_port + i)`, an OS-assigned iroh P2P port, and NodeInfo
-/// registered on-chain (self-whitelisted for the shared policy). Waits until
-/// every gRPC server is ready before returning.
-pub async fn setup_live_node_network(
-    node_count: usize,
-    db_prefix: &str,
-    base_port: u16,
-) -> LiveNodeNetwork {
+/// at `test_dbs/<db_prefix>_<i>.redb`, a gRPC server on an ephemeral loopback
+/// port, an OS-assigned iroh P2P port, and NodeInfo registered on-chain
+/// (self-whitelisted for the shared policy). Waits until every gRPC server is
+/// ready before returning.
+pub async fn setup_live_node_network(node_count: usize, db_prefix: &str) -> LiveNodeNetwork {
     let chain = Chain::start().await;
     let policy_id = chain.create_ring_policy().await;
     let runtime_base_path = project_root::get_project_root()
@@ -363,7 +374,6 @@ pub async fn setup_live_node_network(
     let mut node_keys: Vec<String> = Vec::new();
 
     for i in 0..node_count {
-        let port = base_port + i as u16;
         let db_path = test_db_path(&format!("{db_prefix}_{i}"));
         cleanup_db(&db_path); // clear any leftover from a previous failed run
 
@@ -401,11 +411,10 @@ pub async fn setup_live_node_network(
 
         node_keys.push(node_key.clone());
 
-        let grpc_bind = format!("127.0.0.1:{port}");
         let config = NodeConfig {
             args: Args {
                 services_config: None,
-                addr: grpc_bind.clone(),
+                addr: "127.0.0.1:0".to_string(),
                 cors_allow_origins: vec![],
                 cors_permissive: false,
                 log_level: LogLevel::Info,
@@ -438,10 +447,10 @@ pub async fn setup_live_node_network(
 
         let node = init_node(config).await.expect("init_node");
         let app_state = node.app_state.clone();
-        let task = spawn_test_grpc_server(node);
+        let (local_addr, task) = spawn_test_grpc_server(node);
 
         nodes.push(LiveNodeHandle {
-            grpc_endpoint: format!("http://{grpc_bind}"),
+            grpc_endpoint: format!("http://{local_addr}"),
             peer_addr,
             node_key: node_key.clone(),
             public_address,

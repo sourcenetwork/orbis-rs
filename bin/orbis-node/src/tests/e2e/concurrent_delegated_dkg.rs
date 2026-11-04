@@ -14,7 +14,7 @@ use proto::v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest};
 #[serial_test::serial]
 async fn test_delegated_dkg_with_vera_end_to_end() {
     let relay = JwtSigner::new();
-    let net = super::live_node::setup_live_node_network(3, "delegated_dkg_vera", 51120).await;
+    let net = super::live_node::setup_live_node_network(3, "delegated_dkg_vera").await;
 
     let ring_id = net
         .create_ring_with_trusted_relays(2, None, vec![relay.did_uri.clone()])

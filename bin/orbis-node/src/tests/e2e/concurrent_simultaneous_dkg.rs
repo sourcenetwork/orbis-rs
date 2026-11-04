@@ -15,7 +15,7 @@ use std::time::Duration;
 #[tokio::test]
 #[serial_test::serial]
 async fn test_two_simultaneous_dkg_sessions() {
-    let net = setup_live_node_network(3, "dual_dkg", 51051).await;
+    let net = setup_live_node_network(3, "dual_dkg").await;
 
     let endpoint = net.node(0).grpc_endpoint.clone();
 

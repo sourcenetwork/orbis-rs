@@ -212,7 +212,7 @@ async fn wait_for_demerits(
 #[tokio::test]
 #[serial_test::serial]
 async fn test_vera_accepts_invalid_crypto_dkg_share_report_from_live_nodes() {
-    let net = super::live_node::setup_live_node_network(3, "reporting_dkg_share_vera", 51080).await;
+    let net = super::live_node::setup_live_node_network(3, "reporting_dkg_share_vera").await;
     let endpoint = net.node(0).grpc_endpoint.clone();
 
     let (ring_pk_hex, ring_id) = setup_ring(&net, &endpoint, 2).await;

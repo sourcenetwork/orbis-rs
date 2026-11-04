@@ -22,8 +22,7 @@ use crate::constants::SIGN_COLLECTION_TIMEOUT;
 #[tokio::test]
 #[serial_test::serial]
 async fn test_sign_below_threshold_nodes_down_fails_fast() {
-    let net =
-        super::live_node::setup_live_node_network(3, "fault_sign_below_threshold", 51069).await;
+    let net = super::live_node::setup_live_node_network(3, "fault_sign_below_threshold").await;
     let endpoint = net.node(0).grpc_endpoint.clone();
 
     // Step 1: DKG -> ring (threshold=2)

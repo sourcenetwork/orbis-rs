@@ -30,7 +30,7 @@ async fn assert_has_ring_state(grpc_endpoint: &str, ring_pk_hex: &str) {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_dkg_non_participant_initiator_completes() {
-    let net = super::live_node::setup_live_node_network(4, "dkg_non_participant", 51070).await;
+    let net = super::live_node::setup_live_node_network(4, "dkg_non_participant").await;
 
     // Create a ring with all four nodes as participants (threshold=2)
     let ring_id = net.create_ring(2, None).await;

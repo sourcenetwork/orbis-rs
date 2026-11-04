@@ -13,7 +13,7 @@ use super::live_node::setup_ring;
 #[tokio::test]
 #[serial_test::serial]
 async fn test_concurrent_pre_requests() {
-    let net = super::live_node::setup_live_node_network(3, "concurrent_pre", 51054).await;
+    let net = super::live_node::setup_live_node_network(3, "concurrent_pre").await;
     let endpoint = net.node(0).grpc_endpoint.clone();
 
     // Step 1: DKG -> ring

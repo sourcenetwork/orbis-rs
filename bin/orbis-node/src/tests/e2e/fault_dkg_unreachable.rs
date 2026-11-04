@@ -15,7 +15,7 @@
 #[tokio::test]
 #[serial_test::serial]
 async fn test_dkg_fails_when_node_unreachable() {
-    let net = super::live_node::setup_live_node_network(3, "fault_dkg_unreachable", 51072).await;
+    let net = super::live_node::setup_live_node_network(3, "fault_dkg_unreachable").await;
     let endpoint = net.node(0).grpc_endpoint.clone();
 
     // Create the ring on-chain before taking node 2 down.

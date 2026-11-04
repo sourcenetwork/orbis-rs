@@ -16,7 +16,7 @@ use tokio::time::Duration;
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pre_one_node_down_succeeds() {
-    let net = super::live_node::setup_live_node_network(3, "fault_pre_1node_down", 51060).await;
+    let net = super::live_node::setup_live_node_network(3, "fault_pre_1node_down").await;
     let endpoint = net.node(0).grpc_endpoint.clone();
 
     // Step 1: DKG -> ring (threshold=2)
