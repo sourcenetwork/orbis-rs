@@ -177,6 +177,29 @@ impl CosmosNetwork {
     ///
     /// The p2p_address from a container will be like `peer_id@0.0.0.0:12345`
     /// For inter-container communication, we need `peer_id@container_name:12345`
+    /// UDP port the node process is listening on inside the container.
+    ///
+    /// iroh's advertised address is often the STUN-mapped public port, which
+    /// nothing on the compose network is bound to. The process's own
+    /// unconnected UDP socket is the port other containers can dial.
+    pub fn container_udp_listen_port(&self, service: &str) -> Option<u16> {
+        let udp = compose_command(&self.compose_file, &self.project_name)
+            .args(["exec", "-T", service, "cat", "/proc/net/udp"])
+            .output()
+            .ok()?;
+        let fds = compose_command(&self.compose_file, &self.project_name)
+            .args(["exec", "-T", service, "ls", "-l", "/proc/1/fd"])
+            .output()
+            .ok()?;
+        if !udp.status.success() || !fds.status.success() {
+            return None;
+        }
+        parse_process_udp_listen_port(
+            &String::from_utf8_lossy(&udp.stdout),
+            &String::from_utf8_lossy(&fds.stdout),
+        )
+    }
+
     pub fn transform_p2p_address(p2p_address: &str, container_name: &str) -> String {
         // Parse peer_id@host:port
         if let Some(at_pos) = p2p_address.find('@') {
@@ -442,5 +465,65 @@ impl CosmosNetworkBuilder {
         };
         network.wait_for_healthy();
         network
+    }
+}
+
+/// Port of the node process's unconnected UDP socket.
+///
+/// `/proc/net/udp` lists every socket in the netns. The `ls` of `/proc/1/fd`
+/// (pid 1 is `orbis-node`) restricts that to sockets the node itself holds,
+/// and `rem_address == 0` drops the connected STUN sockets whose remote port
+/// is not the port other containers can dial.
+fn parse_process_udp_listen_port(udp: &str, fds: &str) -> Option<u16> {
+    let inodes: std::collections::HashSet<&str> = fds
+        .lines()
+        .filter_map(|line| {
+            let start = line.find("socket:[")? + "socket:[".len();
+            let rest = line.get(start..)?;
+            let end = rest.find(']')?;
+            Some(&rest[..end])
+        })
+        .collect();
+    let mut unspecified = Vec::new();
+    let mut other = Vec::new();
+    for line in udp.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 10 || !inodes.contains(fields[9]) {
+            continue;
+        }
+        let Some((local_ip, port_hex)) = fields[1].split_once(':') else {
+            continue;
+        };
+        let Some((remote_ip, remote_port)) = fields[2].split_once(':') else {
+            continue;
+        };
+        if remote_ip != "00000000" || remote_port != "0000" {
+            continue;
+        }
+        let Ok(port) = u16::from_str_radix(port_hex, 16) else {
+            continue;
+        };
+        if port == 0 {
+            continue;
+        }
+        if local_ip == "00000000" {
+            unspecified.push(port);
+        } else {
+            other.push(port);
+        }
+    }
+    unspecified.sort_unstable();
+    unspecified.dedup();
+    other.sort_unstable();
+    other.dedup();
+    match (unspecified.as_slice(), other.as_slice()) {
+        ([port], _) | ([], [port]) => Some(*port),
+        ([], []) => None,
+        (ports, rest) => {
+            eprintln!(
+                "node process has several UDP listen ports: unspecified={ports:?} other={rest:?}"
+            );
+            ports.first().or_else(|| rest.first()).copied()
+        }
     }
 }

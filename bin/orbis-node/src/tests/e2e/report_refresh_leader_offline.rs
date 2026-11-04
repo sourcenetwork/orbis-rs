@@ -7,9 +7,9 @@
 //! refresh is made due, a non-leader's periodic health check forwards
 //! `StartRefresh` to the dead leader and hits `PssOfflineStage::StartForward`
 //! (`network.rs`) — a report path that fires before a Prepare is ever sent.
-//! Backdating first lets the native scheduler start that refresh while the
-//! leader is still up; a leader that dies after the start was accepted is
-//! only reported at the 15-minute attempt deadline.
+//! The leader is stopped before the bundles are backdated. A leader that
+//! dies after the start was accepted is only reported at the 15-minute
+//! attempt deadline.
 //!
 //! Which fixture-declared node actually becomes the canonical leader depends
 //! on each backend's own node-identity-key assignment (Cosmos's is a fixed,
@@ -18,17 +18,17 @@
 //! min()`) rather than assuming a fixed index — correct on both backends
 //! regardless of how keys are assigned under the hood.
 //!
-//! Same `pss_interval`/`force_refresh_due` backend split as
-//! `report_refresh_offline.rs` — see that file's doc comment for the full
-//! reasoning. Verification is `report_scenario::wait_for_demerits`, trading
+//! Same day-long interval and post-stop backdate as
+//! `report_refresh_offline.rs` — see that file's doc comment. Verification
+//! is `report_scenario::wait_for_demerits`, trading
 //! the original's `ReportEventSubscription` metadata assertions for a
 //! portable dual-backend check.
 
 use super::report_scenario::{wait_for_demerits, STANDARD_RING_POLICY_YAML};
 use super::{pre_scenario, TestEnvironmentImpl};
 use test_support::fixture::{
-    BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture, NodeRef, NodeRole,
-    PolicyFixture, RingFixture, ScenarioFixture, TestEnvironment,
+    FixtureId, NetworkTestDriver, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture,
+    ScenarioFixture, TestEnvironment,
 };
 use tokio::time::Duration;
 
@@ -39,9 +39,6 @@ async fn test_refresh_leader_offline_before_preparation_triggers_on_chain_report
         "Starting PSS refresh leader-offline-before-preparation reporting integration test..."
     );
 
-    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
-    let pss_interval = Duration::from_secs(5);
-    #[cfg(all(feature = "integration-test", feature = "native"))]
     let pss_interval = Duration::from_secs(86_400);
 
     let ring = FixtureId::new("ring");
@@ -99,25 +96,31 @@ async fn test_refresh_leader_offline_before_preparation_triggers_on_chain_report
         .expect("leader key must be a ring member");
     println!("Resolved canonical refresh leader: {leader_key}");
 
-    // Stop the leader before any live bundle is made due. Native's
-    // scheduler polls every 5s, and a refresh whose start the leader
-    // already accepted only reports that leader at the 15-minute attempt
-    // deadline. The stopped member is skipped by the backdate.
+    // Stop the leader before any bundle is made due. The scheduler polls
+    // every 5s, and a refresh whose start the leader already accepted only
+    // reports that leader at the 15-minute attempt deadline.
     println!("Stopping the refresh leader before preparation begins...");
     environment.stop_node(leader_index).await;
 
     println!("Forcing PSS refresh due on the running nodes...");
-    environment
-        .force_refresh_due(&ring_id, &keys.main, &members)
-        .await;
+    let running: Vec<(String, String)> = environment
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != leader_index)
+        .map(|(_, node)| (node.grpc_endpoint.clone(), node.node_key.clone()))
+        .collect();
+    super::stored_bundle::backdate_live_main_ring(&running, &keys.main, &members).await;
 
+    // The surviving member forwards StartRefresh until the 150s deadline,
+    // then submits the offline report.
     println!("Waiting for the organic PSS-refresh node_offline report against the leader...");
     let demerits = wait_for_demerits(
         &environment,
         &ring_id,
         &leader_key,
         1,
-        Duration::from_secs(180),
+        Duration::from_secs(240),
     )
     .await;
     assert_eq!(

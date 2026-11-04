@@ -84,8 +84,8 @@ mod native_environment;
 mod native_trust_gateway;
 #[cfg(feature = "native")]
 mod policy_generations;
-// Host-side store codec for the native adapter's refresh and KDF checks.
-#[cfg(feature = "native")]
+// Share-bundle codec. Native reads a stopped node's store from disk; both
+// backends backdate a live store through the diagnostic RPC.
 #[allow(dead_code)]
 mod stored_bundle;
 // Node startup for the hosted Trust gateway. The external runner launches

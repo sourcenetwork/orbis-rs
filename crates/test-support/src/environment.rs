@@ -23,7 +23,9 @@ use common::blockchain::{
     orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
     TEST_ACCOUNT_PUBKEY_HEX,
 };
+use proto::info_service::{info_service_client::InfoServiceClient, GetNodeInfoRequest};
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::time::Duration;
 
 /// Deterministic secp256k1 node identities injected via `ORBIS_SIGNING_KEY`
@@ -373,7 +375,13 @@ impl TestEnvironment for CosmosTestEnvironment {
             .into_iter()
             .map(str::to_string)
             .collect();
-        let nodes = wait_for_nodes_ready(&endpoints).await;
+        let mut nodes = wait_for_nodes_ready(&endpoints).await;
+        // Ready only means gRPC is up. iroh may advertise the STUN-mapped
+        // public port. Publishing that port as `nodeN:<stun-port>` makes
+        // other containers dial a port nothing is listening on.
+        for (index, node) in nodes.iter_mut().enumerate() {
+            node.p2p_address = publishable_p2p_address(&network, index, &node.grpc_endpoint).await;
+        }
 
         let mut policies: HashMap<FixtureId, PolicyId> = HashMap::new();
         let mut rings: HashMap<FixtureId, RingHandle> = HashMap::new();
@@ -783,4 +791,65 @@ impl BulletinTestDriver for CosmosTestEnvironment {
             .read_node_demerits(&ring.0, node_key)
             .await
     }
+}
+
+/// Address other containers can dial. Prefer a private bind from GetNodeInfo.
+/// If the node only advertises a public STUN port, keep the peer id and
+/// substitute the port the process is actually listening on.
+async fn publishable_p2p_address(network: &CosmosNetwork, index: usize, endpoint: &str) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut latest = String::new();
+    while tokio::time::Instant::now() < deadline {
+        if let Some(address) = current_p2p_address(endpoint).await {
+            latest = address.clone();
+            if container_local_bind(&address) {
+                println!("container bind for {endpoint}: {address}");
+                return address;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let service = CosmosNetwork::service_name_for_node(index + 1);
+    let Some(port) = network.container_udp_listen_port(service) else {
+        panic!("node at {endpoint} advertised {latest} and its UDP listen port could not be read");
+    };
+    let rewritten = replace_port(&latest, port);
+    println!("container bind for {endpoint} rewritten from {latest} to {rewritten}");
+    rewritten
+}
+
+async fn current_p2p_address(endpoint: &str) -> Option<String> {
+    let mut client = InfoServiceClient::connect(endpoint.to_string())
+        .await
+        .ok()?;
+    client
+        .get_node_info(GetNodeInfoRequest {})
+        .await
+        .ok()
+        .map(|response| response.into_inner().p2p_address)
+}
+
+fn container_local_bind(address: &str) -> bool {
+    let Some((_, host_port)) = address.split_once('@') else {
+        return false;
+    };
+    let host = host_port
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(host_port);
+    let Ok(ip) = host.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    ip.is_private() || ip.is_loopback() || ip.is_link_local()
+}
+
+fn replace_port(address: &str, port: u16) -> String {
+    let Some((peer, host_port)) = address.split_once('@') else {
+        panic!("p2p address {address} has no peer separator");
+    };
+    let host = host_port
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(host_port);
+    format!("{peer}@{host}:{port}")
 }

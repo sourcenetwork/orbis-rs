@@ -3,6 +3,10 @@ use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
 };
+use proto::unsafe_testing::{
+    unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
+    LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
+};
 use std::{ops::Range, path::Path};
 use zeroize::Zeroizing;
 
@@ -126,6 +130,61 @@ fn field(bytes: &[u8], cursor: &mut usize) -> Range<usize> {
     let range = *cursor..end;
     *cursor = end;
     range
+}
+
+/// Backdate the main ring bundle on each still-running member. Call this only
+/// after the target process has stopped: a 5-second interval is already inside
+/// the scheduler's grace window, so the refresh would otherwise start while
+/// that member was still up and then miss the test's demerit wait.
+pub(super) async fn backdate_live_main_ring(
+    nodes: &[(String, String)],
+    ring_pk: &str,
+    members: &[String],
+) {
+    let main_storage_key =
+        crypto::GroupAffine::from_bytes(&hex::decode(ring_pk).expect("ring public key is hex"))
+            .expect("ring public key must decode")
+            .to_string();
+    let assignments =
+        crate::helpers::node_routes::canonical_node_id_assignments_from_node_keys(members)
+            .expect("ring member keys are unique");
+    let mut backdated = 0usize;
+    for (endpoint, node_key) in nodes {
+        if !members.iter().any(|key| key == node_key) {
+            continue;
+        }
+        let member = assignments
+            .get(node_key)
+            .copied()
+            .expect("node key must be a ring member");
+        let mut control = UnsafeTestingServiceClient::connect(endpoint.clone())
+            .await
+            .expect("connect refresh test control");
+        let storage_key = LocalStorageKey {
+            key_type: LocalStorageKeyType::RingKey as i32,
+            ring_key: main_storage_key.clone(),
+        };
+        let stored = control
+            .get_local_storage(GetLocalStorageRequest {
+                key: Some(storage_key.clone()),
+                access_mode: LocalStorageAccessMode::Encrypted as i32,
+            })
+            .await
+            .expect("read live refresh bundle")
+            .into_inner();
+        assert!(stored.found, "refresh bundle must exist");
+        let due = Bundle::backdated(stored.value, ring_pk, member);
+        control
+            .set_local_storage(SetLocalStorageRequest {
+                key: Some(storage_key),
+                access_mode: LocalStorageAccessMode::Encrypted as i32,
+                value: due,
+            })
+            .await
+            .expect("backdate live refresh bundle");
+        backdated += 1;
+    }
+    assert!(backdated > 0, "refresh backdate requires a running member");
 }
 
 /// Backdate the main ring bundle in a stopped node's store so the
