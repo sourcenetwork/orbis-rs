@@ -173,33 +173,30 @@ impl CosmosNetwork {
             .collect()
     }
 
-    /// Transform a p2p_address from local format to Docker inter-container format
-    ///
-    /// The p2p_address from a container will be like `peer_id@0.0.0.0:12345`
-    /// For inter-container communication, we need `peer_id@container_name:12345`
-    /// UDP port the node process is listening on inside the container.
-    ///
-    /// iroh's advertised address is often the STUN-mapped public port, which
-    /// nothing on the compose network is bound to. The process's own
-    /// unconnected UDP socket is the port other containers can dial.
-    pub fn container_udp_listen_port(&self, service: &str) -> Option<u16> {
+    /// Unconnected UDP ports the node process is bound to inside the container.
+    pub fn container_udp_listen_ports(&self, service: &str) -> Vec<u16> {
         let udp = compose_command(&self.compose_file, &self.project_name)
             .args(["exec", "-T", service, "cat", "/proc/net/udp"])
-            .output()
-            .ok()?;
+            .output();
         let fds = compose_command(&self.compose_file, &self.project_name)
             .args(["exec", "-T", service, "ls", "-l", "/proc/1/fd"])
-            .output()
-            .ok()?;
+            .output();
+        let (Ok(udp), Ok(fds)) = (udp, fds) else {
+            return Vec::new();
+        };
         if !udp.status.success() || !fds.status.success() {
-            return None;
+            return Vec::new();
         }
-        parse_process_udp_listen_port(
+        parse_process_udp_listen_ports(
             &String::from_utf8_lossy(&udp.stdout),
             &String::from_utf8_lossy(&fds.stdout),
         )
     }
 
+    /// Transform a p2p_address from local format to Docker inter-container format.
+    ///
+    /// The p2p_address from a container will be like `peer_id@0.0.0.0:12345`.
+    /// For inter-container communication, we need `peer_id@container_name:12345`.
     pub fn transform_p2p_address(p2p_address: &str, container_name: &str) -> String {
         // Parse peer_id@host:port
         if let Some(at_pos) = p2p_address.find('@') {
@@ -468,13 +465,36 @@ impl CosmosNetworkBuilder {
     }
 }
 
-/// Port of the node process's unconnected UDP socket.
+/// Which listen port to publish for other containers.
+///
+/// When the advertised port is already bound, it is the socket iroh told
+/// peers to dial (Linux CI: STUN reports that same port). Replacing it with
+/// another of the process's UDP sockets dials a port that never answers.
+/// A NAT mapping (Docker Desktop) advertises a port that is not bound, and
+/// the process's listen port is the one containers can dial.
+pub(crate) fn select_publish_port(advertised: u16, listen_ports: &[u16]) -> Option<u16> {
+    if listen_ports.contains(&advertised) {
+        return Some(advertised);
+    }
+    match listen_ports {
+        [] => None,
+        [port] => Some(*port),
+        ports => {
+            eprintln!(
+                "advertised port {advertised} is not listening; UDP ports are {ports:?}, using {}",
+                ports[0]
+            );
+            Some(ports[0])
+        }
+    }
+}
+
+/// Unconnected UDP ports held by the node process.
 ///
 /// `/proc/net/udp` lists every socket in the netns. The `ls` of `/proc/1/fd`
 /// (pid 1 is `orbis-node`) restricts that to sockets the node itself holds,
-/// and `rem_address == 0` drops the connected STUN sockets whose remote port
-/// is not the port other containers can dial.
-fn parse_process_udp_listen_port(udp: &str, fds: &str) -> Option<u16> {
+/// and `rem_address == 0` drops connected sockets.
+fn parse_process_udp_listen_ports(udp: &str, fds: &str) -> Vec<u16> {
     let inodes: std::collections::HashSet<&str> = fds
         .lines()
         .filter_map(|line| {
@@ -516,14 +536,49 @@ fn parse_process_udp_listen_port(udp: &str, fds: &str) -> Option<u16> {
     unspecified.dedup();
     other.sort_unstable();
     other.dedup();
-    match (unspecified.as_slice(), other.as_slice()) {
-        ([port], _) | ([], [port]) => Some(*port),
-        ([], []) => None,
-        (ports, rest) => {
-            eprintln!(
-                "node process has several UDP listen ports: unspecified={ports:?} other={rest:?}"
-            );
-            ports.first().or_else(|| rest.first()).copied()
-        }
+    if unspecified.is_empty() {
+        other
+    } else {
+        unspecified
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_process_udp_listen_ports, select_publish_port};
+
+    #[test]
+    fn keeps_the_advertised_port_when_it_is_listening() {
+        // CI node2 advertised 41406 and also held an unrelated UDP socket
+        // on 39132. Dialing 39132 never answered Prepare.
+        assert_eq!(select_publish_port(41406, &[39132, 41406]), Some(41406));
+    }
+
+    #[test]
+    fn replaces_a_nat_mapped_port_with_the_listen_port() {
+        assert_eq!(select_publish_port(54153, &[60771]), Some(60771));
+    }
+
+    #[test]
+    fn replaces_a_nat_mapped_port_when_several_sockets_are_listening() {
+        assert_eq!(select_publish_port(50938, &[34059, 38059]), Some(34059));
+    }
+
+    #[test]
+    fn parser_ignores_other_processes_and_connected_sockets() {
+        let udp = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   1: 00000000:A1BE 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 111 2 0 0
+   2: 00000000:98DC 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 222 2 0 0
+   3: 0100007F:0050 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 333 2 0 0
+   4: 00000000:A1BE 08080808:0043 07 00000000:00000000 00:00000000 00000000     0        0 111 2 0 0
+   5: 00000000:1111 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 999 2 0 0
+";
+        let fds = "\
+lrwx------ 1 root root 64 Nov 4 21:00 10 -> socket:[111]
+lrwx------ 1 root root 64 Nov 4 21:00 11 -> socket:[222]
+lrwx------ 1 root root 64 Nov 4 21:00 12 -> socket:[333]
+";
+        assert_eq!(parse_process_udp_listen_ports(udp, fds), vec![39132, 41406]);
     }
 }

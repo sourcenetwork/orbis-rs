@@ -8,6 +8,8 @@
 #[cfg(feature = "cosmos")]
 mod cosmos;
 #[cfg(feature = "cosmos")]
+pub(crate) use cosmos::select_publish_port;
+#[cfg(feature = "cosmos")]
 pub use cosmos::CosmosNetwork;
 
 #[cfg(all(unix, feature = "native"))]

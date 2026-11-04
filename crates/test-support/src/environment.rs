@@ -15,7 +15,7 @@ use crate::fixture::{
     PolicyHandle, ProvisionedFixture, ReportingFixture, RingFixture, RingHandle, ScenarioFixture,
     TestEnvironment,
 };
-use crate::network::{CosmosNetwork, NodeInfo};
+use crate::network::{select_publish_port, CosmosNetwork, NodeInfo};
 use crate::node_readiness::wait_for_nodes_ready;
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation};
 use bulletin::vera::VeraBulletin;
@@ -794,25 +794,37 @@ impl BulletinTestDriver for CosmosTestEnvironment {
 }
 
 /// Address other containers can dial. Prefer a private bind from GetNodeInfo.
-/// If the node only advertises a public STUN port, keep the peer id and
-/// substitute the port the process is actually listening on.
+/// A public address whose port is already bound is kept: on Linux that port
+/// is the socket iroh is listening on. Only a NAT-mapped port (not bound
+/// inside the container) is replaced with a listen port.
 async fn publishable_p2p_address(network: &CosmosNetwork, index: usize, endpoint: &str) -> String {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut latest = String::new();
-    while tokio::time::Instant::now() < deadline {
+    let latest = loop {
         if let Some(address) = current_p2p_address(endpoint).await {
-            latest = address.clone();
             if container_local_bind(&address) {
                 println!("container bind for {endpoint}: {address}");
                 return address;
             }
+            break address;
         }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "node at {endpoint} never returned a p2p address"
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    let service = CosmosNetwork::service_name_for_node(index + 1);
-    let Some(port) = network.container_udp_listen_port(service) else {
-        panic!("node at {endpoint} advertised {latest} and its UDP listen port could not be read");
     };
+    let advertised = address_port(&latest);
+    let service = CosmosNetwork::service_name_for_node(index + 1);
+    let listen_ports = network.container_udp_listen_ports(service);
+    let Some(port) = advertised.and_then(|port| select_publish_port(port, &listen_ports)) else {
+        panic!(
+            "node at {endpoint} advertised {latest} and its UDP listen ports could not be read ({listen_ports:?})"
+        );
+    };
+    if Some(port) == advertised {
+        println!("container bind for {endpoint}: {latest}");
+        return latest;
+    }
     let rewritten = replace_port(&latest, port);
     println!("container bind for {endpoint} rewritten from {latest} to {rewritten}");
     rewritten
@@ -841,6 +853,11 @@ fn container_local_bind(address: &str) -> bool {
         return false;
     };
     ip.is_private() || ip.is_loopback() || ip.is_link_local()
+}
+
+fn address_port(address: &str) -> Option<u16> {
+    let host_port = address.split_once('@')?.1;
+    host_port.rsplit_once(':')?.1.parse().ok()
 }
 
 fn replace_port(address: &str, port: u16) -> String {
