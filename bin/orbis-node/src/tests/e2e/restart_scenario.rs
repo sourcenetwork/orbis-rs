@@ -2,7 +2,10 @@
 //! had before the process stopped.
 //!
 //! The adapter owns how the process is stopped and started. This scenario
-//! only talks to `NetworkTestDriver` and the node's info service.
+//! only talks to `NetworkTestDriver` and the node's info service. The node
+//! id inside the advertised p2p address is part of that identity. A
+//! discovered direct socket is not: the process may publish a new mapped
+//! port the next time it starts.
 
 use super::{pre_scenario, TestEnvironmentImpl};
 use proto::info_service::{
@@ -68,7 +71,11 @@ async fn test_restarted_member_keeps_identity_and_polynomial() {
 
     assert_eq!(recovered.node_key, before.node_key);
     assert_eq!(recovered.peer_id, before.peer_id);
-    assert_eq!(recovered.p2p_address, before.p2p_address);
+    assert_eq!(
+        common::peer_id::node_part(&recovered.p2p_address),
+        common::peer_id::node_part(&before.p2p_address),
+        "restart must keep the node id advertised in the p2p address"
+    );
     assert_eq!(recovered.public_address, before.public_address);
     assert_eq!(
         recovered.managed_ring_count, before_info.managed_ring_count,

@@ -113,6 +113,16 @@ fn fixture_node(
     )
 }
 
+/// Share index stored in a finalized bundle: 1-based rank of the node key
+/// among the committee, not its position in the fixture member list.
+fn share_member_id(members: &[String], node_key: &str) -> u32 {
+    crate::helpers::node_routes::canonical_node_id_assignments_from_node_keys(members)
+        .expect("ring member keys are unique")
+        .get(node_key)
+        .copied()
+        .expect("node key must be a ring member")
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -817,13 +827,13 @@ impl BulletinTestDriver for NativeTestEnvironment {
 
     async fn arm_refresh_for_next_start(&self, _ring: &RingId, ring_pk: &str, members: &[String]) {
         for (index, node) in self.nodes().iter().enumerate() {
-            let Some(position) = members.iter().position(|key| key == &node.node_key) else {
+            if !members.iter().any(|key| key == &node.node_key) {
                 continue;
-            };
+            }
             super::stored_bundle::backdate_main_ring(
                 &self.network.node_directory(index),
                 ring_pk,
-                position as u32 + 1,
+                share_member_id(members, &node.node_key),
             );
         }
     }
@@ -851,11 +861,7 @@ impl BulletinTestDriver for NativeTestEnvironment {
             bundles.push((LocalStorageKeyType::PetRingKey, ring.0.clone(), pet_pk));
         }
         for node in self.nodes() {
-            let member = members
-                .iter()
-                .position(|node_key| node_key == &node.node_key)
-                .expect("native node must remain a ring member") as u32
-                + 1;
+            let member = share_member_id(members, &node.node_key);
             let mut control = UnsafeTestingServiceClient::connect(node.grpc_endpoint.clone())
                 .await
                 .expect("connect native refresh test control");
