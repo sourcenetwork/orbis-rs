@@ -13,6 +13,7 @@ members = [
     "crates/common",
     "crates/bulletin",
     "crates/reporting",
+    "crates/pre-share",
     "crates/test-support",
     "crates/jubjub-wasm",
 ]

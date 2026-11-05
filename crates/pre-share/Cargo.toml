@@ -1,0 +1,24 @@
+[package]
+name = "pre-share"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+orbis-reporting = { path = "../reporting" }
+common = { path = "../common", default-features = false }
+crypto = { path = "../crypto", default-features = false }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[features]
+default = ["bls12-381"]
+bls12-381 = ["crypto/bls12-381"]
+jubjub = ["crypto/jubjub"]
+
+[lints]
+workspace = true

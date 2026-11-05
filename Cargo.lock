@@ -7330,6 +7330,7 @@ dependencies = [
  "orbis",
  "orbis-reporting 0.0.1",
  "p2p",
+ "pre-share",
  "project-root",
  "prometheus",
  "proto",
@@ -7993,6 +7994,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "pre-share"
+version = "0.0.1"
+dependencies = [
+ "common",
+ "crypto 0.0.1",
+ "orbis-reporting 0.0.1",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

@@ -81,6 +81,17 @@ where
                 // Responses are collected by initiate_reencryption, not here
                 Ok(None)
             }
+            PreMessage::ReencryptStored(_) => {
+                tracing::debug!(
+                    request_id = %message.request_id(),
+                    "PRE Coordinator: Received ReencryptStored"
+                );
+                // Like ReencryptResponse, collected by initiate_reencryption, not here.
+                // Nothing produces this variant yet (the pre_share_endpoints delivery
+                // branch is wired in a later step) — this arm exists so PreMessage stays
+                // exhaustively matched.
+                Ok(None)
+            }
             PreMessage::Error { request_id, error } => {
                 tracing::error!(
                     request_id = %request_id,
@@ -364,6 +375,16 @@ where
         // 3. Load share bundle from local storage (single encrypted entry = atomic share+poly)
         let bundle = RingShareBundle::load(&self.app_state.local_storage, &ring_pk)
             .map_err(|e| PreError::Storage(format!("Failed to load share bundle: {}", e)))?;
+
+        // Reject up front if our committed generation doesn't match what the coordinator
+        // pinned this request to — releasing a share from the wrong generation would only
+        // fail later, at decrypt time, for the reader. See `PreRequestContext::pinned_public_polynomial`.
+        if bundle.public_polynomial != ctx.pinned_public_polynomial {
+            return Err(PreError::PinnedGenerationMismatch {
+                expected: ctx.pinned_public_polynomial.clone(),
+                actual: bundle.public_polynomial.clone(),
+            });
+        }
 
         // 4. Deserialize final share from bundle
         let pri_share: PriShare<D::ShareValue> = PriShare::from_bytes(&bundle.share_bytes)
