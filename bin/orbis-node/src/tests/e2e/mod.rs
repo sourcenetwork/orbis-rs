@@ -62,6 +62,8 @@ mod scheduled_refresh;
 mod sign_scenario;
 #[cfg(all(feature = "native", feature = "bls12-381"))]
 mod defra_documents;
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+mod defra_peers;
 mod standard_dkg_pre;
 mod upgrade;
 

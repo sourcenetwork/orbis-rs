@@ -12,9 +12,9 @@ not be described as covered by the shared suite:
 - PET committee replacement where the incoming member must receive both key
   shares, plus cleanup of the departed member's main/PET/pending/index state.
 - Repeated PET member churn and restart/authorization soak coverage.
-- Defra peer-to-peer replication and restart; the shared signing scenario now
-  includes signed-document persistence, forged-block rejection, and direct
-  merge replication, which still require native runtime qualification.
+- Native runtime qualification of the restored Defra signing, persisted
+  signatures, forgery rejection, and direct and peer-to-peer replication
+  scenarios, including receiver restart.
 - Retention of PET fault reports and evidence receipts, including proof that a
   rejected or reported share does not mutate the encrypted bundle.
 - Polynomial-state regressions that distinguish active, pending, and departed

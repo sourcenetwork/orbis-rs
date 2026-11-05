@@ -129,6 +129,14 @@ pub(super) async fn run(
         reopened.verify(&created, defra.signer_did()).await;
         reopened
     };
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    let peers = {
+        let peers =
+            super::defra_peers::Peers::new(&defra_directory.path().join("peers"), defra.clone())
+                .await;
+        peers.verify_replication().await;
+        peers.verify_restart().await
+    };
 
     environment
         .revoke(
@@ -165,6 +173,8 @@ pub(super) async fn run(
     {
         assert!(documents.create("revoked").await.is_err());
         assert_eq!(documents.count().await, 1);
+        peers.verify_revocation().await;
+        peers.shutdown().await;
     }
     environment
         .grant(
