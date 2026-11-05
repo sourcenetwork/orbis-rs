@@ -3,6 +3,12 @@
 use super::{pre_scenario, TestEnvironmentImpl};
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, ThresholdSigner};
 use crypto::{GroupAffine, SignImpl};
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+use defra_core::signing::RemoteSigner;
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+use sha2::{Digest, Sha256};
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+use std::sync::Arc;
 use test_support::admin::{PolicyId, RingId};
 use test_support::fixture::{AuthorizationTestDriver, BulletinTestDriver, NetworkTestDriver};
 use tokio::time::{sleep, Duration, Instant};
@@ -64,6 +70,20 @@ pub(super) async fn run(
     environment
         .register_object(policy, pre_scenario::RESOURCE, &derivation_id)
         .await;
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    let defra = {
+        let client = defra_client(&endpoint, &derivation_id, &derived_pk).await;
+        let error = defra_sign(&client)
+            .await
+            .expect_err("Defra signing requires a grant");
+        assert!(
+            error
+                .message
+                .contains(&tonic::Code::Unauthenticated.to_string()),
+            "{error:?}"
+        );
+        client
+    };
     environment
         .grant(
             policy,
@@ -75,6 +95,11 @@ pub(super) async fn run(
         .await;
 
     verify_signature(&endpoint, keys, &derivation_id, &derived_pk).await;
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    assert!(
+        defra_sign(&defra).await.is_ok(),
+        "Defra signing should succeed after grant"
+    );
 
     environment
         .revoke(
@@ -96,6 +121,17 @@ pub(super) async fn run(
     .await
     .expect_err("signing after revoking the authorized relationship must fail");
     pre_scenario::assert_policy_rejection("Sign after revocation", &revoked);
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    let error = defra_sign(&defra)
+        .await
+        .expect_err("Defra signing must fail after revocation");
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    assert!(
+        error
+            .message
+            .contains(&tonic::Code::Unauthenticated.to_string()),
+        "{error:?}"
+    );
     environment
         .grant(
             policy,
@@ -106,11 +142,58 @@ pub(super) async fn run(
         )
         .await;
     verify_signature(&endpoint, keys, &derivation_id, &derived_pk).await;
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    assert!(
+        defra_sign(&defra).await.is_ok(),
+        "Defra signing should recover after regrant"
+    );
 
     Outcome {
         derivation_id,
         derived_pk,
     }
+}
+
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+async fn defra_client(
+    endpoint: &str,
+    derivation_id: &str,
+    derived_pk: &str,
+) -> defra_orbis::OrbisClient {
+    let seed: [u8; 32] = Sha256::digest(SIGNER_SEED.as_bytes()).into();
+    let identity = Arc::new(
+        defra_identity::RawIdentity::from_ed25519(
+            defra_crypto::Ed25519PrivateKey::from_bytes(
+                &defra_crypto::ed25519_key_from_seed(&seed).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        defra_identity::Identity::did(identity.as_ref())
+            .unwrap()
+            .to_string(),
+        cli_tool::reader_did_from_seed(SIGNER_SEED),
+    );
+    defra_orbis::OrbisClient::new(
+        endpoint.to_owned(),
+        derivation_id.to_owned(),
+        hex::decode(derived_pk).unwrap(),
+        identity,
+        defra_edge::on_demand().unwrap().clone(),
+    )
+    .await
+    .expect("connect Defra signer")
+}
+
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+async fn defra_sign(
+    client: &defra_orbis::OrbisClient,
+) -> Result<Vec<u8>, defra_core::signing::SignFailure> {
+    let mut results = client.sign_batch(vec![Arc::from(MESSAGE)], None).await;
+    assert_eq!(results.len(), 1);
+    results.pop().unwrap()
 }
 
 /// Reuse the derivation object created before a share-generation transition
@@ -133,6 +216,14 @@ pub(super) async fn verify_existing_at(
     outcome: &Outcome,
 ) {
     verify_signature(endpoint, keys, &outcome.derivation_id, &outcome.derived_pk).await;
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    {
+        let client = defra_client(endpoint, &outcome.derivation_id, &outcome.derived_pk).await;
+        assert!(
+            defra_sign(&client).await.is_ok(),
+            "Defra signing must survive the transition"
+        );
+    }
 }
 
 async fn verify_signature(
