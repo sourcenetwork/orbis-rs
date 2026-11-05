@@ -214,6 +214,11 @@ pub struct RingPayload {
     /// this payload either — see `Bulletin::ring_finalization_status`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pet_pk: Option<String>,
+    /// DefraDB HTTP base URLs. When non-empty, PRE responders store their
+    /// signed reencryption share in Defra instead of returning it directly
+    /// to the relayer. Empty keeps the direct-response PRE path unchanged.
+    #[serde(default)]
+    pub pre_share_endpoints: Vec<String>,
 }
 
 /// Payload for confirming a completed fresh DKG ring.

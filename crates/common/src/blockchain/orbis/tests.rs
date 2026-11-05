@@ -193,6 +193,7 @@ fn create_ring_round_trips_pss_interval() {
         None,
         Some(vec!["did:key:relay".to_string()]),
         false,
+        vec![],
     );
     let bytes = msg.encode_to_vec();
     let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
@@ -200,6 +201,29 @@ fn create_ring_round_trips_pss_interval() {
     assert!(decoded.reporting.is_none());
     assert_eq!(decoded.trusted_auth_relay_dids, vec!["did:key:relay"]);
     assert!(decoded.allow_trusted_auth_relays);
+}
+
+#[test]
+fn create_ring_round_trips_pre_share_endpoints() {
+    let msg = MsgCreateRing::new(
+        "c",
+        vec!["p1".to_string()],
+        1,
+        86400,
+        "policy",
+        None,
+        0,
+        None,
+        None,
+        false,
+        vec!["https://defra.example".to_string()],
+    );
+    let bytes = msg.encode_to_vec();
+    let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
+    assert_eq!(
+        decoded.pre_share_endpoints,
+        vec!["https://defra.example".to_string()]
+    );
 }
 
 #[test]
@@ -224,6 +248,7 @@ fn create_ring_round_trips_reporting_config() {
         }),
         None,
         false,
+        vec![],
     );
     let bytes = msg.encode_to_vec();
     let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");

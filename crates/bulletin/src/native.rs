@@ -530,6 +530,9 @@ fn ring_post(record: RingRecord) -> crate::error::Result<BulletinPost> {
             backup_node_keys: settings.reporting.backup_node_keys,
             kick_threshold: settings.reporting.kick_threshold,
         },
+        // Not yet supported on the native backend; see the Deferred section
+        // of the Defra PRE-share storage plan.
+        pre_share_endpoints: Vec::new(),
     };
     Ok(BulletinPost {
         id: record.id,

@@ -528,6 +528,7 @@ mod tests {
             reporting: Default::default(),
             requires_pet: false,
             pet_pk: None,
+            pre_share_endpoints: vec![],
         }
     }
 

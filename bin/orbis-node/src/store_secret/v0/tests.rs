@@ -65,6 +65,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     bulletin
@@ -431,6 +432,7 @@ async fn test_store_secret_idempotent() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let ring_id = "test-store-secret-valid-ring".to_string();

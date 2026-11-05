@@ -58,6 +58,7 @@ pub(super) fn pending_reshare_ring() -> RingPayload {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     }
 }
 
@@ -543,5 +544,6 @@ pub(super) fn fresh_test_ring(node_key: &str, threshold: u32) -> RingPayload {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     }
 }

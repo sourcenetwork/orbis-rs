@@ -221,6 +221,7 @@ pub async fn create_ring(
     current_version: u64,
     trusted_auth_relay_dids: Vec<String>,
     requires_pet: bool,
+    pre_share_endpoints: Vec<String>,
     config: ChainConfig,
     signing_key_hex: &str,
 ) -> Result<String> {
@@ -240,6 +241,7 @@ pub async fn create_ring(
             None,
             trusted_auth_relay_dids,
             requires_pet,
+            pre_share_endpoints,
         )
         .await
         .map_err(|e| anyhow!("Failed to create ring: {}", e))?;

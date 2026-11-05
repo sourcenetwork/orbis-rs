@@ -900,6 +900,7 @@ mod ring_reshare_update_tests {
             reporting: Default::default(),
             requires_pet,
             pet_pk: None,
+            pre_share_endpoints: vec![],
         };
         let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
         let ring_id = "test-sign-reshare-ring".to_string();
@@ -960,6 +961,7 @@ mod ring_reshare_update_tests {
             reporting: Default::default(),
             requires_pet: false,
             pet_pk: None,
+            pre_share_endpoints: vec![],
         };
         let reordered = RingPayload {
             upgrade_info: Default::default(),
@@ -990,6 +992,7 @@ mod ring_reshare_update_tests {
             reporting: Default::default(),
             requires_pet: false,
             pet_pk: None,
+            pre_share_endpoints: vec![],
         };
         let with_pss_interval = RingPayload {
             pss_interval: 30,
@@ -1018,6 +1021,7 @@ mod ring_reshare_update_tests {
             reporting: Default::default(),
             requires_pet: false,
             pet_pk: None,
+            pre_share_endpoints: vec![],
         };
         let with_upgrade = RingPayload {
             upgrade_info: bulletin::r#trait::UpgradeInfo {
@@ -1050,6 +1054,7 @@ mod ring_reshare_update_tests {
             reporting: Default::default(),
             requires_pet: false,
             pet_pk: None,
+            pre_share_endpoints: vec![],
         };
         let expected = RingReshareSignState {
             ring_pk: "ring-pk".to_string(),

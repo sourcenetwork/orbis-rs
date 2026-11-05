@@ -64,6 +64,7 @@ fn make_valid_ring_payload(node_key: &str) -> RingPayload {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     }
 }
 
@@ -82,6 +83,7 @@ fn make_valid_reshare_ring_payload(old_node_key: &str, new_node_key: &str) -> Ri
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     }
 }
 
@@ -153,6 +155,7 @@ async fn test_validate_fresh_dkg_node_authorization_allows_ring_id_with_blank_pl
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     seed_node_info(
         &dummy_bulletin,

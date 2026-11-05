@@ -501,6 +501,7 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
             }),
         requires_pet: ring.requires_pet,
         pet_pk: ring.pet_pk,
+        pre_share_endpoints: ring.pre_share_endpoints,
     };
     Ok(BulletinPost {
         id: ring.id,
