@@ -63,10 +63,13 @@ where
         }
     }
 
-    /// `ReencryptResponse` messages are stored for the initiating coordinator;
-    /// all other messages are routed to `handle_message`.
+    /// `ReencryptResponse` and `ReencryptStored` messages are stored for the
+    /// initiating coordinator; all other messages are routed to `handle_message`.
     async fn try_store_response(&self, msg: PreMessage, peer_id: &PeerId) -> Option<PreMessage> {
-        if let PreMessage::ReencryptResponse { .. } = &msg {
+        if matches!(
+            &msg,
+            PreMessage::ReencryptResponse { .. } | PreMessage::ReencryptStored(_)
+        ) {
             store_response(
                 self.routes.version,
                 msg,

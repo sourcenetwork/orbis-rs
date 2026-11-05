@@ -8,6 +8,8 @@ pub enum PreShareError {
     SignatureInvalid(String),
     #[error("failed to sign stored-share envelope: {0}")]
     Signing(String),
+    #[error("failed to mint Defra bearer JWT: {0}")]
+    Jwt(String),
 }
 
 pub type Result<T> = std::result::Result<T, PreShareError>;

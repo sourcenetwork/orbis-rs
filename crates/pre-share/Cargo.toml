@@ -12,6 +12,10 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["time", "sync"] }
 reqwest.workspace = true
 tracing = "0.1"
+hex.workspace = true
+base64.workspace = true
+bs58 = "0.5"
+k256.workspace = true
 orbis-reporting = { path = "../reporting" }
 common = { path = "../common", default-features = false }
 crypto = { path = "../crypto", default-features = false }

@@ -11,6 +11,7 @@
 //! not here — see that module.
 
 mod defra;
+mod defra_jwt;
 mod envelope;
 mod error;
 mod manifest;
@@ -18,6 +19,11 @@ mod manifest;
 pub(crate) mod test_support;
 
 pub use defra::*;
+pub use defra_jwt::*;
 pub use envelope::*;
 pub use error::*;
 pub use manifest::*;
+
+/// Re-exported so callers constructing a [`DefraClient`] don't need their own direct
+/// `reqwest` dependency just for this one type.
+pub use reqwest::Url;

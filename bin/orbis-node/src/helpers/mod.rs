@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod authorized_peers;
 pub mod create_routers;
+pub mod defra;
 pub mod encrypted_document;
 pub mod identity;
 pub mod jti_replay;

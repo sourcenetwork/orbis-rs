@@ -196,6 +196,7 @@ async fn create_ring(
         trusted_auth_relay_dids: (!spec.trusted_auth_relay_dids.is_empty())
             .then_some(spec.trusted_auth_relay_dids),
         reporting,
+        pre_share_endpoints: vec![],
     };
     let ring_id = config.id(root.0, actor).unwrap();
     let now = unix_now();

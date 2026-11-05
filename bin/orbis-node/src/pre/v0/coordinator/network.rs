@@ -107,11 +107,12 @@ where
             )));
         }
 
-        // Only store valid reencryption responses; log and drop peer errors
+        // Only store valid reencryption responses (or stored-delivery acks); log and
+        // drop peer errors
         let authenticated_peer_id = stream.peer_id().clone();
         let authenticated_peer_hex = hex::encode(authenticated_peer_id.as_bytes());
         match response {
-            response @ PreMessage::ReencryptResponse { .. } => {
+            response @ (PreMessage::ReencryptResponse { .. } | PreMessage::ReencryptStored(_)) => {
                 let store_outcome = self
                     .app_state
                     .pre_response_state

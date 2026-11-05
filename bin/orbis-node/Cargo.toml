@@ -51,6 +51,7 @@ http-body-util = { workspace = true }
 hyper-util = { workspace = true }
 
 [dev-dependencies]
+wiremock = "0.6"
 defra-edge = { package = "edge", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
 acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "501bff096be8a3e1de1d203f4cad0f95e8d4883a" }
 defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24", default-features = false, features = ["p2p"] }

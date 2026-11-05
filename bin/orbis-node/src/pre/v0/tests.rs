@@ -390,6 +390,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             secret_bytes.clone(),
             PreRequestContext {
@@ -530,6 +531,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             second_secret_bytes,
             PreRequestContext {
@@ -780,6 +782,7 @@ async fn test_pre_with_inline_document_end_to_end() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             secret_bytes,
             PreRequestContext {
@@ -938,6 +941,7 @@ async fn test_pre_with_large_secret() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             secret_bytes,
             PreRequestContext {
@@ -1103,6 +1107,7 @@ async fn test_pre_fails_with_wrong_key() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             secret_bytes,
             PreRequestContext {
@@ -1252,6 +1257,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             secret_bytes,
             PreRequestContext {
@@ -1425,6 +1431,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             secret_bytes,
             PreRequestContext {
@@ -1808,6 +1815,7 @@ async fn test_pre_fails_with_wrong_derivation() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             secret_bytes.clone(),
             PreRequestContext {
@@ -2013,6 +2021,7 @@ async fn test_pre_fails_with_bad_proof() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             secret_bytes,
             PreRequestContext {
@@ -2176,6 +2185,7 @@ async fn test_pre_rejects_peers_with_mismatched_pinned_generation() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             secret_bytes,
             PreRequestContext {
@@ -2209,6 +2219,208 @@ async fn test_pre_rejects_peers_with_mismatched_pinned_generation() {
         "Error should indicate insufficient verified shares: {}",
         error
     );
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// End-to-end test for the `pre_share_endpoints` delivery mode: after a real DKG,
+/// every participant (the local relayer and both network peers) signs and uploads
+/// its own envelope to a mocked Defra endpoint instead of returning a share
+/// directly, and the coordinator assembles a `PreResponse::Stored` manifest from
+/// their acks. Verifies not just that the pipeline reports success, but that each
+/// node actually POSTed a genuinely signed, correctly-pinned envelope — inspected
+/// directly from the mock server's recorded requests.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pre_with_defra_stored_delivery_end_to_end() {
+    let db_name = "test_pre_with_defra_stored_delivery_end_to_end";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    let mock_server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(format!(
+            "/api/v0/collections/{}",
+            pre_share::PRE_SHARE_COLLECTION
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(["bae-stored-test"]))
+        .mount(&mock_server)
+        .await;
+
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let request = StartDkgRequest {
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+    };
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("Failed to create JWT");
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+    assert!(result.is_ok());
+
+    let mut ring_payload = wait_for_dkg_completion(&network).await;
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
+
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+
+    // Every responder resolves its own `RingPayload` independently from the bulletin
+    // (`handle_reencrypt_request` -> `resolve_document_and_ring_payloads`) — the
+    // `RingConfig.pre_share_endpoints` the initiator uses below only affects its own
+    // view, so the bulletin-published ring payload must carry it too, exactly as a
+    // real ring-config update would.
+    let ring_post = get_test_ring_post(dummy_bulletin);
+    ring_payload.pre_share_endpoints = vec![mock_server.uri()];
+    dummy_bulletin
+        .set_ring(ring_post.id.clone(), ring_payload.clone())
+        .expect("update ring payload with pre_share_endpoints");
+
+    let secret_message = b"Secret stored in Defra";
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
+    let (_, encrypted_secret, proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
+            .expect("Encryption should succeed");
+    let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
+
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
+
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
+
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
+
+    let (pre_token, _) = test_keys
+        .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
+        .expect("Failed to create PRE JWT");
+    let (reader_auth_context, bob_pk_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &pre_token,
+        &object_id,
+        &bob_sk,
+        &bob_pk,
+        None,
+    );
+
+    let request_id = "defra-stored-delivery-pre-request".to_string();
+    let pre_result = pre_coordinator
+        .initiate_reencryption(
+            request_id.clone(),
+            RingConfig {
+                ring_id: String::new(),
+                ring_pk_bytes: ring_pk_bytes.clone(),
+                peer_ids,
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_node_keys.len(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
+                pre_share_endpoints: vec![mock_server.uri()],
+            },
+            secret_bytes,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes,
+                rdr_pk_signature: bob_pk_signature,
+                object_id,
+                token_string: pre_token,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
+                document: None,
+                audit_target_object_id: None,
+                pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch.
+                pinned_public_polynomial: String::new(),
+            },
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context,
+        )
+        .await
+        .expect("Defra-backed PRE should succeed");
+
+    let response: PreResponse =
+        serde_json::from_slice(&pre_result).expect("deserialize PreResponse");
+    let PreResponse::Stored(stored) = response else {
+        panic!("expected a Stored response");
+    };
+    // At least threshold entries — may exceed it when extra acks arrive fast enough
+    // to land in the post-early-exit sweep, matching `finalize_reencryption`'s own
+    // "at least threshold" contract for the direct-delivery path.
+    assert!(
+        stored.entries.len() >= ring_payload.threshold as usize,
+        "manifest should have at least threshold entries, got {}",
+        stored.entries.len()
+    );
+    assert_eq!(stored.request_id, request_id);
+
+    // Independently verify, for every entry that actually made it into the
+    // manifest, that the corresponding POST really carried a genuinely signed,
+    // correctly-pinned envelope — proves the pipeline's success report is backed by
+    // real signatures, not just that it returned without error. Every participant
+    // may have POSTed successfully (three, here), but only `entries.len()` of them
+    // are guaranteed to appear in the manifest — the rest can be diverted to the
+    // post-threshold background drain once ack-threshold completes early; see the
+    // plan's "cleanup policy for in-flight uploads" note.
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("requests recorded");
+    assert!(
+        requests.len() >= stored.entries.len(),
+        "every manifest entry must have a corresponding POST"
+    );
+    for entry in &stored.entries {
+        let request = requests
+            .iter()
+            .find(|request| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&request.body).expect("valid JSON body");
+                body["participant"].as_str() == Some(entry.responder_node_key.as_str())
+            })
+            .unwrap_or_else(|| panic!("no POST found for entry {}", entry.responder_node_key));
+        let body: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("valid JSON body");
+        let envelope_json = body["envelope"].as_str().expect("envelope field");
+        let envelope: pre_share::SignedStoredShareEnvelope =
+            serde_json::from_str(envelope_json).expect("valid envelope JSON");
+        envelope
+            .verify(&entry.responder_node_key)
+            .expect("envelope signature should verify");
+        assert_eq!(
+            envelope.envelope.pinned_public_polynomial,
+            stored.pinned_public_polynomial
+        );
+        assert_eq!(envelope.envelope.statement.request_id, request_id);
+        assert_eq!(envelope.envelope.statement.from_node_id, entry.from_node_id);
+    }
 
     network
         .shutdown_routers()
@@ -2300,6 +2512,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 threshold: 1,
                 total_participants: 1,
                 public_polynomial_hex: mismatched_public_polynomial_hex,
+                pre_share_endpoints: vec![],
             },
             secret_bytes,
             1,

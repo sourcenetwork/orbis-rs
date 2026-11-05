@@ -13,6 +13,9 @@ pub struct RingConfig {
     pub threshold: usize,
     pub total_participants: usize,
     pub public_polynomial_hex: String,
+    /// Mirrors `RingPayload::pre_share_endpoints` — non-empty selects the
+    /// Defra-backed storage delivery mode over today's direct response.
+    pub pre_share_endpoints: Vec<String>,
 }
 
 pub async fn is_ring_reshare_in_progress<D: Dkg + 'static>(

@@ -94,6 +94,16 @@ pub enum PreError {
     /// AuthZ error
     #[error("Authz error: {0}")]
     AuthZ(String),
+
+    /// A Defra upload or fetch genuinely failed — a transport/server error from
+    /// `pre_share::DefraClientError`, or a failure minting this node's own bearer
+    /// JWT (invalid key material, clock error). Distinct from `Storage` (today's
+    /// variant, meaning *local* disk failures) so logs/metrics can tell "my disk"
+    /// apart from "the configured remote endpoint" immediately. There is no
+    /// "not configured" case: every node able to participate in PRE already has the
+    /// signing key this JWT is minted from.
+    #[error("Defra storage error: {0}")]
+    DefraStorage(String),
 }
 
 /// Result type for PRE operations
@@ -125,7 +135,7 @@ impl GrpcServiceError for PreError {
             PreError::Timeout(_) => {
                 GrpcErrorClassification::new(Code::DeadlineExceeded, Level::WARN, true)
             }
-            PreError::NetworkConnection(_) => {
+            PreError::NetworkConnection(_) | PreError::DefraStorage(_) => {
                 GrpcErrorClassification::new(Code::Unavailable, Level::WARN, true)
             }
             PreError::VerificationFailed(_) => {
@@ -301,6 +311,12 @@ mod tests {
                 Code::Unauthenticated,
                 Level::TRACE,
                 false,
+            ),
+            (
+                PreError::DefraStorage("test".into()),
+                Code::Unavailable,
+                Level::WARN,
+                true,
             ),
         ];
 

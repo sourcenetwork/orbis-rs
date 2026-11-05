@@ -107,6 +107,7 @@ mod signing_options_tests {
             threshold: 1,
             total_participants: 2,
             public_polynomial_hex: String::new(),
+            pre_share_endpoints: vec![],
         };
         let options = SigningOptions {
             excluded_node_keys: HashSet::from(["node-b".to_string()]),

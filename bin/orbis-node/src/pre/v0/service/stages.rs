@@ -133,10 +133,11 @@ pub(super) fn validate_pre_request_size(
     Ok(())
 }
 
-/// Response-encoding stage (6): parses the coordinator's raw result and, for the direct-delivery
-/// path, attaches the verified ciphertext-binding context so the reader can rebuild the AAD. The
-/// stored-delivery path's manifest already carries its own context and passes straight through —
-/// nothing currently produces it (see `PreResponse::Stored`'s doc comment).
+/// Response-encoding stage (6): parses the coordinator's raw result and attaches the
+/// verified ciphertext-binding context — for `Direct`, directly on the wire response;
+/// for `Stored`, inside the completed `PreShareRetrievalManifest` (see
+/// `PreResponse::Stored`'s doc comment for why the coordinator itself can't fill this
+/// in: only the *service* layer resolved `ciphertext_context`).
 pub(super) fn encode_pre_response(
     result: Vec<u8>,
     ciphertext_context: CiphertextContext,
@@ -145,6 +146,7 @@ pub(super) fn encode_pre_response(
     use crate::pre::v0::coordinator::{
         DirectPreReencryptResponse, PreReencryptResponse, PreResponse,
     };
+    use pre_share::{PreShareRetrievalManifest, PRE_SHARE_MANIFEST_VERSION};
 
     let pre_response: PreResponse = serde_json::from_slice(&result)
         .map_err(|e| PreError::Deserialization(format!("Failed to parse PRE result: {}", e)))?;
@@ -156,7 +158,21 @@ pub(super) fn encode_pre_response(
                 context: ciphertext_context,
             }))
         }
-        PreResponse::Stored { manifest } => PreReencryptResponse::Stored { manifest },
+        PreResponse::Stored(stored) => PreReencryptResponse::Stored {
+            manifest: Box::new(PreShareRetrievalManifest {
+                manifest_version: PRE_SHARE_MANIFEST_VERSION,
+                request_id: stored.request_id,
+                ring_id: stored.ring_id,
+                ring_pk: stored.ring_pk,
+                threshold: stored.threshold,
+                pinned_public_polynomial: stored.pinned_public_polynomial,
+                rdr_pk_bytes: stored.rdr_pk_bytes,
+                object_id: stored.object_id,
+                secret: stored.secret,
+                context: ciphertext_context,
+                entries: stored.entries,
+            }),
+        },
     };
 
     let encrypted_secret = serde_json::to_vec(&wire_response)
@@ -539,6 +555,7 @@ where
             threshold: authorized.ring_payload.threshold as usize,
             total_participants,
             public_polynomial_hex: poly_state.public_polynomial,
+            pre_share_endpoints: authorized.ring_payload.pre_share_endpoints,
         };
         let ctx = PreRequestContext {
             rdr_pk_bytes: authorized.rdr_pk,

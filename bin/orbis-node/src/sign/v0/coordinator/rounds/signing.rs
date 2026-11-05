@@ -1357,6 +1357,7 @@ mod tests {
             threshold: 2,
             total_participants: 3,
             public_polynomial_hex: String::new(),
+            pre_share_endpoints: vec![],
         };
 
         assert_eq!(

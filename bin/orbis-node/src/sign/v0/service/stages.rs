@@ -301,6 +301,7 @@ where
             threshold: authorized.ring_payload.threshold as usize,
             total_participants,
             public_polynomial_hex: poly_state.public_polynomial,
+            pre_share_endpoints: vec![],
         };
 
         let context = SignContext::Policy(Box::new(PolicyContext {

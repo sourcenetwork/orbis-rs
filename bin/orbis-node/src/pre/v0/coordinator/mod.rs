@@ -13,6 +13,7 @@
 mod handlers;
 mod initiator;
 mod network;
+mod stored_delivery;
 mod verification;
 
 pub(crate) use initiator::PreReportBinding;
@@ -20,7 +21,7 @@ pub(crate) use initiator::PreReportBinding;
 use crate::app_state::AppState;
 use crypto::context::CiphertextContext;
 use crypto::r#trait::{Dkg, Secret, ThresholdDealer};
-use pre_share::PreShareRetrievalManifest;
+use pre_share::{PreShareManifestEntry, PreShareRetrievalManifest};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -28,8 +29,13 @@ use std::sync::Arc;
 /// [`PreReencryptResponse`] before returning it to the caller.
 ///
 /// `Direct` is today's recovered-commitment path, unchanged. `Stored` is the
-/// `pre_share_endpoints` delivery mode's result — produced by a "stored" sibling to
-/// `finalize_reencryption` in a later step; nothing currently constructs it.
+/// `pre_share_endpoints` delivery mode's result, assembled by
+/// `initiator::finalize_stored_reencryption`. Mirrors `Direct`'s own split from
+/// `PreReencryptResponse::Direct`: everything the coordinator itself resolved, minus
+/// the ciphertext-binding context, which only the *service* layer (not the
+/// coordinator) has — `encode_pre_response` completes the full
+/// `PreShareRetrievalManifest` from this plus its own `ciphertext_context`, exactly
+/// how it completes `DirectPreReencryptResponse` from `Direct` today.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PreResponse {
     Direct {
@@ -38,20 +44,33 @@ pub enum PreResponse {
         /// Original encrypted secret (for the reader to decrypt) as JSON
         secret: Secret,
     },
-    // Boxed: `PreShareRetrievalManifest` is much larger than `Direct`'s fields, and clippy's
-    // `large_enum_variant` flags the resulting size difference otherwise.
-    Stored {
-        manifest: Box<PreShareRetrievalManifest>,
-    },
+    // Boxed per clippy's `large_enum_variant` (same reasoning as `PreReencryptResponse`).
+    Stored(Box<StoredPreResponse>),
+}
+
+/// Every [`PreShareRetrievalManifest`] field except `context` — see `PreResponse::Stored`'s
+/// doc comment for why.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPreResponse {
+    pub request_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub threshold: usize,
+    pub pinned_public_polynomial: String,
+    pub rdr_pk_bytes: Vec<u8>,
+    pub object_id: String,
+    pub secret: Secret,
+    pub entries: Vec<PreShareManifestEntry>,
 }
 
 /// The `start_pre` wire payload (JSON inside `StartPreResponse.encrypted_secret`).
 ///
 /// `Direct` carries the ciphertext-binding [`CiphertextContext`] the requesting node verified
 /// the encryption proof against, so the reader rebuilds the AES-GCM AAD for `decrypt_secret`
-/// without a bulletin read. `Stored` needs no such context — the manifest already carries its
-/// own (`PreShareRetrievalManifest::context`), since the reader fetches and decrypts later,
-/// independently of this response.
+/// without a bulletin read. `Stored` carries the same context inside the completed
+/// `PreShareRetrievalManifest` instead, for the same reason but checked once at retrieval
+/// time rather than now — the reader fetches and decrypts later, independently of this
+/// response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PreReencryptResponse {
     // Boxed (as a newtype variant, which serializes identically to the equivalent struct

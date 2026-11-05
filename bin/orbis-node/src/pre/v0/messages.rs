@@ -118,9 +118,6 @@ pub struct StoredShareAck {
 impl StoredShareAck {
     /// Field order is the canonical wire contract for `ack_signature` — same pattern as
     /// `PreReencryptResponseStatement::canonical_bytes` (`orbis_reporting`).
-    // Only called from this module's own tests until the pre_share_endpoints delivery branch
-    // (producer + relayer-side ack verification) is wired in a later step.
-    #[allow(dead_code)]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.request_id);

@@ -39,6 +39,98 @@ pub(crate) struct PreResponseReportContext {
     pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
+/// Verifies a stored-delivery ack's *identity and context* only — unlike
+/// [`PeerResponseVerification`], there is no cryptographic proof to check here; that's
+/// wholly deferred to the reader against the fetched, signed envelope (see
+/// `pre_share`'s manifest doc comment for why). Right node, right request, right
+/// pinned generation, a plausible `signed_at`, and a genuine signature from the
+/// accused node — never anything about the stored share's own validity.
+pub(crate) fn verify_peer_ack(
+    response: PreMessage,
+    expected_node_id: u32,
+    accused_node_key: &str,
+    request_id: &str,
+    pinned_public_polynomial: &str,
+    seen_node_ids: &mut HashSet<u32>,
+) -> PeerAckVerification {
+    let PreMessage::ReencryptStored(ack) = response else {
+        return PeerAckVerification::Rejected;
+    };
+
+    if seen_node_ids.contains(&ack.from_node_id) {
+        return PeerAckVerification::Rejected;
+    }
+
+    if ack.from_node_id != expected_node_id {
+        tracing::error!(
+            from_node_id = ack.from_node_id,
+            expected_node_id = expected_node_id,
+            "PRE Coordinator: authenticated peer claimed the wrong node_id"
+        );
+        return PeerAckVerification::Rejected;
+    }
+
+    if ack.request_id != request_id {
+        tracing::warn!(
+            from_node_id = ack.from_node_id,
+            "PRE Coordinator: rejecting ack bound to a different request"
+        );
+        return PeerAckVerification::Rejected;
+    }
+
+    if ack.pinned_public_polynomial != pinned_public_polynomial {
+        tracing::warn!(
+            from_node_id = ack.from_node_id,
+            "PRE Coordinator: rejecting ack pinned to a different generation"
+        );
+        return PeerAckVerification::Rejected;
+    }
+
+    // Same plausibility window `verify_peer_response` applies to a signed response —
+    // here it's just a cheap sanity bound (request_id uniqueness already rules out a
+    // cross-request replay), not a reportability concern, since nothing accuses a
+    // node of misbehavior over an ack.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if ack.signed_at > now.saturating_add(CHAIN_BLOCK_GRACE_SECS)
+        || now.saturating_sub(ack.signed_at) > REPORT_TTL_SECS
+    {
+        tracing::warn!(
+            from_node_id = ack.from_node_id,
+            signed_at = ack.signed_at,
+            now = now,
+            "PRE Coordinator: rejecting ack with implausible signed_at"
+        );
+        return PeerAckVerification::Rejected;
+    }
+
+    if let Err(error) =
+        verify_node_message(accused_node_key, &ack.canonical_bytes(), &ack.ack_signature)
+    {
+        tracing::warn!(
+            from_node_id = ack.from_node_id,
+            accused_node_key = %accused_node_key,
+            error = %error,
+            "PRE Coordinator: rejecting ack with invalid node signature"
+        );
+        return PeerAckVerification::Rejected;
+    }
+
+    seen_node_ids.insert(ack.from_node_id);
+    PeerAckVerification::Verified(pre_share::PreShareManifestEntry {
+        from_node_id: ack.from_node_id,
+        responder_node_key: accused_node_key.to_string(),
+        defra_locator: ack.defra_locator,
+    })
+}
+
+pub(crate) enum PeerAckVerification {
+    Verified(pre_share::PreShareManifestEntry),
+    Rejected,
+}
+
 pub(crate) enum PeerResponseVerification<PublicKey> {
     Verified(PubShare<PublicKey>),
     InvalidProof(Box<InvalidCryptoResponseObservation>),
@@ -758,5 +850,155 @@ mod tests {
             PeerResponseVerification::Rejected
         ));
         assert!(seen.is_empty());
+    }
+
+    // =========================================================================
+    // verify_peer_ack — identity/context checks only, no crypto proof
+    // =========================================================================
+
+    const ACK_SIGNING_KEY_HEX: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const ACK_REQUEST_ID: &str = "ack-verifier-test-request";
+    const ACK_PINNED_POLY: &str = "poly-gen-1";
+    const ACK_NODE_ID: u32 = 1;
+
+    fn ack_node_key() -> String {
+        TxSigner::from_hex_key(ACK_SIGNING_KEY_HEX, ChainConfig::local())
+            .unwrap()
+            .public_key_hex()
+    }
+
+    fn sample_ack() -> crate::pre::v0::messages::StoredShareAck {
+        let mut ack = crate::pre::v0::messages::StoredShareAck {
+            request_id: ACK_REQUEST_ID.to_string(),
+            from_node_id: ACK_NODE_ID,
+            defra_locator: pre_share::DefraLocator("bae-ack-test".to_string()),
+            envelope_sha256: vec![1, 2, 3],
+            pinned_public_polynomial: ACK_PINNED_POLY.to_string(),
+            signed_at: unix_now(),
+            ack_signature: Vec::new(),
+        };
+        ack.ack_signature =
+            sign_node_message_with_hex_key(ACK_SIGNING_KEY_HEX, &ack.canonical_bytes()).unwrap();
+        ack
+    }
+
+    #[test]
+    fn verify_peer_ack_accepts_a_genuine_ack() {
+        let node_key = ack_node_key();
+        let mut seen = HashSet::new();
+        match verify_peer_ack(
+            PreMessage::ReencryptStored(sample_ack()),
+            ACK_NODE_ID,
+            &node_key,
+            ACK_REQUEST_ID,
+            ACK_PINNED_POLY,
+            &mut seen,
+        ) {
+            PeerAckVerification::Verified(entry) => {
+                assert_eq!(entry.from_node_id, ACK_NODE_ID);
+                assert_eq!(entry.responder_node_key, node_key);
+                assert_eq!(entry.defra_locator.0, "bae-ack-test");
+            }
+            PeerAckVerification::Rejected => panic!("expected a genuine ack to verify"),
+        }
+        assert!(seen.contains(&ACK_NODE_ID));
+    }
+
+    #[test]
+    fn verify_peer_ack_rejects_wrong_node_id() {
+        let node_key = ack_node_key();
+        let mut seen = HashSet::new();
+        let result = verify_peer_ack(
+            PreMessage::ReencryptStored(sample_ack()),
+            ACK_NODE_ID + 1, // expected a different node
+            &node_key,
+            ACK_REQUEST_ID,
+            ACK_PINNED_POLY,
+            &mut seen,
+        );
+        assert!(matches!(result, PeerAckVerification::Rejected));
+    }
+
+    #[test]
+    fn verify_peer_ack_rejects_wrong_request_id() {
+        let node_key = ack_node_key();
+        let mut seen = HashSet::new();
+        let result = verify_peer_ack(
+            PreMessage::ReencryptStored(sample_ack()),
+            ACK_NODE_ID,
+            &node_key,
+            "a-different-request",
+            ACK_PINNED_POLY,
+            &mut seen,
+        );
+        assert!(matches!(result, PeerAckVerification::Rejected));
+    }
+
+    #[test]
+    fn verify_peer_ack_rejects_wrong_pinned_generation() {
+        let node_key = ack_node_key();
+        let mut seen = HashSet::new();
+        let result = verify_peer_ack(
+            PreMessage::ReencryptStored(sample_ack()),
+            ACK_NODE_ID,
+            &node_key,
+            ACK_REQUEST_ID,
+            "poly-gen-2",
+            &mut seen,
+        );
+        assert!(matches!(result, PeerAckVerification::Rejected));
+    }
+
+    #[test]
+    fn verify_peer_ack_rejects_a_tampered_signature() {
+        let node_key = ack_node_key();
+        let mut ack = sample_ack();
+        ack.defra_locator = pre_share::DefraLocator("bae-swapped".to_string());
+        let mut seen = HashSet::new();
+        let result = verify_peer_ack(
+            PreMessage::ReencryptStored(ack),
+            ACK_NODE_ID,
+            &node_key,
+            ACK_REQUEST_ID,
+            ACK_PINNED_POLY,
+            &mut seen,
+        );
+        assert!(matches!(result, PeerAckVerification::Rejected));
+    }
+
+    #[test]
+    fn verify_peer_ack_rejects_an_implausible_signed_at() {
+        let node_key = ack_node_key();
+        let mut ack = sample_ack();
+        ack.signed_at = unix_now() - REPORT_TTL_SECS - 240;
+        ack.ack_signature =
+            sign_node_message_with_hex_key(ACK_SIGNING_KEY_HEX, &ack.canonical_bytes()).unwrap();
+        let mut seen = HashSet::new();
+        let result = verify_peer_ack(
+            PreMessage::ReencryptStored(ack),
+            ACK_NODE_ID,
+            &node_key,
+            ACK_REQUEST_ID,
+            ACK_PINNED_POLY,
+            &mut seen,
+        );
+        assert!(matches!(result, PeerAckVerification::Rejected));
+    }
+
+    #[test]
+    fn verify_peer_ack_rejects_a_duplicate_from_the_same_node() {
+        let node_key = ack_node_key();
+        let mut seen = HashSet::new();
+        seen.insert(ACK_NODE_ID);
+        let result = verify_peer_ack(
+            PreMessage::ReencryptStored(sample_ack()),
+            ACK_NODE_ID,
+            &node_key,
+            ACK_REQUEST_ID,
+            ACK_PINNED_POLY,
+            &mut seen,
+        );
+        assert!(matches!(result, PeerAckVerification::Rejected));
     }
 }

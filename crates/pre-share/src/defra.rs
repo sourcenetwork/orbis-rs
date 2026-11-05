@@ -109,6 +109,17 @@ pub struct DefraClient {
     concurrency: Arc<Semaphore>,
 }
 
+// Hand-written rather than derived: a derived `Debug` would print `bearer_token` in
+// full on any accidental `{:?}` (log line, panic message, test assertion failure).
+impl std::fmt::Debug for DefraClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefraClient")
+            .field("base_url", &self.base_url)
+            .field("bearer_token", &"<redacted>")
+            .finish()
+    }
+}
+
 impl DefraClient {
     pub fn new(base_url: Url, bearer_token: String) -> Result<Self, DefraClientError> {
         let http = reqwest::Client::builder()

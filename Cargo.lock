@@ -7392,6 +7392,7 @@ dependencies = [
  "vera-domain",
  "vera-harness",
  "vera-modules",
+ "wiremock",
  "zeroize",
 ]
 
@@ -8028,8 +8029,12 @@ dependencies = [
 name = "pre-share"
 version = "0.0.1"
 dependencies = [
+ "base64 0.22.1",
+ "bs58",
  "common",
  "crypto 0.0.1",
+ "hex",
+ "k256 0.14.0",
  "orbis-reporting 0.0.1",
  "reqwest 0.12.28",
  "serde",
