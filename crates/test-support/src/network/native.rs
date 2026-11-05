@@ -12,7 +12,7 @@
 //! after `CosmosNetwork::builder().build()` returns.
 
 use crate::compose::{
-    compose_command, localhost_url, published_port, report_compose_failure, stop_compose,
+    compose_command, localhost_url, published_port_with_env, report_compose_failure, stop_compose,
 };
 use crate::native_network::{self, NativeTestNetwork};
 use std::{fs, time::Duration};
@@ -37,6 +37,10 @@ struct NativeOrbisNode {
 pub struct NativeNetworkAdapter {
     cluster: NativeTestNetwork,
     orbis_nodes: Vec<NativeOrbisNode>,
+    /// Complete Compose interpolation used when this project was created.
+    /// Lifecycle commands must replay it so blank/default values are not
+    /// interpreted as desired-state changes.
+    compose_env: Vec<(String, String)>,
     _node_fixtures: tempfile::TempDir,
 }
 
@@ -64,7 +68,7 @@ impl NativeNetworkAdapter {
             .prefix("orbis-native-nodes-")
             .tempdir()
             .expect("native orbis node fixture dir");
-        let orbis_nodes = bring_up_orbis_nodes(
+        let (orbis_nodes, node_env) = bring_up_orbis_nodes(
             &cluster,
             node_fixtures.path(),
             node_count,
@@ -72,9 +76,12 @@ impl NativeNetworkAdapter {
             unsafe_testing_runtime_enabled,
         )
         .await;
+        let mut compose_env = cluster.compose_env().to_vec();
+        compose_env.extend(node_env);
         Self {
             cluster,
             orbis_nodes,
+            compose_env,
             _node_fixtures: node_fixtures,
         }
     }
@@ -94,13 +101,43 @@ impl NativeNetworkAdapter {
         self.orbis_nodes[0].grpc_endpoint.clone()
     }
 
+    /// Host directory bind-mounted as this node's `/data`. Valid while the
+    /// adapter is alive, including while the container is stopped.
+    pub fn node_directory(&self, index: usize) -> std::path::PathBuf {
+        assert!(
+            index < self.orbis_nodes.len(),
+            "native node index {index} is outside the started set"
+        );
+        self._node_fixtures.path().join(format!("node-{index}"))
+    }
+
     /// Orbis nodes are already health-checked (TCP-reachable) by the time
     /// [`Self::start`] returns — see [`wait_for_grpc_ready`].
     pub fn wait_for_healthy(&self) {}
 
+    fn compose_command(&self) -> std::process::Command {
+        let mut command = compose_command(self.cluster.compose_file(), self.cluster.project_name());
+        for (key, value) in &self.compose_env {
+            command.env(key, value);
+        }
+        command
+    }
+
+    fn published_port(&self, service: &str) -> u16 {
+        published_port_with_env(
+            self.cluster.compose_file(),
+            self.cluster.project_name(),
+            service,
+            ORBIS_GRPC_PORT,
+            &self.compose_env,
+        )
+        .unwrap_or_else(|error| panic!("discover {service} endpoint: {error}"))
+    }
+
     pub fn restart_nodes(&self) -> Vec<String> {
         let services: Vec<&str> = (0..self.orbis_nodes.len()).map(orbis_service).collect();
-        let status = compose_command(self.cluster.compose_file(), self.cluster.project_name())
+        let status = self
+            .compose_command()
             .arg("restart")
             .args(&services)
             .status()
@@ -111,25 +148,14 @@ impl NativeNetworkAdapter {
         }
         services
             .iter()
-            .map(|service| {
-                localhost_url(
-                    published_port(
-                        self.cluster.compose_file(),
-                        self.cluster.project_name(),
-                        service,
-                        ORBIS_GRPC_PORT,
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!("discover restarted {service} endpoint: {error}")
-                    }),
-                )
-            })
+            .map(|service| localhost_url(self.published_port(service)))
             .collect()
     }
 
     pub fn stop_node(&self, index: usize) {
         let service = orbis_service(index);
-        let status = compose_command(self.cluster.compose_file(), self.cluster.project_name())
+        let status = self
+            .compose_command()
             .args(["stop", service])
             .status()
             .expect("docker compose stop failed");
@@ -139,9 +165,21 @@ impl NativeNetworkAdapter {
         }
     }
 
+    pub fn node_is_running(&self, index: usize) -> bool {
+        let service = orbis_service(index);
+        self.compose_command()
+            .args(["ps", "--status", "running", "--format", "json", service])
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+            })
+    }
+
     pub fn start_node(&self, index: usize) -> String {
         let service = orbis_service(index);
-        let status = compose_command(self.cluster.compose_file(), self.cluster.project_name())
+        let status = self
+            .compose_command()
             .args(["start", service])
             .status()
             .expect("docker compose start failed");
@@ -149,17 +187,7 @@ impl NativeNetworkAdapter {
             report_compose_failure(self.cluster.compose_file(), self.cluster.project_name());
             panic!("Failed to start native orbis service {service}");
         }
-        localhost_url(
-            published_port(
-                self.cluster.compose_file(),
-                self.cluster.project_name(),
-                service,
-                ORBIS_GRPC_PORT,
-            )
-            .unwrap_or_else(|error| {
-                panic!("failed to discover {service} endpoint after starting service: {error}")
-            }),
-        )
+        localhost_url(self.published_port(service))
     }
 }
 
@@ -177,10 +205,10 @@ async fn bring_up_orbis_nodes(
     count: usize,
     production_node_build: bool,
     unsafe_testing_runtime_enabled: bool,
-) -> Vec<NativeOrbisNode> {
+) -> (Vec<NativeOrbisNode>, Vec<(String, String)>) {
     // All three orbis nodes point at the same validator for chain RPC — this
-    // mirrors `NativeWorkflow::start_with_network`'s existing convention
-    // (`cluster.node(0).rpc_url()`), just via its Compose service name
+    // matches the Trust gateway startup (`cluster.node(0).rpc_url()`),
+    // just via its Compose service name
     // instead of a host-published port, since this URL is dialed *inside*
     // the orbis-node containers.
     let endpoint = format!(
@@ -190,7 +218,18 @@ async fn bring_up_orbis_nodes(
     );
 
     let services: Vec<&str> = (0..count).map(orbis_service).collect();
-    let reuse_prebuilt = std::env::var_os("ORBIS_NATIVE_IMAGE").is_some();
+    let normal_image = std::env::var_os("ORBIS_NATIVE_IMAGE");
+    let diagnostic_image = std::env::var_os("ORBIS_NATIVE_DIAGNOSTIC_IMAGE");
+    let reuse_prebuilt = if unsafe_testing_runtime_enabled {
+        assert!(
+            diagnostic_image.is_some() || normal_image.is_none(),
+            "ORBIS_NATIVE_DIAGNOSTIC_IMAGE is required for a diagnostic scenario when \
+             ORBIS_NATIVE_IMAGE selects a prebuilt production image"
+        );
+        diagnostic_image.is_some()
+    } else {
+        normal_image.is_some()
+    };
     let mut node_env = vec![
         (
             "ORBIS_BUILD_INTEGRATION_TEST".to_string(),
@@ -202,12 +241,47 @@ async fn bring_up_orbis_nodes(
         ),
     ];
     if unsafe_testing_runtime_enabled {
-        if let Some(image) = std::env::var_os("ORBIS_NATIVE_DIAGNOSTIC_IMAGE") {
+        if let Some(image) = diagnostic_image {
             node_env.push((
                 "ORBIS_NATIVE_IMAGE".to_string(),
                 image.to_string_lossy().into_owned(),
             ));
         }
+    }
+
+    // Materialize all bind mounts before the first Compose invocation and
+    // retain their interpolation variables. They are part of the project's
+    // effective configuration, not one-shot inputs to `compose up`.
+    for index in 0..count {
+        let dir = fixtures.join(format!("node-{index}"));
+        fs::create_dir_all(&dir).expect("create native orbis node fixture dir");
+        fs::write(dir.join("password"), "native-dkg-test").expect("write node password fixture");
+        fs::write(
+            dir.join("services.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "authz": {
+                    "endpoint": endpoint,
+                    "deployment_root": cluster.deployment_root_hex(),
+                    "consensus_key": cluster.consensus_key_hex(),
+                },
+                "bulletin": {
+                    "endpoint": endpoint,
+                    "deployment_id": cluster.deployment(),
+                    "deployment_root": cluster.deployment_root_hex(),
+                    "consensus_key": cluster.consensus_key_hex(),
+                },
+            }))
+            .unwrap(),
+        )
+        .expect("write node services.json fixture");
+        node_env.push((
+            format!("ORBIS_NATIVE_NODE{}_USER", index + 1),
+            crate::bind_mount_user(&dir).expect("node fixture owner"),
+        ));
+        node_env.push((
+            format!("ORBIS_NATIVE_NODE{}_DIR", index + 1),
+            dir.display().to_string(),
+        ));
     }
 
     // Same race as the validator build (see `native_network.rs`): every
@@ -249,38 +323,6 @@ async fn bring_up_orbis_nodes(
     }
     command.args(&services);
 
-    for (index, _) in services.iter().enumerate() {
-        let dir = fixtures.join(format!("node-{index}"));
-        fs::create_dir_all(&dir).expect("create native orbis node fixture dir");
-        fs::write(dir.join("password"), "native-dkg-test").expect("write node password fixture");
-        fs::write(
-            dir.join("services.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "authz": {
-                    "endpoint": endpoint,
-                    "deployment_root": cluster.deployment_root_hex(),
-                    "consensus_key": cluster.consensus_key_hex(),
-                },
-                "bulletin": {
-                    "endpoint": endpoint,
-                    "deployment_id": cluster.deployment(),
-                    "deployment_root": cluster.deployment_root_hex(),
-                    "consensus_key": cluster.consensus_key_hex(),
-                },
-            }))
-            .unwrap(),
-        )
-        .expect("write node services.json fixture");
-        command.env(
-            format!("ORBIS_NATIVE_NODE{}_USER", index + 1),
-            crate::bind_mount_user(&dir).expect("node fixture owner"),
-        );
-        command.env(
-            format!("ORBIS_NATIVE_NODE{}_DIR", index + 1),
-            dir.display().to_string(),
-        );
-    }
-
     let status = command
         .status()
         .expect("Failed to start native orbis containers");
@@ -290,14 +332,17 @@ async fn bring_up_orbis_nodes(
         panic!("docker compose up failed for native orbis nodes");
     }
 
+    let mut full_compose_env = cluster.compose_env().to_vec();
+    full_compose_env.extend(node_env.iter().cloned());
     let nodes: Vec<NativeOrbisNode> = services
         .iter()
         .map(|service| {
-            let port = published_port(
+            let port = published_port_with_env(
                 cluster.compose_file(),
                 cluster.project_name(),
                 service,
                 ORBIS_GRPC_PORT,
+                &full_compose_env,
             )
             .unwrap_or_else(|error| {
                 report_compose_failure(cluster.compose_file(), cluster.project_name());
@@ -311,7 +356,7 @@ async fn bring_up_orbis_nodes(
         .collect();
 
     wait_for_grpc_ready(cluster, &nodes).await;
-    nodes
+    (nodes, node_env)
 }
 
 /// Poll every node's gRPC port until reachable, matching

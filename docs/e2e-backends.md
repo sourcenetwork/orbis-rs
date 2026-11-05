@@ -17,32 +17,27 @@ flowchart LR
     Authz --> Node
 ```
 
-The existing `test_cli_calls_dkg_for_pet_ring` and native PET scenarios call the
-same `pet_dkg_contract::verify` through test-only backend adapters. It requires
-both finalized keys to be distinct, valid and nonidentity, and binds each exposed
-local polynomial's constant term to its finalized key. Adapters retain their
-own certified readback and local-state waits. Existing DKG starts, authorization,
-PRE checks and timeout values remain unchanged.
+The DKG, PRE, signing, refresh, reshare, PET and reporting scenarios are declared
+once and run through the compile-time-selected `TestEnvironment`. Backend
+adapters retain their own certified reads, state materialization and lifecycle
+operations, but scenario assertions never select a chain or call a chain-specific
+client.
 
 `test-support` owns Docker orchestration. `NativeTestNetwork` starts four Vera
 validators; the node test fixture adds three normal Orbis containers using
 `ContainerNode`. Each container preserves its private store for restart checks.
 No test-only runtime is added to the production binary.
 
-To run the native PET scenario, set `ORBIS_NATIVE_IMAGE` and
-`ORBIS_NATIVE_VERA_IMAGE` to matching normal images from one published Orbis
-revision, then pull them before running:
+Run the shared E2E suite through the backend selector:
 
 ```sh
-docker pull "$ORBIS_NATIVE_IMAGE"
-docker pull "$ORBIS_NATIVE_VERA_IMAGE"
-cargo +1.99.1 test --release --locked -j2 -p orbis-node \
-  --no-default-features --features native,redb,iroh,bls12-381 \
-  --test native_startup native_pet_threshold_workflows \
-  -- --exact --ignored --nocapture
+scripts/test-e2e.sh --backend native --crypto bls12-381
+scripts/test-e2e.sh --backend cosmos --crypto bls12-381
+# Or qualify both adapters sequentially:
+scripts/test-e2e.sh --backend all --crypto bls12-381
 ```
 
-For Jubjub, change the feature and Orbis image together. Use normal images,
+For Jubjub, change `--crypto` and the Orbis image together. Use normal images,
 without storage KDF or deadline overrides. The native fixture provisions valid
 policy and ring state through Vera and keeps the normal PSS interval of 86400.
 The older five-second genesis fixture belongs to its existing backend adapter.

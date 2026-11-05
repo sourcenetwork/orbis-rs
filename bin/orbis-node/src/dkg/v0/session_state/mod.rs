@@ -400,19 +400,19 @@ impl<ShareValue: Zeroize> Default for PendingDeliveryState<ShareValue> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PendingDkgCommitment {
+pub struct PendingDkgCommitment {
     pub commitment: Vec<u8>,
     pub report_evidence: Option<SignedDkgCommitment>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PendingDkgShare<ShareValue: Zeroize> {
+pub struct PendingDkgShare<ShareValue: Zeroize> {
     pub share: DistributedShare<ShareValue>,
     pub report_evidence: Option<SignedDkgShare>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CommitmentHashRecordOutcome {
+pub enum CommitmentHashRecordOutcome {
     Recorded,
     DuplicateSame,
     Mismatch { existing: [u8; 32] },

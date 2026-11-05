@@ -18,13 +18,7 @@ crypto = { path = "../../crates/crypto", default-features = false }
 futures = { workspace = true }
 hex = { workspace = true }
 network = { path = "../../crates/network", features = ["shaping"] }
-orbis-node = { path = "../orbis-node", default-features = false, features = [
-    "redb",
-    "authz-vera",
-    "bulletin-vera",
-    "iroh",
-    "harness",
-] }
+orbis-node = { path = "../orbis-node", default-features = false, optional = true }
 prost = { workspace = true }
 proto = { path = "../../crates/proto" }
 rand = { workspace = true }
@@ -41,19 +35,49 @@ tracing-subscriber = { version = "0.3", features = ["tracing-log", "fmt", "env-f
 uuid = { version = "1", features = ["v4"] }
 
 [features]
-default = ["bls12-381"]
+default = ["bls12-381", "orbis-node"]
+# Vera-backed benchmark node. Each crypto feature enables it, so the default
+# build, `--no-default-features --features bls12-381`, and
+# `--no-default-features --features jubjub` all still build the full benchmark.
+# An unscoped workspace test that also passes `bls12-381` activates this
+# package's feature of the same name; native integration tests stay on
+# `-p orbis-node` so this Vera selection is not unified into that resolve.
+orbis-node = [
+    "dep:orbis-node",
+    "orbis-node/redb",
+    "orbis-node/authz-vera",
+    "orbis-node/bulletin-vera",
+    "orbis-node/iroh",
+    "orbis-node/harness",
+]
 bls12-381 = [
     "bulletin/bls12-381",
     "cli-tool/bls12-381",
     "common/bls12-381",
     "crypto/bls12-381",
+    "orbis-node",
 ]
 jubjub = [
     "bulletin/jubjub",
     "cli-tool/jubjub",
     "common/jubjub",
     "crypto/jubjub",
+    "orbis-node",
 ]
+
+[[bin]]
+name = "orbis-bench"
+path = "src/main.rs"
+required-features = ["orbis-node"]
+
+[[bin]]
+name = "orbis-upgrade-driver"
+path = "src/bin/orbis-upgrade-driver.rs"
+required-features = ["orbis-node"]
+
+[[test]]
+name = "docker_smoke"
+required-features = ["orbis-node"]
 
 [lints]
 workspace = true

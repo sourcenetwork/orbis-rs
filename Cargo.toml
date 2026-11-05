@@ -68,7 +68,7 @@ tendermint = "0.40"
 tendermint-rpc = { version = "0.40" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 bip32 = { version = "0.5", features = ["mnemonic", "bip39"] }
-k256 = { version = "0.13", features = ["ecdsa"] }
+k256 = { version = "0.14", features = ["ecdsa"] }
 prost = "0.14.1"
 tonic = "0.14.2"
 tonic-prost = "0.14"

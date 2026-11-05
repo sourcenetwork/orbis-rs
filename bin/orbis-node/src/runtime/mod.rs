@@ -37,31 +37,32 @@ use proto::v0::pre::pre_service_server::PreServiceServer;
 use proto::v0::sign::sign_service_server::SignServiceServer;
 use proto::v0::store_secret::store_secret_service_server::StoreSecretServiceServer;
 
-/// Configuration for running the node, allowing dependency injection for testing
+/// Configuration for running the node, allowing dependency injection for
+/// testing.
 pub(crate) struct NodeConfig {
-    pub(crate) args: Args,
-    pub(crate) cors_policy: CorsPolicy,
-    pub(crate) identity: NodeIdentity,
-    pub(crate) backend_names: (String, String),
-    pub(crate) network: Arc<dyn Network>,
-    pub(crate) local_storage: LocalStorageImpl,
-    pub(crate) authz: Arc<dyn Authz>,
-    pub(crate) bulletin: Arc<dyn Bulletin + Send + Sync>,
+    pub args: Args,
+    pub cors_policy: CorsPolicy,
+    pub identity: NodeIdentity,
+    pub backend_names: (String, String),
+    pub network: Arc<dyn Network>,
+    pub local_storage: LocalStorageImpl,
+    pub authz: Arc<dyn Authz>,
+    pub bulletin: Arc<dyn Bulletin + Send + Sync>,
     /// Oracle backing the network layer's reserved inbound-connection capacity.
     /// `None` in test harnesses that build the network without a reservation.
-    pub(crate) authorized_peers: Option<Arc<RingAuthorizedPeers>>,
+    pub authorized_peers: Option<Arc<RingAuthorizedPeers>>,
 }
 
-/// Result of initializing the node (before starting the server)
+/// Result of initializing the node (before starting the server).
 pub(crate) struct InitializedNode {
     #[cfg(feature = "unsafe-testing")]
     pet_fault: Option<Arc<crate::unsafe_testing::pet_fault::PetFaultControl>>,
-    pub(crate) identity: NodeIdentity,
+    pub identity: NodeIdentity,
     backend_names: (String, String),
-    pub(crate) app_state: Arc<AppState<DkgImpl>>,
-    pub(crate) router: Box<dyn Router>,
-    pub(crate) grpc_addr: SocketAddr,
-    pub(crate) local_address: String,
+    pub app_state: Arc<AppState<DkgImpl>>,
+    pub router: Box<dyn Router>,
+    pub grpc_addr: SocketAddr,
+    pub local_address: String,
     pub(crate) metrics_addr: Option<SocketAddr>,
     /// Interval between PSS reshare ceremonies. Zero means disabled.
     pub(crate) reshare_interval: std::time::Duration,
@@ -260,9 +261,7 @@ pub(super) async fn wait_for_shutdown(mut shutdown_rx: watch::Receiver<bool>) {
 
 /// Initialize the node without starting the gRPC server
 /// This is useful for testing the initialization logic
-pub(crate) async fn init_node(
-    config: NodeConfig,
-) -> Result<InitializedNode, Box<dyn std::error::Error>> {
+pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn std::error::Error>> {
     let grpc_addr: SocketAddr = config.args.addr.parse()?;
     let metrics_addr: Option<SocketAddr> = config
         .args

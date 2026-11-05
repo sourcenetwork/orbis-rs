@@ -37,7 +37,7 @@ pub struct AttemptId(pub [u8; 32]);
 /// state. This type is not serialized on the wire; messages continue to encode
 /// the two existing fields independently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct AttemptKey {
+pub struct AttemptKey {
     pub ceremony_id: CeremonyId,
     pub attempt_id: AttemptId,
 }

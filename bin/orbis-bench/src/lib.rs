@@ -1,3 +1,5 @@
+#![cfg(feature = "orbis-node")]
+
 pub mod compose;
 pub mod config;
 pub mod docker;

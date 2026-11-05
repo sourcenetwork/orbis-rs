@@ -29,8 +29,8 @@ curve job verifies transferred hashes, resolves normal Vera/Orbis image IDs and
 labels, and hashes the actual runtime binaries. It checks that both packaging
 modes use the identical gateway and verifier bytes.
 
-Each curve compiles only the `native_startup` target once and directly runs
-`native_trust_gateway_ring_dkg` twice: the normal executable, then the normal
+Each curve compiles the `orbis-node` library tests once and directly runs
+`tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg` twice: the normal executable, then the normal
 container. Both use UID/GID 65532 and the same staged artifacts. Every run must
 execute exactly one Rust test and one inner Go test, produce the exact paired-ring
 success marker, and assert persisted production KDF headers in all three stopped
@@ -62,10 +62,10 @@ from the unchanged normal runtime. Source review or a passing older fixture does
 not qualify changed pins, cold-cache builds or deployment resource limits.
 
 The reuse is the existing native fixture setup and Docker lifecycle, not a port
-of the older Cosmos `bin/orbis-node/src/tests/integration.rs` bodies. No production
+of the older Cosmos `bin/orbis-node/src/tests/e2e/integration.rs` bodies. No production
 runtime or backend trait implementation is added. The exact ignored selector
 spins up four normal native Vera containers and three normal Orbis containers
-through `NativeWorkflow`, `NativeTestNetwork` and `ContainerNode`.
+through `NativeTestNetwork` and the gateway fixture's own Orbis node startup.
 
 After review and publication, the existing Rust workflow's manual dispatch uses
 `scope=gateway` and the immutable Trust revision above. For an already staged

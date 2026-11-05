@@ -20,42 +20,25 @@ spec.loader.exec_module(driver)
 
 
 class Qualification(unittest.TestCase):
-    def test_fixture_compilation_enables_target_required_features(self):
+    def test_fixture_compilation_uses_the_library_test_tree(self):
         manifest = (Path(__file__).resolve().parents[1] / 'bin/orbis-node/Cargo.toml').read_text()
-        blocks = re.findall(r'(?ms)^\[\[test\]\]\s*(.*?)(?=^\[|\Z)', manifest)
-        target = next(block for block in blocks if re.search(r'^name\s*=\s*"native_startup"', block, re.M))
-        required = re.search(r'required-features\s*=\s*\[([^]]+)\]', target)
-        self.assertIsNotNone(required)
-        features = set(re.findall(r'"([^"]+)"', required.group(1)))
-        self.assertEqual(features, {'native-test-fixture'})
-        fixture_feature = re.search(r'^native-test-fixture\s*=\s*\[([^]]+)\]', manifest, re.M)
-        self.assertIsNotNone(fixture_feature)
-        self.assertEqual(set(re.findall(r'"([^"]+)"', fixture_feature.group(1))),
-                         {'native', 'test-support/native'})
+        self.assertNotIn('name = "native_startup"', manifest)
+        self.assertNotIn('native-test-fixture', manifest)
         for curve in ('bls12-381', 'jubjub'):
             command = driver.fixture_compile_command(curve)
             enabled = set(command[command.index('--features') + 1].split(','))
-            self.assertTrue(features <= enabled)
+            self.assertTrue({'integration-test', 'native'} <= enabled)
+            self.assertNotIn('test-support/native', enabled)
             self.assertIn(curve, enabled)
+            self.assertIn('--lib', command)
+            self.assertNotIn('--test', command)
 
-    def test_runtime_manifest_exception_only_accepts_the_fixture_feature_split(self):
-        before = ('required-features = ["integration-test-native"]\n'
-                  'integration-test-native = ["integration-test", "native", "test-support/native"]\n')
-        after = ('required-features = ["native-test-fixture"]\n'
-                 'integration-test-native = ["integration-test", "native-test-fixture"]\n'
-                 'native-test-fixture = ["native", "test-support/native"]\n')
-        guard = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
-        safe = guard['safe_fixture_manifest_change']
-        self.assertTrue(safe(before, after))
-        self.assertFalse(safe(before, after + 'default = ["unsafe-testing"]\n'))
-        self.assertFalse(safe(before, after.replace('"native", "test-support/native"]',
-                                                   '"native", "unsafe-testing"]')))
-        self.assertFalse(safe(before + before, after))
+    def test_runtime_manifest_changes_are_not_fixture_only(self):
         root = Path(__file__).resolve().parents[1]
         manifest = 'bin/orbis-node/Cargo.toml'
+        before = '[features]\ndefault = []\nintegration-test-native = []\n'
+        after = '[features]\ndefault = ["unsafe-testing"]\nintegration-test = []\n'
         with patch.object(driver, 'capture', side_effect=[manifest, before, after]):
-            self.assertEqual(driver.runtime_revision(root, 'a' * 40, 'b' * 40), 'b' * 40)
-        with patch.object(driver, 'capture', side_effect=[manifest, before, after + 'default = ["unsafe-testing"]\n']):
             with self.assertRaises(ValueError):
                 driver.runtime_revision(root, 'a' * 40, 'b' * 40)
 
@@ -120,30 +103,29 @@ class Qualification(unittest.TestCase):
             capture.assert_not_called()
 
     def test_ci_build_revision_requires_the_pinned_runtime_and_image_identity(self):
-        qualified = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
         for curve in ('bls12-381', 'jubjub'):
             labels = {
-                'org.opencontainers.image.revision': qualified['IMAGE_REVISION'],
+                'org.opencontainers.image.revision': driver.IMAGE_REVISION,
                 'io.sourcenetwork.orbis.backend': 'native',
                 'io.sourcenetwork.orbis.curve': curve,
                 'io.sourcenetwork.orbis.integration-features': 'false',
             }
-            image = qualified['RUNTIME_IMAGE_IDS'][curve]
-            driver.verify_runtime_labels(labels, qualified['RUNTIME'], curve, image)
-            for runtime, identity in [(qualified['RUNTIME'], None),
-                                      (qualified['RUNTIME'], 'sha256:' + 'a' * 64),
+            image = driver.RUNTIME_IMAGE_IDS[curve]
+            driver.verify_runtime_labels(labels, driver.RUNTIME, curve, image)
+            for runtime, identity in [(driver.RUNTIME, None),
+                                      (driver.RUNTIME, 'sha256:' + 'a' * 64),
                                       ('a' * 40, image)]:
                 with self.subTest(curve=curve, runtime=runtime, identity=identity), \
                         self.assertRaises(driver.Failure):
                     driver.verify_runtime_labels(labels, runtime, curve, identity)
             with self.assertRaises(driver.Failure):
                 driver.verify_runtime_labels(dict(labels, **{
-                    'org.opencontainers.image.revision': qualified['RUNTIME']}),
-                    qualified['RUNTIME'], curve, image)
+                    'org.opencontainers.image.revision': driver.RUNTIME}),
+                    driver.RUNTIME, curve, image)
 
     def test_runtime_reuse_allows_only_exact_fixture_changes(self):
         root = Path(__file__).resolve().parents[1]
-        fixture = 'bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs'
+        fixture = 'bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/go_diagnostics.rs'
         with patch.object(driver, 'capture', return_value=fixture + '\n') as capture:
             self.assertEqual(driver.runtime_revision(root, 'a' * 40, 'b' * 40), 'b' * 40)
             self.assertEqual(capture.call_args.args[0], [
@@ -275,7 +257,7 @@ class Qualification(unittest.TestCase):
                      'code': {'code': 'E0308'}, 'rendered': '\x1b[31msecret /private/key'}}
             invalid = {'reason': 'compiler-message', 'message': {'level': 'error', 'code': {'code': '/private/secret'}}}
             (root / 'compile.jsonl').write_text(json.dumps(event) + '\nmalformed\n' + json.dumps(invalid) + '\n[]\n')
-            (root / 'executable.log').write_text("thread panicked at tests/support/native_trust_gateway.rs:123:4:\nsecret /private/key Elapsed\nthread panicked at /secret/file.rs:8:2:\n")
+            (root / 'executable.log').write_text("thread panicked at tests/e2e/native_trust_gateway/mod.rs:123:4:\nsecret /private/key Elapsed\nthread panicked at /secret/file.rs:8:2:\n")
             result = driver.safe_diagnostics(root)
             self.assertEqual(result, {'compiler_errors': 2, 'compiler_codes': ['E0308'],
                                      'panics': 2, 'elapsed': 1, 'locations': [[1, 123]],
@@ -287,6 +269,17 @@ class Qualification(unittest.TestCase):
             encoded = json.dumps(result)
             for forbidden in ('secret', '/private', '/secret', '\x1b', 'rendered'):
                 self.assertNotIn(forbidden, encoded)
+
+    def test_runner_panic_uses_location_two(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'executable.log').write_text(
+                "thread panicked at bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/mod.rs:40:2:\n"
+                "thread panicked at /secret/file.rs:8:2:\n")
+            result = driver.safe_diagnostics(root)
+            self.assertEqual(result['panics'], 2)
+            self.assertEqual(result['locations'], [[2, 40]])
+            self.assertNotIn('/secret', json.dumps(result))
 
     def test_requires_immutable_input(self):
         for value in ('main', 'a' * 39, 'A' * 40, 'a' * 40 + '\n', 'secret;$(command)'):
@@ -384,17 +377,16 @@ class Qualification(unittest.TestCase):
         self.assertEqual(runtime['args']['VERA_REVISION'], driver.VERA)
         self.assertEqual(runtime['cache-to'], ['type=registry,ref=ghcr.io/source/test:buildcache,mode=max'])
 
-    def test_artifact_selection_rejects_wrong_curve_unsafe_outside_and_duplicates(self):
+    def test_artifact_selection_rejects_wrong_curve_missing_base_outside_and_duplicates(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            event = {'reason': 'compiler-artifact', 'target': {'name': 'native_startup'},
-                     'features': ['native-test-fixture', 'native', 'redb', 'iroh', 'bls12-381'], 'executable': str(root.resolve() / 'release/test')}
+            event = {'reason': 'compiler-artifact', 'target': {'name': 'orbis_node'},
+                     'features': ['integration-test', 'unsafe-testing', 'native', 'redb', 'iroh', 'bls12-381'], 'executable': str(root.resolve() / 'release/test')}
             path = root / 'build.jsonl'
             path.write_text(json.dumps(event) + '\n')
             self.assertEqual(driver.test_binary(path, root, 'bls12-381'), root.resolve() / 'release/test')
-            for change in ({'features': ['native', 'redb', 'iroh', 'jubjub']},
-                           {'features': event['features'] + ['unsafe-testing']},
-                           {'features': event['features'] + ['integration-test']},
+            for change in ({'features': ['integration-test', 'native', 'redb', 'iroh', 'jubjub']},
+                           {'features': ['native', 'redb', 'iroh', 'bls12-381']},
                            {'executable': '/outside/secret'}):
                 path.write_text(json.dumps({**event, **change}) + '\n')
                 with self.assertRaises(driver.Failure):

@@ -901,7 +901,7 @@ where
 /// (Report envelope timing derives from the evidence's own `signed_at`, so no
 /// timestamp is captured here.)
 #[derive(Clone)]
-pub(crate) struct PreReportBinding {
+pub struct PreReportBinding {
     chain_id: String,
     ring_id: String,
     ring_pk: String,

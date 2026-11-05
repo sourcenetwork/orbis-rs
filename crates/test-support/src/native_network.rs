@@ -67,7 +67,7 @@ impl NativeTestNode {
 /// A running 4-validator native Vera devnet, brought up via Docker Compose.
 ///
 /// Scoped to the validator cluster only (matching this type's established
-/// meaning throughout `bin/orbis-node/tests/support/*`) — Orbis node
+/// meaning throughout `bin/orbis-node/src/tests/e2e/*`) — Orbis node
 /// bring-up on top of the same Compose project lives in
 /// `crate::network::native::NativeNetworkAdapter`, which extends this same
 /// Compose project (and joins this same Docker network) rather than
@@ -387,7 +387,7 @@ impl NativeTestNetwork {
     /// project, even one scoped to different services. See this struct's
     /// `env_vars` field doc comment for why. `pub` (not `pub(crate)`): callers
     /// outside this crate driving their own Orbis-node bring-up against this
-    /// same Compose project (e.g. `bin/orbis-node/tests/support/native_workflow.rs`)
+    /// same Compose project (e.g. `bin/orbis-node/src/tests/e2e/native_lifecycle.rs`)
     /// need this too — see `build_service`/`bring_up_services` below.
     pub fn compose_env(&self) -> &[(String, String)] {
         &self.env_vars
@@ -501,7 +501,7 @@ impl NativeTestNetwork {
 /// Free-function counterparts of [`NativeTestNetwork`]'s Compose-driving
 /// methods, taking `compose_file`/`project_name` explicitly — for callers
 /// outside this crate that hold a long-lived handle to one named service
-/// (e.g. `bin/orbis-node/tests/native_startup.rs`'s `Node`) without wanting to
+/// (e.g. `bin/orbis-node/src/tests/e2e/native_lifecycle.rs`'s `Node`) without wanting to
 /// borrow or clone the whole [`NativeTestNetwork`]. The methods above are
 /// thin wrappers over these.
 ///

@@ -43,7 +43,19 @@ exceptions = [
 unmaintained = "none"
 yanked = "allow"
 ignore = [
-
+    # Timing side-channel in crypto-bigint's constant-time arithmetic
+    # (subtraction, Montgomery multiplication, etc). Reached via cosmrs
+    # 0.22.0 (the latest published version — confirmed no 0.23+ exists) ->
+    # ecdsa 0.16.9 -> elliptic-curve 0.13.8 -> crypto-bigint 0.5.5, on the
+    # real Cosmos tx-signing path, not just test code. No fix is possible
+    # without cosmrs/cosmos-rust itself bumping its elliptic-curve
+    # dependency (`cargo update -p crypto-bigint` refuses: nothing in our
+    # own dependency graph allows crossing the 0.5->0.7 major bump).
+    # Exploitability requires an attacker able to observe timing/
+    # microarchitectural side channels on the signing operation itself —
+    # narrow, but not nothing. Revisit when cosmrs publishes a version
+    # pulling crypto-bigint >=0.7.6.
+    "RUSTSEC-2026-0387",
 ]
 
 # ---------------------------------------------------------------------------
@@ -68,6 +80,10 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 allow-git = [
+    # Root Cargo.toml's `[patch.crates-io]` section pins all `commonware-*`
+    # crates straight to upstream at a specific rev (not a fork) — this
+    # entry replaces a stale `iverc/commonware-upstream` fork URL that no
+    # longer matches what's actually patched.
     "https://github.com/commonwarexyz/monorepo",
     "https://github.com/sourcenetwork/backbone.git",
     "https://github.com/sourcenetwork/defradb.rs",
