@@ -60,6 +60,8 @@ mod reshare_scenario;
 mod restart_scenario;
 mod scheduled_refresh;
 mod sign_scenario;
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+mod defra_documents;
 mod standard_dkg_pre;
 mod upgrade;
 

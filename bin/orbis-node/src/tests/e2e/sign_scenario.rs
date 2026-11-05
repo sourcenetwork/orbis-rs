@@ -82,8 +82,21 @@ pub(super) async fn run(
                 .contains(&tonic::Code::Unauthenticated.to_string()),
             "{error:?}"
         );
-        client
+        Arc::new(client)
     };
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    let defra_directory = tempfile::tempdir().expect("create Defra test directory");
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    let documents = super::defra_documents::Documents::new(
+        &defra_directory.path().join("source"),
+        defra.clone(),
+    )
+    .await;
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    {
+        assert!(documents.create("denied").await.is_err());
+        assert_eq!(documents.count().await, 0);
+    }
     environment
         .grant(
             policy,
@@ -96,10 +109,26 @@ pub(super) async fn run(
 
     verify_signature(&endpoint, keys, &derivation_id, &derived_pk).await;
     #[cfg(all(feature = "native", feature = "bls12-381"))]
-    assert!(
-        defra_sign(&defra).await.is_ok(),
-        "Defra signing should succeed after grant"
-    );
+    defra_sign(&defra)
+        .await
+        .expect("Defra signing should succeed after grant");
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    let documents = {
+        let created = documents.create("signed").await.expect("signed document");
+        documents.verify(&created, defra.signer_did()).await;
+        let replica = super::defra_documents::Documents::new(
+            &defra_directory.path().join("replica"),
+            defra.clone(),
+        )
+        .await;
+        documents.replicate_to(&replica, &created).await;
+        let replica = replica.reopen().await;
+        replica.verify_contents().await;
+        replica.verify(&created, defra.signer_did()).await;
+        let reopened = documents.reopen().await;
+        reopened.verify(&created, defra.signer_did()).await;
+        reopened
+    };
 
     environment
         .revoke(
@@ -132,6 +161,11 @@ pub(super) async fn run(
             .contains(&tonic::Code::Unauthenticated.to_string()),
         "{error:?}"
     );
+    #[cfg(all(feature = "native", feature = "bls12-381"))]
+    {
+        assert!(documents.create("revoked").await.is_err());
+        assert_eq!(documents.count().await, 1);
+    }
     environment
         .grant(
             policy,
@@ -143,10 +177,9 @@ pub(super) async fn run(
         .await;
     verify_signature(&endpoint, keys, &derivation_id, &derived_pk).await;
     #[cfg(all(feature = "native", feature = "bls12-381"))]
-    assert!(
-        defra_sign(&defra).await.is_ok(),
-        "Defra signing should recover after regrant"
-    );
+    defra_sign(&defra)
+        .await
+        .expect("Defra signing should recover after regrant");
 
     Outcome {
         derivation_id,
@@ -219,10 +252,9 @@ pub(super) async fn verify_existing_at(
     #[cfg(all(feature = "native", feature = "bls12-381"))]
     {
         let client = defra_client(endpoint, &outcome.derivation_id, &outcome.derived_pk).await;
-        assert!(
-            defra_sign(&client).await.is_ok(),
-            "Defra signing must survive the transition"
-        );
+        defra_sign(&client)
+            .await
+            .expect("Defra signing must survive the transition");
     }
 }
 
