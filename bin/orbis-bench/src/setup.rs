@@ -232,6 +232,7 @@ pub async fn create_rings_on_chain<'a>(
                 Some(reporting),
                 None,
                 false,
+                vec![],
             )
             .await
             .with_context(|| {

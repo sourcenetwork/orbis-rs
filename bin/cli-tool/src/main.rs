@@ -151,6 +151,11 @@ pub enum SubCommands {
         /// Opt this ring into requiring a PET check before PRE release
         #[clap(long)]
         requires_pet: bool,
+        /// DefraDB HTTP base URLs. When set, PRE responders store their
+        /// signed reencryption share in Defra instead of returning it
+        /// directly to the relayer (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        pre_share_endpoints: Vec<String>,
     },
     /// Start a Distributed Key Generation session
     Dkg {
@@ -605,6 +610,7 @@ async fn main() -> Result<()> {
             current_version,
             trusted_auth_relay_dids,
             requires_pet,
+            pre_share_endpoints,
         } => {
             let signing_key = network.require_signing_key()?;
             let ring_id = create_ring(
@@ -616,6 +622,7 @@ async fn main() -> Result<()> {
                 current_version,
                 trusted_auth_relay_dids,
                 requires_pet,
+                pre_share_endpoints,
                 network.chain_config(),
                 &signing_key,
             )

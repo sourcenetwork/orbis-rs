@@ -496,8 +496,23 @@ pub struct PreFixture {
     pub audit_target_object_id: Option<String>,
 }
 
+/// Mirrors `orbis_node`'s `coordinator::PreReencryptResponse` wire shape — kept as an
+/// independent local shadow type (`orbis-bench` doesn't depend on `orbis-node`).
 #[derive(Deserialize)]
-struct PreResponse {
+enum PreResponse {
+    // Boxed (as a newtype variant, which serializes identically to the equivalent struct
+    // variant) since `Direct`'s fields are much larger than `Stored`'s, which clippy's
+    // `large_enum_variant` flags otherwise.
+    Direct(Box<DirectPreResponse>),
+    /// The ring's `pre_share_endpoints` delivery mode — not exercised by this benchmark yet.
+    #[allow(dead_code)]
+    Stored {
+        manifest: serde_json::Value,
+    },
+}
+
+#[derive(Deserialize)]
+struct DirectPreResponse {
     xnc_cmt: String,
     secret: Secret,
     context: crypto::context::CiphertextContext,
@@ -572,7 +587,13 @@ pub async fn pre_call(
     }
     let decrypt_started = Instant::now();
     let response: PreResponse = serde_json::from_slice(&response.encrypted_secret)?;
-    let xnc_cmt = GroupAffine::from_bytes(&hex::decode(response.xnc_cmt)?)?;
+    let (xnc_cmt, secret, context) = match response {
+        PreResponse::Direct(direct) => (direct.xnc_cmt, direct.secret, direct.context),
+        PreResponse::Stored { .. } => {
+            bail!("PRE response used pre_share_endpoints delivery, which this benchmark does not support")
+        }
+    };
+    let xnc_cmt = GroupAffine::from_bytes(&hex::decode(xnc_cmt)?)?;
     let ring_pk = GroupAffine::from_bytes(&hex::decode(&fixture.ring_pk)?)?;
     let effective_pk = match &fixture.derivation {
         Some(derivation) => PreImpl::derive_public_key(&ring_pk, derivation)?,
@@ -582,8 +603,8 @@ pub async fn pre_call(
         &effective_pk,
         &xnc_cmt,
         &fixture.reader_sk,
-        &response.secret,
-        &response.context,
+        &secret,
+        &context,
     )?;
     let decrypt_ms = decrypt_started.elapsed().as_secs_f64() * 1000.0;
     if plaintext != fixture.expected_plaintext {

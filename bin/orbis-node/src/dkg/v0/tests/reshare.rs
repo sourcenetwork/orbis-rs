@@ -196,6 +196,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     let post_id = "test-mismatched-ring-pk".to_string();
     dummy_bulletin
@@ -314,6 +315,7 @@ async fn test_reshare_session_init_rejects_noncanonical_next_leader() {
                 reporting: Default::default(),
                 requires_pet: false,
                 pet_pk: None,
+                pre_share_endpoints: vec![],
             },
         )
         .expect("seed reshare announcement");
@@ -431,6 +433,7 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
                 reporting: Default::default(),
                 requires_pet: false,
                 pet_pk: None,
+                pre_share_endpoints: vec![],
             },
         )
         .expect("seed reshare announcement");
@@ -581,6 +584,7 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     dummy_bulletin
         .set_ring(bulletin_post_id.clone(), pending_payload.clone())
@@ -717,6 +721,7 @@ async fn test_dealer_phase4_holds_pss_until_finalized_exclusion() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     dummy_bulletin
         .set_ring(bulletin_post_id.clone(), pending_payload.clone())
@@ -835,6 +840,7 @@ async fn write_ring_with_announced_reshare(
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     let post_id = format!("test-reshare-{ring_pk}");
     bulletin
@@ -1155,6 +1161,7 @@ async fn post_ring_for_validation(
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     let post_id = format!("test-validation-{ring_pk}");
     bulletin
@@ -1490,6 +1497,7 @@ async fn post_reshare_announcement(
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     bulletin
         .set_ring(format!("test-reshare-announcement-{key_string}"), payload)
@@ -2480,6 +2488,7 @@ fn require_pet_on_fresh_dkg_ring(bulletin: &DummyBulletin, peer_node_keys: Vec<S
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     bulletin
         .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
@@ -2578,6 +2587,7 @@ fn post_reshare_pet_announcement(
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: Some(pet_pk_hex.to_string()),
+        pre_share_endpoints: vec![],
     };
     bulletin
         .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
@@ -2987,6 +2997,7 @@ async fn test_reshare_pet_session_init_rejects_ring_not_pet_enabled() {
         reporting: Default::default(),
         requires_pet: false, // not PET-enabled
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     dummy_bulletin
         .set_ring(ring_id.to_string(), payload)
@@ -3062,6 +3073,7 @@ async fn test_reshare_pet_session_init_rejects_mismatched_new_committee() {
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: Some("aa".repeat(32)),
+        pre_share_endpoints: vec![],
     };
     dummy_bulletin
         .set_ring(ring_id.to_string(), payload)
@@ -3135,6 +3147,7 @@ async fn test_reshare_pet_session_init_rejects_no_bulletin_announcement() {
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: Some("aa".repeat(32)),
+        pre_share_endpoints: vec![],
     };
     dummy_bulletin
         .set_ring(ring_id.to_string(), payload)

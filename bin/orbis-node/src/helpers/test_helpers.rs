@@ -329,6 +329,7 @@ fn seed_three_node_dummy_bulletin(
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     dummy_bulletin
         .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
@@ -684,6 +685,7 @@ pub async fn write_ring_to_bulletin(
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     let post_id = format!("test-ring-{ring_pk}");
     bulletin
@@ -937,6 +939,7 @@ pub async fn create_ring_on_chain_with_trusted_relays(
         network::V0.version,
         trusted_auth_relay_dids,
         requires_pet,
+        vec![],
         chain_config.clone(),
         TEST_ACCOUNT_HEX_KEY,
     )

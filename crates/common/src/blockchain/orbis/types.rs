@@ -55,7 +55,11 @@ pub struct Ring {
     /// never used for signing).
     #[prost(string, optional, tag = "17")]
     pub pet_pk: Option<String>,
-    // tag 18 formerly pet_confirmations; folded into RingConfirmation::pet_pk instead.
+    /// DefraDB HTTP base URLs. When non-empty, PRE responders store their
+    /// signed reencryption share in Defra instead of returning it directly
+    /// to the relayer. Empty keeps the direct-response PRE path unchanged.
+    #[prost(string, repeated, tag = "18")]
+    pub pre_share_endpoints: Vec<String>,
 }
 
 #[derive(Clone, Message)]
@@ -204,6 +208,11 @@ pub struct MsgCreateRing {
     /// lifecycle ships.
     #[prost(bool, tag = "11")]
     pub requires_pet: bool,
+    /// DefraDB HTTP base URLs. When non-empty, PRE responders store their
+    /// signed reencryption share in Defra instead of returning it directly
+    /// to the relayer. Empty keeps the direct-response PRE path unchanged.
+    #[prost(string, repeated, tag = "12")]
+    pub pre_share_endpoints: Vec<String>,
 }
 
 impl MsgCreateRing {
@@ -221,6 +230,7 @@ impl MsgCreateRing {
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
         requires_pet: bool,
+        pre_share_endpoints: Vec<String>,
     ) -> Self {
         let allow_trusted_auth_relays = trusted_auth_relay_dids.is_some();
         Self {
@@ -235,6 +245,7 @@ impl MsgCreateRing {
             trusted_auth_relay_dids: trusted_auth_relay_dids.unwrap_or_default(),
             allow_trusted_auth_relays,
             requires_pet,
+            pre_share_endpoints,
         }
     }
 }

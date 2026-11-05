@@ -405,6 +405,9 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 document: None,
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
             reader_auth_context.clone(),
@@ -417,11 +420,11 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
     // Deserialize the PRE response
     let pre_response: PreResponse =
         serde_json::from_slice(&pre_response_bytes).expect("Failed to deserialize PRE response");
+    let PreResponse::Direct { xnc_cmt, secret } = pre_response else {
+        panic!("expected a direct PRE response")
+    };
 
-    println!(
-        "  - xnc_cmt (re-encrypted commitment): {}",
-        pre_response.xnc_cmt
-    );
+    println!("  - xnc_cmt (re-encrypted commitment): {}", xnc_cmt);
 
     // =========================================================================
     // Step 6: Bob decrypts the secret using his private key
@@ -429,7 +432,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
     println!("\nStep 6: Bob decrypts the secret...");
 
     // Deserialize the xnc_cmt from hex using trait method
-    let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).expect("Failed to decode xnc_cmt hex");
+    let xnc_cmt_bytes = hex::decode(&xnc_cmt).expect("Failed to decode xnc_cmt hex");
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes)
         .expect("Failed to deserialize xnc_cmt");
 
@@ -438,7 +441,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
         &aggregate_pk,
         &xnc_cmt,
         &bob_sk,
-        &pre_response.secret,
+        &secret,
         &ciphertext_context,
     )
     .expect("Decryption should succeed");
@@ -542,6 +545,9 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 document: None,
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
             second_reader_auth_context,
@@ -789,6 +795,9 @@ async fn test_pre_with_inline_document_end_to_end() {
                 document: Some(document),
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             test_report_binding(
                 dummy_bulletin,
@@ -803,14 +812,17 @@ async fn test_pre_with_inline_document_end_to_end() {
 
     let pre_response: PreResponse =
         serde_json::from_slice(&pre_response_bytes).expect("Failed to deserialize PRE response");
-    let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).expect("Failed to decode xnc_cmt hex");
+    let PreResponse::Direct { xnc_cmt, secret } = pre_response else {
+        panic!("expected a direct PRE response")
+    };
+    let xnc_cmt_bytes = hex::decode(&xnc_cmt).expect("Failed to decode xnc_cmt hex");
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes)
         .expect("Failed to deserialize xnc_cmt");
     let decrypted_message = PreImpl::decrypt_secret(
         &aggregate_pk,
         &xnc_cmt,
         &bob_sk,
-        &pre_response.secret,
+        &secret,
         &ciphertext_context,
     )
     .expect("Decryption should succeed");
@@ -941,6 +953,9 @@ async fn test_pre_with_large_secret() {
                 document: None,
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
             reader_auth_context,
@@ -949,16 +964,19 @@ async fn test_pre_with_large_secret() {
         .expect("PRE should succeed");
 
     let pre_response: PreResponse = serde_json::from_slice(&pre_response_bytes).unwrap();
+    let PreResponse::Direct { xnc_cmt, secret } = pre_response else {
+        panic!("expected a direct PRE response")
+    };
 
     // Bob decrypts using trait methods
-    let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).unwrap();
+    let xnc_cmt_bytes = hex::decode(&xnc_cmt).unwrap();
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes).unwrap();
 
     let decrypted = PreImpl::decrypt_secret(
         &aggregate_pk,
         &xnc_cmt,
         &bob_sk,
-        &pre_response.secret,
+        &secret,
         &ciphertext_context,
     )
     .expect("Decryption should succeed");
@@ -1100,6 +1118,9 @@ async fn test_pre_fails_with_wrong_key() {
                 document: None,
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
             reader_auth_context,
@@ -1108,16 +1129,19 @@ async fn test_pre_fails_with_wrong_key() {
         .expect("PRE should succeed");
 
     let pre_response: PreResponse = serde_json::from_slice(&pre_response_bytes).unwrap();
+    let PreResponse::Direct { xnc_cmt, secret } = pre_response else {
+        panic!("expected a direct PRE response")
+    };
 
     // Eve tries to decrypt with her key using trait methods
-    let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).unwrap();
+    let xnc_cmt_bytes = hex::decode(&xnc_cmt).unwrap();
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes).unwrap();
 
     let decrypt_result = PreImpl::decrypt_secret(
         &aggregate_pk,
         &xnc_cmt,
         &eve_sk, // Wrong key!
-        &pre_response.secret,
+        &secret,
         &ciphertext_context,
     );
 
@@ -1243,6 +1267,9 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 document: None,
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
             reader_auth_context,
@@ -1413,6 +1440,9 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 document: None,
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
             reader_auth_context,
@@ -1793,6 +1823,9 @@ async fn test_pre_fails_with_wrong_derivation() {
                 document: None,
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
             reader_auth_context,
@@ -1801,9 +1834,12 @@ async fn test_pre_fails_with_wrong_derivation() {
         .expect("PRE with correct derivation should succeed");
 
     let pre_response: PreResponse = serde_json::from_slice(&pre_response_bytes).unwrap();
+    let PreResponse::Direct { xnc_cmt, secret } = pre_response else {
+        panic!("expected a direct PRE response")
+    };
 
     // Bob decrypts with CORRECT derivation - should succeed
-    let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).unwrap();
+    let xnc_cmt_bytes = hex::decode(&xnc_cmt).unwrap();
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes).unwrap();
 
     // Compute correct derived_pk for decryption
@@ -1814,7 +1850,7 @@ async fn test_pre_fails_with_wrong_derivation() {
         &correct_effective_pk,
         &xnc_cmt,
         &bob_sk,
-        &pre_response.secret,
+        &secret,
         &ciphertext_context,
     );
 
@@ -1836,7 +1872,7 @@ async fn test_pre_fails_with_wrong_derivation() {
         &wrong_effective_pk,
         &xnc_cmt,
         &bob_sk,
-        &pre_response.secret,
+        &secret,
         &ciphertext_context,
     );
 
@@ -1850,7 +1886,7 @@ async fn test_pre_fails_with_wrong_derivation() {
         &aggregate_pk,
         &xnc_cmt,
         &bob_sk,
-        &pre_response.secret,
+        &secret,
         &ciphertext_context,
     );
 
@@ -1992,6 +2028,9 @@ async fn test_pre_fails_with_bad_proof() {
                 document: None,
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
             reader_auth_context,
@@ -2007,6 +2046,164 @@ async fn test_pre_fails_with_bad_proof() {
     println!("PRE correctly failed with error: {}", error);
     // With early verification, peers that answer with a bad proof no longer count toward
     // the threshold, so the coordinator fails on insufficient verified shares.
+    assert!(
+        error.to_string().contains("Insufficient shares"),
+        "Error should indicate insufficient verified shares: {}",
+        error
+    );
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// Test that a responder whose local generation doesn't match the coordinator's pinned
+/// snapshot (`PreRequestContext::pinned_public_polynomial`) rejects the request instead of
+/// releasing a share from the wrong generation.
+///
+/// After a real DKG, Bob's and Charlie's on-disk `RingShareBundle.public_polynomial` are
+/// overwritten with an unrelated (but well-formed) polynomial, simulating a node that has
+/// locally rotated to a different generation than the one the coordinator resolved. Both
+/// peers' responses are then rejected by `handle_reencrypt_request`'s pinned-generation
+/// check, leaving only Alice's own (uncorrupted) local share — below threshold for a 3-node
+/// ring, so the overall request fails with `InsufficientShares`, mirroring the assertion
+/// style of `test_pre_fails_with_bad_proof` for a different per-peer rejection reason.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pre_rejects_peers_with_mismatched_pinned_generation() {
+    let db_name = "test_pre_rejects_peers_with_mismatched_pinned_generation";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let peer_ids = network.get_all_peer_ids();
+
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let request = StartDkgRequest {
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+    };
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("Failed to create JWT");
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+    assert!(result.is_ok());
+
+    let ring_payload = wait_for_dkg_completion(&network).await;
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
+
+    // An unrelated but well-formed polynomial — simulates Bob and Charlie having locally
+    // rotated to a different generation than the one the coordinator resolved.
+    let mut mismatched_dkg_node =
+        DkgImpl::new(1, 1, 1, 99, DkgRole::Standard).expect("create mismatched DKG node");
+    mismatched_dkg_node
+        .generate_polynomial(DkgMode::Refresh)
+        .expect("generate mismatched polynomial");
+    let mismatched_pub_poly = mismatched_dkg_node
+        .compute_public_polynomial()
+        .expect("compute mismatched public polynomial");
+    let mismatched_public_polynomial_hex =
+        hex::encode(CryptoSerialize::to_bytes(&mismatched_pub_poly).expect("serialize"));
+
+    for node in [&network.bob, &network.charlie] {
+        let mut bundle = RingShareBundle::load(&node.app_state.local_storage, &aggregate_pk)
+            .expect("load real ring share bundle");
+        bundle.public_polynomial = mismatched_public_polynomial_hex.clone();
+        bundle
+            .save(&node.app_state.local_storage, &aggregate_pk)
+            .expect("save corrupted ring share bundle");
+    }
+
+    let secret_message = b"Secret behind a pinned-generation mismatch";
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
+    let (_, encrypted_secret, proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
+            .expect("Encryption should succeed");
+    let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
+
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
+
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
+
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
+
+    let (pre_token, _) = test_keys
+        .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
+        .expect("Failed to create PRE JWT");
+    let (reader_auth_context, bob_pk_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &pre_token,
+        &object_id,
+        &bob_sk,
+        &bob_pk,
+        None,
+    );
+
+    let pre_result = pre_coordinator
+        .initiate_reencryption(
+            "pinned-generation-mismatch-pre-request".to_string(),
+            RingConfig {
+                ring_id: String::new(),
+                ring_pk_bytes,
+                peer_ids,
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_node_keys.len(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
+            },
+            secret_bytes,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes,
+                rdr_pk_signature: bob_pk_signature,
+                object_id,
+                token_string: pre_token,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
+                document: None,
+                audit_target_object_id: None,
+                pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
+            },
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context,
+        )
+        .await;
+
+    let error = pre_result.expect_err(
+        "PRE should fail: both network peers reject on pinned-generation mismatch, leaving \
+         only Alice's own share",
+    );
     assert!(
         error.to_string().contains("Insufficient shares"),
         "Error should indicate insufficient verified shares: {}",
@@ -2121,6 +2318,9 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 document: None,
                 audit_target_object_id: None,
                 pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
             },
             PreReportBinding::new(
                 "test-chain".to_string(),

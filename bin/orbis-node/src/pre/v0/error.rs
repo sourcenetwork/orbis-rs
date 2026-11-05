@@ -69,6 +69,16 @@ pub enum PreError {
     #[error("Ring generation changed, try again shortly")]
     ReshareInProgress,
 
+    /// This responder's local `RingShareBundle.public_polynomial` doesn't match the
+    /// generation the coordinator pinned into the request
+    /// (`PreRequestContext::pinned_public_polynomial`). Distinct from `ReshareInProgress`:
+    /// that variant is detected via an active local PSS session on *this* node, whereas
+    /// this one can fire even with no active session here — e.g. this node already
+    /// rotated to a new generation locally while the coordinator's pin (and other peers)
+    /// haven't yet. Same client-visible remedy either way: retry shortly.
+    #[error("Pinned generation mismatch: expected {expected}, have {actual}")]
+    PinnedGenerationMismatch { expected: String, actual: String },
+
     /// Generic PRE error
     #[error("PRE error: {0}")]
     Generic(String),
@@ -106,7 +116,7 @@ impl GrpcServiceError for PreError {
             PreError::SessionNotFound(_) => {
                 GrpcErrorClassification::new(Code::NotFound, Level::TRACE, false)
             }
-            PreError::ReshareInProgress => {
+            PreError::ReshareInProgress | PreError::PinnedGenerationMismatch { .. } => {
                 GrpcErrorClassification::new(Code::Unavailable, Level::TRACE, true)
             }
             PreError::InsufficientShares { .. } => {
@@ -255,6 +265,15 @@ mod tests {
             ),
             (
                 PreError::ReshareInProgress,
+                Code::Unavailable,
+                Level::TRACE,
+                true,
+            ),
+            (
+                PreError::PinnedGenerationMismatch {
+                    expected: "a".into(),
+                    actual: "b".into(),
+                },
                 Code::Unavailable,
                 Level::TRACE,
                 true,

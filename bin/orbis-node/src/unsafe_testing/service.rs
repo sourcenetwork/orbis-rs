@@ -847,6 +847,9 @@ async fn forward_unauthorized_pre(
             document: inline_document,
             audit_target_object_id: None,
             pet_evidence: None,
+            // This harness exercises the ACP-denial path, which short-circuits before the
+            // pinned-generation check ever runs — no real pin is needed here.
+            pinned_public_polynomial: String::new(),
         },
     }));
     let coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);

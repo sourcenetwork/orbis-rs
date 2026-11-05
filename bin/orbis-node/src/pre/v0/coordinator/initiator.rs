@@ -44,10 +44,15 @@ struct PreResponseDrainArgs<D: Dkg> {
 /// The polynomial for the ring's current PSS generation, and (when
 /// `self_in_list`) this node's own share bundle for that same generation —
 /// loaded from a single atomic `RingShareBundle` read (see the TOCTOU comment
-/// in `resolve_reencryption_material`).
+/// in `resolve_reencryption_material`). `public_polynomial_hex` is the exact
+/// hex string that read resolved to, on whichever branch — the authoritative
+/// value `PreRequestContext::pinned_public_polynomial` is set from, since it
+/// comes from the same snapshot as `pub_poly`/`local_share_bundle` rather than
+/// an earlier, possibly-stale read.
 struct ReencryptionMaterial<D: Dkg> {
     pub_poly: D::PubPoly,
     local_share_bundle: Option<RingShareBundle>,
+    public_polynomial_hex: String,
 }
 
 /// The reader public key and ciphertext commitment this reencryption request
@@ -216,13 +221,18 @@ where
         node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
-        ctx: PreRequestContext,
+        mut ctx: PreRequestContext,
         report_binding: PreReportBinding,
         local_reader_auth_context: ReaderAuthorizationContext,
     ) -> Result<Vec<u8>> {
         let material = self
             .resolve_reencryption_material(&ring, self_in_list, actual_peer_count)
             .await?;
+        // Pin from the exact snapshot `material` was just resolved from — not from
+        // whatever `prepare_pre_relay` left on `ctx` — so every peer this request
+        // dispatches to, and our own local share below, are checked against the same
+        // generation this node is itself using. See `ReencryptionMaterial`'s doc comment.
+        ctx.pinned_public_polynomial = material.public_polynomial_hex.clone();
         let request_material = Self::resolve_reencryption_request(&ctx, &secret_bytes)?;
 
         let dealer = T::new();
@@ -284,7 +294,7 @@ where
         self_in_list: bool,
         actual_peer_count: usize,
     ) -> Result<ReencryptionMaterial<D>> {
-        let (pub_poly, local_share_bundle) =
+        let (pub_poly, local_share_bundle, public_polynomial_hex) =
             load_ring_pub_poly_and_bundle::<D>(&self.app_state.local_storage, ring, self_in_list)
                 .map_err(PreError::Deserialization)?;
 
@@ -306,6 +316,7 @@ where
         Ok(ReencryptionMaterial {
             pub_poly,
             local_share_bundle,
+            public_polynomial_hex,
         })
     }
 
@@ -718,7 +729,7 @@ where
 
         // 10. Create the coordinator output. The service layer wraps this into a
         // PreReencryptResponse with the ciphertext-binding context it verified.
-        let pre_response = PreResponse {
+        let pre_response = PreResponse::Direct {
             xnc_cmt: xnc_cmt_hex,
             secret,
         };

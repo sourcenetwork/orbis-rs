@@ -65,6 +65,22 @@ fn ring_relay_configuration_preserves_opt_in() {
     );
 }
 
+#[test]
+fn ring_to_bulletin_post_preserves_pre_share_endpoints() {
+    let ring = ChainRing {
+        id: "ring".to_string(),
+        upgrade_info: Some(ChainUpgradeInfo::default()),
+        pre_share_endpoints: vec!["https://defra.example".to_string()],
+        ..Default::default()
+    };
+    let post = ring_to_bulletin_post(ring).expect("convert ring");
+    let payload = RingPayload::try_from(post).expect("parse ring payload");
+    assert_eq!(
+        payload.pre_share_endpoints,
+        vec!["https://defra.example".to_string()]
+    );
+}
+
 async fn create_orbis_ring_policy(client: &VeraClient) -> String {
     let ids_before: std::collections::HashSet<String> = client
         .acp_list_policy_ids()
@@ -203,6 +219,7 @@ async fn test_bulletin_document() {
             None,
             None,
             false,
+            vec![],
         )
         .await
         .unwrap();
@@ -299,6 +316,7 @@ async fn test_bulletin_ring() {
             None,
             Some(vec![original_relay_did.clone()]),
             false,
+            vec![],
         )
         .await
         .unwrap();
@@ -352,6 +370,67 @@ async fn test_bulletin_ring() {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn test_bulletin_ring_pre_share_endpoints() {
+    let container = VeraTestContainer::new();
+    let config = container.chain_config();
+
+    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+        .expect("Failed to create signer");
+
+    let node_key = signer.public_key_hex();
+
+    let bulletin = VeraBulletin::with_signer(container.chain_config_builder(), signer, None)
+        .await
+        .unwrap();
+
+    let policy_id = create_orbis_ring_policy(&bulletin.chain_client).await;
+
+    bulletin
+        .chain_client
+        .orbis_create_node_info("test-peer-id", &node_key, vec![], vec![])
+        .await
+        .unwrap();
+
+    let peer_node_keys = vec![node_key];
+    let threshold = 1u32;
+    let endpoints = vec![
+        "https://defra-b.example".to_string(),
+        "https://defra-a.example".to_string(),
+    ];
+
+    let (_, ring_id) = bulletin
+        .chain_client
+        .orbis_create_ring_get_id(
+            peer_node_keys,
+            threshold,
+            86400,
+            &policy_id,
+            Some("pre-share-endpoints-test".to_string()),
+            0,
+            None,
+            None,
+            false,
+            endpoints.clone(),
+        )
+        .await
+        .unwrap();
+
+    let created_post = bulletin
+        .read(ring_id.clone(), BulletinKind::Ring)
+        .await
+        .unwrap();
+    let read_payload: RingPayload = created_post.try_into().unwrap();
+
+    // The chain canonicalizes (sorts) the list; compare as sets.
+    let mut sorted_endpoints = endpoints;
+    sorted_endpoints.sort();
+    let mut read_endpoints = read_payload.pre_share_endpoints;
+    read_endpoints.sort();
+    assert_eq!(read_endpoints, sorted_endpoints);
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() {
     let container = VeraTestContainer::new();
     let config = container.chain_config();
@@ -385,6 +464,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
             None,
             None,
             false,
+            vec![],
         )
         .await
         .unwrap();
@@ -476,6 +556,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
             Some(explicit_reporting),
             None,
             false,
+            vec![],
         )
         .await
         .unwrap();
@@ -530,6 +611,7 @@ async fn test_bulletin_cancel_pending_ring() {
             None,
             None,
             false,
+            vec![],
         )
         .await
         .unwrap();

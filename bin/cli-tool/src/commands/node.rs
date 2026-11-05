@@ -23,8 +23,26 @@ const DKG_START_MAX_ATTEMPTS: usize = 3;
 const DKG_START_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Response structure from PRE server (JSON in `StartPreResponse.encrypted_secret`).
+/// Mirrors `orbis_node`'s `coordinator::PreReencryptResponse` wire shape — kept as an
+/// independent local shadow type rather than a dependency on `orbis-node` (the wrong
+/// dependency direction; `orbis-node` depends on `cli-tool`, not the reverse).
 #[derive(Debug, Deserialize)]
-struct PreResponse {
+enum PreResponse {
+    // Boxed (as a newtype variant, which serializes identically to the equivalent struct
+    // variant) since `Direct`'s fields are much larger than `Stored`'s, which clippy's
+    // `large_enum_variant` flags otherwise.
+    Direct(Box<DirectPreResponse>),
+    /// The ring's `pre_share_endpoints` delivery mode — not yet supported by this CLI
+    /// (Step 5 of the Defra PRE-Share Storage plan adds reader retrieval). The manifest
+    /// is parsed only loosely for now, since this CLI doesn't depend on `pre-share` yet.
+    #[allow(dead_code)]
+    Stored {
+        manifest: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct DirectPreResponse {
     /// Recovered reencrypted commitment (xnc_cmt) as hex string
     xnc_cmt: String,
     /// Original encrypted secret
@@ -465,10 +483,18 @@ async fn do_pre_impl(
         // Parse the response from server
         let pre_response: PreResponse = serde_json::from_slice(&response.encrypted_secret)
             .map_err(|e| anyhow!("Failed to parse PRE response: {}", e))?;
+        let (xnc_cmt, secret, context) = match pre_response {
+            PreResponse::Direct(direct) => (direct.xnc_cmt, direct.secret, direct.context),
+            PreResponse::Stored { .. } => {
+                return Err(anyhow!(
+                    "this ring stores PRE shares in Defra (pre_share_endpoints); retrieving them is not yet supported by this CLI"
+                ));
+            }
+        };
 
         // Parse the re-encrypted commitment (xnc_cmt) from hex
-        let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt)
-            .map_err(|e| anyhow!("Failed to decode xnc_cmt hex: {}", e))?;
+        let xnc_cmt_bytes =
+            hex::decode(&xnc_cmt).map_err(|e| anyhow!("Failed to decode xnc_cmt hex: {}", e))?;
         let xnc_cmt = G1Affine::from_bytes(&xnc_cmt_bytes)
             .map_err(|e| anyhow!("Failed to deserialize xnc_cmt: {}", e))?;
 
@@ -494,8 +520,8 @@ async fn do_pre_impl(
             &effective_pk,
             &xnc_cmt,
             &reader_sk_scalar,
-            &pre_response.secret,
-            &pre_response.context,
+            &secret,
+            &context,
         )
         .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
