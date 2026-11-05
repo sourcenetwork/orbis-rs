@@ -10,10 +10,14 @@
 //! message and stays with the rest of `orbis-node`'s `pre::v0::messages`,
 //! not here — see that module.
 
+mod defra;
 mod envelope;
 mod error;
 mod manifest;
+#[cfg(test)]
+pub(crate) mod test_support;
 
+pub use defra::*;
 pub use envelope::*;
 pub use error::*;
 pub use manifest::*;

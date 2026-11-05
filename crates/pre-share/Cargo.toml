@@ -7,13 +7,18 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "sync"] }
+reqwest.workspace = true
+tracing = "0.1"
 orbis-reporting = { path = "../reporting" }
 common = { path = "../common", default-features = false }
 crypto = { path = "../crypto", default-features = false }
 
 [dev-dependencies]
-serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
 
 [features]
 default = ["bls12-381"]
