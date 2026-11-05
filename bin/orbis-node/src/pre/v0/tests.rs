@@ -2249,13 +2249,29 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
     let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
+    // Each participant gets its own docID, derived from its own node key in the
+    // upload body — a real DefraDB content-addresses by document, so two
+    // different participants' envelopes never collide on one locator. Needed
+    // so the retrieval/recovery round trip added below can actually tell
+    // participants' entries apart by locator, the same way a real deployment
+    // would.
+    struct StoreByParticipant;
+    impl wiremock::Respond for StoreByParticipant {
+        fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("valid JSON body");
+            let participant = body["participant"].as_str().expect("participant field");
+            wiremock::ResponseTemplate::new(200).set_body_json([format!("bae-{participant}")])
+        }
+    }
+
     let mock_server = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path(format!(
             "/api/v0/collections/{}",
             pre_share::PRE_SHARE_COLLECTION
         )))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(["bae-stored-test"]))
+        .respond_with(StoreByParticipant)
         .mount(&mock_server)
         .await;
 
@@ -2329,7 +2345,12 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
         .initiate_reencryption(
             request_id.clone(),
             RingConfig {
-                ring_id: String::new(),
+                // Real ring ID (not the usual test shortcut of leaving this blank) —
+                // each responder independently resolves its own `report_context.ring_id`
+                // from the bulletin-published ring payload, and the new retrieval round
+                // trip below cross-checks the manifest's `ring_id` against each fetched
+                // envelope's own signed statement, so they must genuinely agree here.
+                ring_id: ring_post.id.clone(),
                 ring_pk_bytes: ring_pk_bytes.clone(),
                 peer_ids,
                 peer_node_keys: ring_payload.peer_node_keys.clone(),
@@ -2421,6 +2442,62 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
         assert_eq!(envelope.envelope.statement.request_id, request_id);
         assert_eq!(envelope.envelope.statement.from_node_id, entry.from_node_id);
     }
+
+    // Full reader-side round trip (Step 5 of the Defra PRE-Share Storage plan):
+    // mount a GET responder for every participant's genuinely uploaded envelope
+    // (so retrieval-by-locator actually works, the same way a real DefraDB
+    // would), assemble the manifest the service layer would hand back
+    // (`encode_pre_response` just adds `context`, already in scope here), and
+    // confirm `pre_share::recover_from_manifest` — the exact function
+    // `cli-tool`'s reader path calls — fetches, verifies, and recovers from
+    // this *real* multi-node coordinator output, recovering the same
+    // plaintext the direct-delivery path would.
+    for request in &requests {
+        let body: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("valid JSON body");
+        let participant = body["participant"].as_str().expect("participant field");
+        let envelope_json = body["envelope"].as_str().expect("envelope field").to_string();
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/api/v0/collections/{}/document/bae-{participant}",
+                pre_share::PRE_SHARE_COLLECTION
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "envelope": envelope_json,
+            })))
+            .mount(&mock_server)
+            .await;
+    }
+
+    let manifest = pre_share::PreShareRetrievalManifest {
+        manifest_version: pre_share::PRE_SHARE_MANIFEST_VERSION,
+        request_id: stored.request_id.clone(),
+        ring_id: stored.ring_id.clone(),
+        ring_pk: stored.ring_pk.clone(),
+        threshold: stored.threshold,
+        total_participants: stored.total_participants,
+        pinned_public_polynomial: stored.pinned_public_polynomial.clone(),
+        rdr_pk_bytes: stored.rdr_pk_bytes.clone(),
+        object_id: stored.object_id.clone(),
+        secret: stored.secret.clone(),
+        context: ciphertext_context.clone(),
+        pre_share_endpoints: stored.pre_share_endpoints.clone(),
+        entries: stored.entries.clone(),
+    };
+
+    let recovered = pre_share::recover_from_manifest(&manifest, "")
+        .await
+        .expect("recover_from_manifest should succeed against the real coordinator-produced manifest");
+
+    let decrypted = PreImpl::decrypt_secret(
+        &aggregate_pk,
+        &recovered.xnc_cmt,
+        &bob_sk,
+        &manifest.secret,
+        &manifest.context,
+    )
+    .expect("decrypt_secret should succeed");
+    assert_eq!(decrypted, secret_message);
 
     network
         .shutdown_routers()

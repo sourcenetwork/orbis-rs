@@ -1116,10 +1116,12 @@ where
             ring_id: ring.ring_id.clone(),
             ring_pk: hex::encode(&ring.ring_pk_bytes),
             threshold: ring.threshold,
+            total_participants: ring.total_participants,
             pinned_public_polynomial: ctx.pinned_public_polynomial.clone(),
             rdr_pk_bytes: ctx.rdr_pk_bytes.clone(),
             object_id: ctx.object_id.clone(),
             secret,
+            pre_share_endpoints: ring.pre_share_endpoints.clone(),
             entries,
         }));
 

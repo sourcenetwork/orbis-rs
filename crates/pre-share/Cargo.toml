@@ -23,6 +23,7 @@ crypto = { path = "../crypto", default-features = false }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
+crypto = { path = "../crypto", default-features = false, features = ["test-helpers"] }
 
 [features]
 default = ["bls12-381"]

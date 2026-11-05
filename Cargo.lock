@@ -2262,6 +2262,7 @@ dependencies = [
  "hex",
  "k256 0.14.0",
  "local-storage",
+ "pre-share",
  "proto",
  "rpassword",
  "serde",

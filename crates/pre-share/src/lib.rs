@@ -15,6 +15,7 @@ mod defra_jwt;
 mod envelope;
 mod error;
 mod manifest;
+mod reader;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -23,6 +24,7 @@ pub use defra_jwt::*;
 pub use envelope::*;
 pub use error::*;
 pub use manifest::*;
+pub use reader::*;
 
 /// Re-exported so callers constructing a [`DefraClient`] don't need their own direct
 /// `reqwest` dependency just for this one type.

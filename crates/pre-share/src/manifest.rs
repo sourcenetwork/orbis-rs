@@ -36,6 +36,11 @@ pub struct PreShareRetrievalManifest {
     pub ring_id: String,
     pub ring_pk: String,
     pub threshold: usize,
+    /// Total ring participants — the `n` bound `ThresholdDealer::recover`
+    /// uses to sanity-check share indices (never enters the Lagrange math
+    /// itself). Carried here so a standalone reader doesn't need to
+    /// independently resolve current ring size.
+    pub total_participants: usize,
     /// The generation snapshot every entry in this manifest was pinned to
     /// — must match each fetched envelope's own
     /// `StoredShareEnvelope::pinned_public_polynomial`.
@@ -44,6 +49,11 @@ pub struct PreShareRetrievalManifest {
     pub object_id: String,
     pub secret: Secret,
     pub context: CiphertextContext,
+    /// The ring's Defra endpoint(s) this manifest's entries were stored
+    /// against — carried here so the manifest is a fully self-contained
+    /// retrieval ticket; a reader never needs a separate chain/bulletin
+    /// read just to find out where to fetch from.
+    pub pre_share_endpoints: Vec<String>,
     pub entries: Vec<PreShareManifestEntry>,
 }
 
@@ -59,6 +69,7 @@ mod tests {
             ring_id: "ring-1".to_string(),
             ring_pk: "ring-pk".to_string(),
             threshold: 2,
+            total_participants: 3,
             pinned_public_polynomial: "poly-gen-1".to_string(),
             rdr_pk_bytes: vec![1, 2, 3],
             object_id: "object-1".to_string(),
@@ -77,6 +88,7 @@ mod tests {
                 salt: None,
                 pet_tag: None,
             },
+            pre_share_endpoints: vec!["http://localhost:9181".to_string()],
             entries: vec![PreShareManifestEntry {
                 from_node_id: 1,
                 responder_node_key: "node-key".to_string(),

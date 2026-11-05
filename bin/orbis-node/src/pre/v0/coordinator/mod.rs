@@ -56,10 +56,12 @@ pub struct StoredPreResponse {
     pub ring_id: String,
     pub ring_pk: String,
     pub threshold: usize,
+    pub total_participants: usize,
     pub pinned_public_polynomial: String,
     pub rdr_pk_bytes: Vec<u8>,
     pub object_id: String,
     pub secret: Secret,
+    pub pre_share_endpoints: Vec<String>,
     pub entries: Vec<PreShareManifestEntry>,
 }
 
