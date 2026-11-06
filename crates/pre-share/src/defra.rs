@@ -133,6 +133,26 @@ impl DefraClient {
         })
     }
 
+    /// Attaches `Authorization: Bearer <token>` only when `bearer_token` is
+    /// non-empty. An *empty* Bearer token is nominally equivalent to no
+    /// header at all per DefraDB's own identity extractor ("'Bearer ' with
+    /// empty token → anonymous") — but only in theory: a literal empty
+    /// token means the header value ends in the trailing space from
+    /// `"Bearer "`, and HTTP header values have insignificant trailing
+    /// whitespace, so some combination of client/proxy/server can trim it
+    /// away before DefraDB's own string-prefix check ever sees it — turning
+    /// "anonymous" into "unsupported authorization scheme", confirmed
+    /// against a real `defra` instance. Omitting the header outright for an
+    /// empty token sidesteps this path entirely, landing on DefraDB's other,
+    /// unambiguous anonymous case ("no Authorization header → anonymous").
+    fn authorize(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if self.bearer_token.is_empty() {
+            builder
+        } else {
+            builder.bearer_auth(&self.bearer_token)
+        }
+    }
+
     fn collection_url(&self, collection: &str) -> Url {
         self.base_url
             .join(&format!("api/v0/collections/{collection}"))
@@ -162,9 +182,7 @@ impl DefraClient {
             .await
             .expect("semaphore is never closed");
         let response = self
-            .http
-            .post(url)
-            .bearer_auth(&self.bearer_token)
+            .authorize(self.http.post(url))
             .header(reqwest::header::CONTENT_TYPE, "text/plain")
             .body(sdl.to_string())
             .send()
@@ -229,9 +247,7 @@ impl DefraClient {
             .await
             .expect("semaphore is never closed");
         let response = match self
-            .http
-            .post(url.clone())
-            .bearer_auth(&self.bearer_token)
+            .authorize(self.http.post(url.clone()))
             .json(body)
             .send()
             .await
@@ -288,12 +304,7 @@ impl DefraClient {
             .acquire()
             .await
             .expect("semaphore is never closed");
-        let response = self
-            .http
-            .get(url)
-            .bearer_auth(&self.bearer_token)
-            .send()
-            .await?;
+        let response = self.authorize(self.http.get(url)).send().await?;
         let status = response.status();
         let bytes = read_bounded(response).await?;
         if !status.is_success() {
@@ -670,6 +681,46 @@ mod tests {
             )
             .await
             .expect("the matched request should have been sent");
+    }
+
+    /// An empty bearer token must omit `Authorization` entirely, not send
+    /// `Authorization: Bearer ` with an empty value — confirmed against a
+    /// real `defra` instance that the latter is rejected (403 "unsupported
+    /// authorization scheme") rather than treated as anonymous, because the
+    /// header value's trailing space (insignificant per HTTP, but part of
+    /// DefraDB's own literal `"Bearer "` prefix check) doesn't reliably
+    /// survive transit. See `DefraClient::authorize`'s doc comment.
+    #[tokio::test]
+    async fn an_empty_bearer_token_sends_no_authorization_header_at_all() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v0/collections/PreShare"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(["bae-anon"]))
+            .mount(&server)
+            .await;
+
+        let client =
+            DefraClient::new(Url::parse(&server.uri()).unwrap(), String::new()).unwrap();
+        client
+            .store_envelope(
+                PRE_SHARE_COLLECTION,
+                PreShareFields {
+                    request_id: "req-anon".to_string(),
+                    ring_id: "ring-1".to_string(),
+                    participant: "node-1".to_string(),
+                },
+                &crate::test_support::signed_envelope(),
+                far_future_deadline(),
+            )
+            .await
+            .expect("anonymous store should succeed");
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        assert_eq!(requests.len(), 1);
+        assert!(
+            !requests[0].headers.contains_key("authorization"),
+            "an empty bearer token must omit the Authorization header entirely"
+        );
     }
 
     #[tokio::test]

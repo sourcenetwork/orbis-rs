@@ -215,6 +215,39 @@ services:
       retries: 30
       start_period: 30s
 
+  # Defra-backed PRE share storage (ring `pre_share_endpoints`). Opt-in via
+  # `--profile defra`, same convention as `node4`'s `profiles: ["node4"]`,
+  # so every other integration test's `docker compose up` is unaffected.
+  defra:
+    profiles: ["defra"]
+    image: ${DEFRA_INTEGRATION_IMAGE:-orbis-defra-integration:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.defra-integration
+      # Unpinned by default (floats on defradb.rs's `main`) — set DEFRA_REF
+      # to pin to a specific ref/branch/tag for one build without editing
+      # this file, e.g. to pin back temporarily after an upstream break.
+      args:
+        DEFRA_REF: ${DEFRA_REF:-main}
+    command: ["--rootdir", "/data", "--url", "0.0.0.0:9181", "--no-keyring=true", "start", "--store", "memory", "--no-p2p=true"]
+    ports:
+      # Fixed, published on all interfaces (not restricted to 127.0.0.1) —
+      # a loopback-only bind (the convention every other service in this file
+      # uses) is never reachable from a sibling container. Fixed rather than
+      # ephemeral: the test resolves this same port via the bridge network's
+      # gateway IP (`CosmosNetwork::defra_container_url`) for `pre_share_endpoints`,
+      # which both producer nodes *and* the test's own reader-role `do_pre`
+      # call need to agree on without per-run port discovery.
+      - "9181:9181"
+    networks:
+      - orbis-integration-network
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9181/health-check"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
 networks:
   orbis-integration-network:
     driver: bridge

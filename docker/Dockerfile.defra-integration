@@ -1,0 +1,40 @@
+FROM rust:1.93-bookworm AS builder
+# Deliberately unpinned, unlike VERA_REF/NATIVE_VERA_REF: this is a one-way
+# dependency on a third-party test fixture we don't co-develop, not a
+# sibling repo under active coordinated release. Always builds against
+# defradb.rs's current `main` — if an upstream change breaks this image,
+# fix forward rather than maintaining a pin file nobody will remember to
+# bump. An optional ARG still lets a caller pin to a specific ref/branch/tag
+# for one build without touching this file.
+ARG DEFRA_REF=main
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl-dev pkg-config protobuf-compiler libdbus-1-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN git init /app \
+    && cd /app \
+    && git remote add origin https://github.com/sourcenetwork/defradb.rs \
+    && git fetch --depth 1 origin "${DEFRA_REF}" \
+    && git checkout --detach FETCH_HEAD
+WORKDIR /app
+# defradb.rs's own release profile uses LTO + codegen-units=1 (common for a
+# small, fast final binary) — fine for a normal CI runner, but the link step
+# alone can exceed a memory-constrained Docker VM given this crate's large
+# dependency tree (wasmtime/cranelift among them). Override via env var
+# rather than patching their Cargo.toml: a slightly larger, slightly slower
+# `defra` binary is a non-issue for a test fixture that only runs as a
+# throwaway container.
+ENV CARGO_PROFILE_RELEASE_LTO=false
+ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+RUN --mount=type=cache,target=/root/.cache \
+    cargo build --release -p cli
+
+FROM debian:bookworm-slim
+# libssl3/libdbus-1-3 are the runtime counterparts of the builder stage's
+# libssl-dev/libdbus-1-dev — without them the dynamic linker fails at exec
+# time, which a slim shell reports as a plain "command not found" (exit 127),
+# not an obviously-missing-library error.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl libssl3 libdbus-1-3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/defra /usr/local/bin/defra
+ENTRYPOINT ["defra"]

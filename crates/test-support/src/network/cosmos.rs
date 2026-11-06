@@ -25,6 +25,8 @@ pub struct CosmosNetwork {
     chain_config: ChainConfig,
     node_endpoints: Vec<String>,
     admin: CosmosAdmin,
+    defra_url: Option<String>,
+    defra_container_url: Option<String>,
     _patch_file: Option<tempfile::NamedTempFile>,
 }
 
@@ -35,6 +37,7 @@ pub struct CosmosNetworkBuilder {
     production_node_build: bool,
     unsafe_testing_runtime_enabled: bool,
     node_count: usize,
+    defra: bool,
 }
 
 impl CosmosNetwork {
@@ -49,6 +52,7 @@ impl CosmosNetwork {
             production_node_build: false,
             unsafe_testing_runtime_enabled: true,
             node_count: 3,
+            defra: false,
         }
     }
 
@@ -95,6 +99,17 @@ impl CosmosNetwork {
             return false;
         }
 
+        if let Some(defra_url) = &self.defra_url {
+            let defra_healthy = Command::new("curl")
+                .args(["-sf", &format!("{defra_url}/health-check")])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !defra_healthy {
+                return false;
+            }
+        }
+
         for endpoint in &self.node_endpoints {
             let address = endpoint
                 .strip_prefix("http://")
@@ -119,6 +134,29 @@ impl CosmosNetwork {
 
     pub fn all_endpoints(&self) -> Vec<&str> {
         self.node_endpoints.iter().map(String::as_str).collect()
+    }
+
+    /// Host-reachable URL for the Defra container, when
+    /// `CosmosNetworkBuilder::with_defra` was used — `None` otherwise.
+    /// For the test driver's own HTTP calls (provisioning the `PreShare`
+    /// collection, polling health) only; nodes inside the Compose network
+    /// always reach Defra via `http://defra:9181` (the container's own
+    /// internal DNS name and fixed port), never this discovered host port.
+    pub fn defra_url(&self) -> Option<&str> {
+        self.defra_url.as_deref()
+    }
+
+    /// Address for Defra reachable from *inside* the Compose network's
+    /// bridge — i.e. by orbis-node containers (ring `pre_share_endpoints`
+    /// resolves this, not a Compose service name, so a reader running
+    /// outside the Compose network, such as this test's own `cli_tool::do_pre`
+    /// call, can resolve the same value too). The bridge's gateway IP is
+    /// reachable both from sibling containers and, on a native Linux Docker
+    /// host, from the host itself — the same host that commands `docker
+    /// compose up` in the first place. `None` unless
+    /// `CosmosNetworkBuilder::with_defra` was used.
+    pub fn defra_container_url(&self) -> Option<&str> {
+        self.defra_container_url.as_deref()
     }
 
     pub fn vera_rpc_url(&self) -> &str {
@@ -309,12 +347,22 @@ impl CosmosNetworkBuilder {
         self
     }
 
+    /// Also bring up the Defra container (`defra` Compose profile), for a
+    /// ring that uses `pre_share_endpoints`. Nodes reach it at
+    /// `http://defra:9181`; the test driver itself uses
+    /// [`CosmosNetwork::defra_url`].
+    pub fn with_defra(mut self) -> Self {
+        self.defra = true;
+        self
+    }
+
     pub fn build(self) -> CosmosNetwork {
         let CosmosNetworkBuilder {
             genesis_patches,
             production_node_build,
             unsafe_testing_runtime_enabled,
             node_count,
+            defra,
         } = self;
         let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
         let project_name = unique_project_name("orbis-integration");
@@ -356,6 +404,9 @@ impl CosmosNetworkBuilder {
             let mut command = compose_command(&compose_file, &project_name);
             if node_count == 4 {
                 command.args(["--profile", "node4"]);
+            }
+            if defra {
+                command.args(["--profile", "defra"]);
             }
             if reuse_prebuilt {
                 command.args(["up", "-d"]);
@@ -412,7 +463,7 @@ impl CosmosNetworkBuilder {
             panic!("Failed to start integration test containers");
         }
 
-        let endpoints = (|| -> Result<(ChainConfig, Vec<String>), String> {
+        let endpoints = (|| -> Result<(ChainConfig, Vec<String>, Option<String>, Option<String>), String> {
             let chain_config = ChainConfig::builder()
                 .rpc_url(Some(localhost_url(published_port(
                     &compose_file,
@@ -443,14 +494,26 @@ impl CosmosNetworkBuilder {
                     50051,
                 )?));
             }
-            Ok((chain_config, node_endpoints))
+            let (defra_url, defra_container_url) = if defra {
+                let url = localhost_url(published_port(
+                    &compose_file,
+                    &project_name,
+                    "defra",
+                    9181,
+                )?);
+                let gateway = bridge_network_gateway(&project_name)?;
+                (Some(url), Some(format!("http://{gateway}:9181")))
+            } else {
+                (None, None)
+            };
+            Ok((chain_config, node_endpoints, defra_url, defra_container_url))
         })()
         .unwrap_or_else(|error| {
             report_compose_failure(&compose_file, &project_name);
             stop_compose(&compose_file, &project_name);
             panic!("Failed to discover integration test endpoints: {error}");
         });
-        let (chain_config, node_endpoints) = endpoints;
+        let (chain_config, node_endpoints, defra_url, defra_container_url) = endpoints;
 
         let network = CosmosNetwork {
             compose_file,
@@ -458,11 +521,43 @@ impl CosmosNetworkBuilder {
             admin: CosmosAdmin::new(chain_config.clone()),
             chain_config,
             node_endpoints,
+            defra_url,
+            defra_container_url,
             _patch_file: patch_file,
         };
         network.wait_for_healthy();
         network
     }
+}
+
+/// Resolves the Compose-created bridge network's gateway IP for `project`.
+/// Compose v2 names an unnamed network `{project}_{network_key}` by default
+/// (confirmed via `docker compose config`, not guessed) — this repo's
+/// compose file declares exactly one network, `orbis-integration-network`,
+/// with no `name:` override.
+fn bridge_network_gateway(project: &str) -> Result<String, String> {
+    let network_name = format!("{project}_orbis-integration-network");
+    let output = Command::new("docker")
+        .args([
+            "network",
+            "inspect",
+            &network_name,
+            "--format",
+            "{{(index .IPAM.Config 0).Gateway}}",
+        ])
+        .output()
+        .map_err(|error| format!("Failed to run docker network inspect: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "docker network inspect {network_name} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let gateway = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if gateway.is_empty() {
+        return Err(format!("{network_name} has no gateway IP"));
+    }
+    Ok(gateway)
 }
 
 /// Which listen port to publish for other containers.

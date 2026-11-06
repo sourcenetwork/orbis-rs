@@ -946,3 +946,33 @@ pub async fn create_ring_on_chain_with_trusted_relays(
     .await
     .expect("create ring on-chain")
 }
+
+/// Same as [`create_ring_on_chain`], but sets the ring's `pre_share_endpoints`
+/// — selecting Defra-backed PRE share storage over today's direct response.
+/// A separate sibling (rather than a new parameter on the existing
+/// functions) so no existing call site needs to change.
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
+pub async fn create_ring_on_chain_with_pre_share_endpoints(
+    chain_config: &ChainConfig,
+    node_keys: &[String],
+    threshold: u32,
+    policy_id: &str,
+    nonce: Option<&str>,
+    pre_share_endpoints: Vec<String>,
+) -> String {
+    cli_tool::create_ring(
+        node_keys.to_vec(),
+        threshold,
+        86400,
+        policy_id.to_string(),
+        nonce.map(String::from),
+        network::V0.version,
+        vec![],
+        false,
+        pre_share_endpoints,
+        chain_config.clone(),
+        TEST_ACCOUNT_HEX_KEY,
+    )
+    .await
+    .expect("create ring on-chain with pre_share_endpoints")
+}

@@ -133,8 +133,20 @@ pub(super) fn report_compose_failure(compose_file: &str, project_name: &str) {
 
 #[cfg(any(feature = "cosmos", feature = "native"))]
 pub(super) fn stop_compose(compose_file: &str, project_name: &str) {
+    // `--profile node4`/`--profile defra` are harmless no-ops when that
+    // profile was never used in `up` — passed unconditionally so `down`
+    // always tears down whichever opt-in services this project actually
+    // started, without the caller having to remember which profiles it used.
     match compose_command(compose_file, project_name)
-        .args(["--profile", "node4", "down", "-v", "--remove-orphans"])
+        .args([
+            "--profile",
+            "node4",
+            "--profile",
+            "defra",
+            "down",
+            "-v",
+            "--remove-orphans",
+        ])
         .status()
     {
         Ok(status) if !status.success() => {
