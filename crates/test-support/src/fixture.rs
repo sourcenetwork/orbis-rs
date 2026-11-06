@@ -179,6 +179,12 @@ pub struct ScenarioFixture {
     pub documents: Vec<DocumentFixture>,
     pub key_derivations: Vec<KeyDerivationFixture>,
     pub node_demerits: Vec<NodeDemeritFixture>,
+    /// Stand up a Defra container alongside the rest of the environment.
+    /// Cosmos-only today (`CosmosTestEnvironment::defra_url`/
+    /// `defra_container_url` read it); native ignores it — a ring created
+    /// through this environment has no `pre_share_endpoints` concept on
+    /// native yet.
+    pub defra: bool,
 }
 
 /// A provisioned ring's resolved backend id plus its resolved member node
@@ -458,6 +464,7 @@ mod tests {
                 permission: "sign".to_string(),
             }],
             node_demerits: Vec::new(),
+            defra: false,
         };
 
         assert_eq!(fixture.nodes.len(), 3);

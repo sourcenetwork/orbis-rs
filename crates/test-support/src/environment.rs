@@ -330,6 +330,9 @@ impl TestEnvironment for CosmosTestEnvironment {
             .filter(|node| node.role == NodeRole::Running)
             .count();
         let mut builder = CosmosNetwork::builder().with_node_count(node_count);
+        if fixture.defra {
+            builder = builder.with_defra();
+        }
         let mut node_infos = offline_node_infos_json(&fixture);
         node_infos.extend(backup_node_infos_json(&fixture));
         let documents = documents_genesis_json(&fixture);
@@ -532,6 +535,23 @@ impl CosmosTestEnvironment {
     /// trait: native has no equivalent concept.
     pub fn chain_config(&self) -> ChainConfig {
         self.network.chain_config()
+    }
+
+    /// Host-reachable Defra URL, when `ScenarioFixture::defra` was set.
+    /// `None` otherwise. Not part of any shared trait: native has no
+    /// equivalent concept.
+    pub fn defra_url(&self) -> Option<&str> {
+        self.network.defra_url()
+    }
+
+    /// The Compose-bridge-network address a ring's `pre_share_endpoints`
+    /// must use so both sibling node containers and this process can reach
+    /// it — see `CosmosNetwork::defra_container_url`'s own doc comment for
+    /// why the Compose service name alone doesn't work here. `None` unless
+    /// `ScenarioFixture::defra` was set. Not part of any shared trait: native
+    /// has no equivalent concept.
+    pub fn defra_container_url(&self) -> Option<&str> {
+        self.network.defra_container_url()
     }
 
     /// Updates a *non-member* running node's on-chain peer id and whitelists
