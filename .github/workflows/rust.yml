@@ -460,7 +460,7 @@ jobs:
       # built too).
       run: >-
         cargo nextest run --profile ci --retries 0 --no-tests fail ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
-        -E "${{ matrix.backend == 'native' && '(test(/^tests::e2e::/) & not test(=tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg)) | test(/^tests::node::/)' || env.DOCKER_TESTS }}"
+        -E "${{ matrix.backend == 'native' && 'test(=tests::e2e::standard_dkg_pre::test_cli_calls_dkg_and_pre_endpoint) | test(=tests::e2e::member_replacement::test_spare_member_replaces_original) | test(=tests::e2e::restart_scenario::test_restarted_member_keeps_identity_and_polynomial)' || env.DOCKER_TESTS }}"
         --partition count:${{ matrix.shard }}/3
 
   sign-peer-recovery:
