@@ -210,7 +210,7 @@ mod tests {
     use crate::envelope::StoredShareEnvelope;
     use crate::manifest::{DefraLocator, PreShareManifestEntry};
     use crypto::context::{CiphertextContext, ReaderAuthorizationContext};
-    use crypto::r#trait::{Dkg, DistKeyShare, Secret};
+    use crypto::r#trait::{DistKeyShare, Dkg, Secret};
     use crypto::test_helper::DKGCoordinator;
     use crypto::{CryptoSerialize, DkgImpl};
     use orbis_reporting::PreReencryptResponseStatement;
@@ -356,7 +356,10 @@ mod tests {
         }
     }
 
-    fn sign(statement: PreReencryptResponseStatement, pinned_public_polynomial: &str) -> crate::envelope::SignedStoredShareEnvelope {
+    fn sign(
+        statement: PreReencryptResponseStatement,
+        pinned_public_polynomial: &str,
+    ) -> crate::envelope::SignedStoredShareEnvelope {
         StoredShareEnvelope::new(statement, pinned_public_polynomial.to_string())
             .sign(SIGNING_KEY_HEX)
             .expect("sign envelope")
@@ -430,7 +433,11 @@ mod tests {
             })
             .collect();
         let direct = PreImpl::new()
-            .recover(&direct_shares, fixture.threshold, fixture.total_participants)
+            .recover(
+                &direct_shares,
+                fixture.threshold,
+                fixture.total_participants,
+            )
             .expect("direct recover")
             .expect("some commitment");
 
@@ -625,7 +632,11 @@ mod tests {
         for (idx, (from_node_id, reply)) in fixture.replies.iter().enumerate() {
             let locator = format!("bae-{idx}");
             // idx 0's statement is genuinely valid crypto, just for a different request.
-            let request_id = if idx == 0 { "some-other-request" } else { "req-1" };
+            let request_id = if idx == 0 {
+                "some-other-request"
+            } else {
+                "req-1"
+            };
             let statement = statement_for(&fixture, *from_node_id, reply, request_id);
             let envelope = sign(statement, &manifest.pinned_public_polynomial);
             mount_envelope(&server, &locator, &envelope).await;
@@ -672,7 +683,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recover_from_manifest_rejects_an_unsupported_manifest_version_without_any_network_call() {
+    async fn recover_from_manifest_rejects_an_unsupported_manifest_version_without_any_network_call(
+    ) {
         let fixture = build_real_pre_fixture(2, 2, None);
         // Deliberately unreachable: proves no network call was attempted.
         let mut manifest = base_manifest(&fixture, "http://127.0.0.1:1".to_string());

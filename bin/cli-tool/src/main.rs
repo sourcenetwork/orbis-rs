@@ -8,12 +8,12 @@ pub use commands::{
     cancel_ring_reshare_by_acp, cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring,
     derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_pre_and_save, do_retrieve_pre,
     do_sign, do_store_secret, fund_with_signer, get_account_sequence, get_latest_ring,
-    list_bulletin_posts,
-    post_key_derivation, prepare_secret, query_node_info, query_pet_ring_state, query_ring_state,
-    read_bulletin_post_with_config, register_bulletin_namespace, register_object_to_chain,
-    remove_node_from_whitelist, schedule_ring_upgrade_by_acp, set_relationship_on_chain,
-    set_ring_pss_interval_by_acp, start_ring_reshare_by_acp, store_prepared_secret,
-    transfer_node_controller, update_node_peer_id, PendingPreRetrieval, PreparedSecret, SignResult,
+    list_bulletin_posts, post_key_derivation, prepare_secret, query_node_info,
+    query_pet_ring_state, query_ring_state, read_bulletin_post_with_config,
+    register_bulletin_namespace, register_object_to_chain, remove_node_from_whitelist,
+    schedule_ring_upgrade_by_acp, set_relationship_on_chain, set_ring_pss_interval_by_acp,
+    start_ring_reshare_by_acp, store_prepared_secret, transfer_node_controller,
+    update_node_peer_id, PendingPreRetrieval, PreparedSecret, SignResult,
 };
 use commands::{reader_did_from_seed, secp256k1_pubkey_to_did};
 use common::blockchain::{orbis::WhitelistTarget, ChainConfig};
@@ -672,8 +672,10 @@ async fn main() -> Result<()> {
                 .await?;
                 println!(
                     "PENDING_PRE_RETRIEVAL={}",
-                    serde_json::to_string(&pending)
-                        .map_err(|e| anyhow::anyhow!("Failed to serialize pending retrieval: {}", e))?
+                    serde_json::to_string(&pending).map_err(|e| anyhow::anyhow!(
+                        "Failed to serialize pending retrieval: {}",
+                        e
+                    ))?
                 );
             } else {
                 do_pre(

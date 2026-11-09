@@ -699,8 +699,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client =
-            DefraClient::new(Url::parse(&server.uri()).unwrap(), String::new()).unwrap();
+        let client = DefraClient::new(Url::parse(&server.uri()).unwrap(), String::new()).unwrap();
         client
             .store_envelope(
                 PRE_SHARE_COLLECTION,
