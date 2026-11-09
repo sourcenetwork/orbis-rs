@@ -893,6 +893,7 @@ impl Chain {
             requires_pet: false,
             nonce: nonce_bytes,
             trusted_auth_relay_dids,
+            pre_share_endpoints: Vec::new(),
             reporting: ReportingConfig::default(),
         };
         let ring_id = config.id(self.root, &self.actor).expect("derive ring id");
