@@ -1,11 +1,12 @@
 [package]
 name = "orbis-reporting"
-version.workspace = true
+version = "0.0.2"
 edition.workspace = true
 license = "BUSL-1.1"
 license-file = "../../licenses/Bsl.txt"
 repository = "https://github.com/sourcenetwork/orbis-rs"
 description = "Canonical Orbis report and fault-evidence formats"
+readme = "README.md"
 
 [dependencies]
 serde.workspace = true

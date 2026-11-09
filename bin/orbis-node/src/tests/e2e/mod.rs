@@ -29,6 +29,10 @@ mod concurrent_invalid_dkg_share_report;
 mod concurrent_pre_requests;
 mod concurrent_sign_requests;
 mod concurrent_simultaneous_dkg;
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+mod defra_documents;
+#[cfg(all(feature = "native", feature = "bls12-381"))]
+mod defra_peers;
 mod fault_dkg_unreachable;
 mod fault_pre_below_threshold;
 mod fault_pre_one_node_down;
