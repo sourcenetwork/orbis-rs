@@ -251,6 +251,7 @@ fn ring_fixture(writer: &NativeVeraClient, requires_pet: bool, state: RingState)
         requires_pet,
         nonce: [4; 32],
         trusted_auth_relay_dids: None,
+        pre_share_endpoints: Vec::new(),
         reporting: Default::default(),
     };
     let record = RingRecord {

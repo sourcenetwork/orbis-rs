@@ -350,6 +350,7 @@ impl GatewayNetwork {
             requires_pet: true,
             nonce: [2; 32],
             trusted_auth_relay_dids: None,
+            pre_share_endpoints: Vec::new(),
             reporting: ReportingConfig::default(),
         };
         let token = create_scoped_bearer_token(
@@ -482,6 +483,7 @@ async fn verify_results(
             nonce: [nonce; 32],
             trusted_auth_relay_dids: (mode == Mode::Relay)
                 .then(|| vec![input.trusted_orbis_relay_did.clone()]),
+            pre_share_endpoints: Vec::new(),
             reporting: ReportingConfig::default(),
         };
         assert_eq!(config.id(network.root.0, actor).unwrap(), result.ring_id);

@@ -790,6 +790,7 @@ mod tests {
             trusted_auth_relay_dids: Some(vec![
                 "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
             ]),
+            pre_share_endpoints: Vec::new(),
             reporting: vera_client::rings::ReportingConfig {
                 kick_threshold: 7,
                 ..Default::default()

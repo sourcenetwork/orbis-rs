@@ -426,6 +426,7 @@ async fn native_admin_provisions_ring_and_recovers_exact_results() {
         requires_pet: false,
         nonce: [1; 32],
         trusted_auth_relay_dids: None,
+        pre_share_endpoints: Vec::new(),
         reporting: ReportingConfig::default(),
     };
     let ring_id = ring.id(root.0, &actor).unwrap();
