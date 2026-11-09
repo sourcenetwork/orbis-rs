@@ -373,7 +373,10 @@ services:
       dockerfile: Dockerfile.defra-integration
       args:
         DEFRA_REF: ${DEFRA_REF:-main}
-    command: ["--rootdir", "/data", "--url", "0.0.0.0:9181", "--no-keyring=true", "start", "--store", "memory", "--no-p2p=true"]
+    # `--workers 2 --worker-priority nice:10`: see the Cosmos compose file's
+    # own `defra` service comment for why -- same fix, same reason, both
+    # backends.
+    command: ["--rootdir", "/data", "--url", "0.0.0.0:9181", "--no-keyring=true", "start", "--store", "memory", "--no-p2p=true", "--workers", "2", "--worker-priority", "nice:10"]
     ports:
       - "127.0.0.1::9181"
     networks:
