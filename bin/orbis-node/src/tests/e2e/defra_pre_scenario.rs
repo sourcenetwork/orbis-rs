@@ -220,9 +220,19 @@ async fn test_defra_backed_pre_end_to_end() {
     .expect("request PRE reencryption");
     let pending_json = serde_json::to_string(&pending).expect("serialize pending PRE retrieval");
 
-    let crypto_feature =
-        std::env::var("ORBIS_INTEGRATION_CRYPTO").unwrap_or_else(|_| "bls12-381".to_string());
-    let image = test_support::build_cli_tool_sidecar_image(&crypto_feature)
+    // Must match whatever curve *this test binary itself* was compiled
+    // with, not an env var: `ORBIS_INTEGRATION_CRYPTO` is a Docker-build-time
+    // convention that only Cosmos's own image build reads (native doesn't
+    // set it at all in CI), so reading it here picked the wrong curve for
+    // native, silently defaulting to bls12-381 even under a jubjub build —
+    // confirmed by a real cross-backend size mismatch ("PubPoly bytes too
+    // short: expected 100, got 68") when the sidecar tried to parse
+    // jubjub-sized manifest data as bls12-381.
+    #[cfg(feature = "bls12-381")]
+    let crypto_feature = "bls12-381";
+    #[cfg(feature = "jubjub")]
+    let crypto_feature = "jubjub";
+    let image = test_support::build_cli_tool_sidecar_image(crypto_feature)
         .expect("build cli-tool sidecar image");
     let stdout = test_support::run_sidecar_container(
         &image,
