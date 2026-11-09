@@ -13,22 +13,40 @@
 //! Defra access are the only pieces this feature still needs outside the
 //! trait.
 //!
-//! The rest of the flow — DKG trigger+wait, StoreSecret, register/grant,
-//! PRE, decrypt, assert — is the already-shared `pre_scenario::run`
-//! conformance helper used by a dozen other scenario tests; since
-//! `ring_id`'s `pre_share_endpoints` is set, every `cli_tool::do_pre` call
-//! inside it automatically goes through the real gRPC round trip ->
-//! `PreReencryptResponse::Stored` -> `pre_share::recover_from_manifest`
-//! (fetching from the real `defra` container) -> decrypt, with no special
-//! casing needed.
+//! DKG uses the already-shared `pre_scenario::run_dkg` helper. The PRE
+//! retrieval step, though, needs a sidecar: a reader fetching from Defra
+//! needs `defra_container_url`, and on Docker Desktop (macOS/Windows) only
+//! a *container* on this project's own bridge network can reach that
+//! address — the host process (this test itself) cannot, confirmed
+//! empirically on both backends. Producer-side writes from sibling
+//! containers succeed (Defra logs real mutation commits); a host-side
+//! fetch of the same address fails for every manifest entry. Not a bug in
+//! this feature or in Docker Desktop — its VM-isolated networking has no
+//! general host-to-container-IP path, only the narrow, purpose-built
+//! tunnels `defra_url` (host-published port) and (container-side only)
+//! `host.docker.internal` provide; this is a real Linux Docker host (CI)
+//! only limitation to work around, not something to re-diagnose from
+//! scratch if it fails here again.
+//!
+//! The split: `cli_tool::do_pre_and_save` runs the *request* on the host
+//! (plain gRPC to a published port, the same one-hop path every other
+//! `do_pre` call already uses) and stops just short of needing Defra,
+//! returning a `PendingPreRetrieval` the host already has in hand. That
+//! gets handed to a one-off `cli-tool` container
+//! (`test_support::build_cli_tool_sidecar_image`/`run_sidecar_container`,
+//! joined to `environment.sidecar_network_name()`) running `retrieve-pre`,
+//! which *does* reach Defra, fine, since it's just another container on the
+//! same bridge. Its stdout carries the same "Decrypted Secret: ..." line
+//! `cli-tool`'s own direct `pre` command already prints.
 //!
 //! Complements (does not replace) `pre::v0::tests::
 //! test_pre_with_defra_stored_delivery_end_to_end`, which exercises the same
 //! Defra-backed recovery path in-process against a mocked Defra endpoint —
 //! deliberately so, since that test's own harness has no real gRPC server to
 //! connect to. This test is the one place in the whole feature that proves
-//! the real gRPC round trip (`cli_tool::do_pre` over an actual
-//! `PreServiceClient` connection) against a *real* `defra` binary.
+//! the real gRPC round trip (`cli_tool::do_pre_and_save` over an actual
+//! `PreServiceClient` connection, `retrieve-pre` over a real `defra` binary)
+//! end to end.
 
 use super::{pre_scenario, TestEnvironmentImpl};
 use test_support::admin::RingSpec;
@@ -38,6 +56,8 @@ use test_support::fixture::{
 };
 
 const THRESHOLD: u32 = 2;
+const PLAINTEXT: &[u8] = b"defra-docker-e2e-plaintext";
+const READER_SEED: &str = "defra-pre-scenario-reader";
 
 // `register_ring`'s own implementation (both backends) registers
 // `policy_id` as a `ring_policy` ACP object and grants itself the `creator`
@@ -138,7 +158,87 @@ async fn test_defra_backed_pre_end_to_end() {
         })
         .await;
 
+    let (keys, _local_state) = pre_scenario::run_dkg(&environment, &ring_id).await;
+
     let document_policy_id = environment.create_policy(DOCUMENT_POLICY_YAML).await;
 
-    pre_scenario::run(&environment, &ring_id, &document_policy_id).await;
+    let prepared = cli_tool::prepare_secret(
+        PLAINTEXT,
+        &keys.main,
+        None,
+        document_policy_id.0.clone(),
+        "document".to_string(),
+        "read".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("prepare secret");
+
+    let node1_endpoint = environment.nodes()[0].grpc_endpoint.clone();
+    let stored = cli_tool::store_prepared_secret(
+        node1_endpoint.clone(),
+        &prepared,
+        ring_id.0.clone(),
+        None,
+        true,
+        None,
+    )
+    .await
+    .expect("store prepared secret");
+    let object_id = stored.object_id;
+
+    environment
+        .register_object(&document_policy_id, "document", &object_id)
+        .await;
+    let reader_did = cli_tool::reader_did_from_seed(READER_SEED);
+    environment
+        .grant(
+            &document_policy_id,
+            "document",
+            &object_id,
+            "reader",
+            &reader_did,
+        )
+        .await;
+
+    // Host-side request only — stops just short of needing Defra access
+    // (see this file's own module doc comment).
+    let pending = cli_tool::do_pre_and_save(
+        node1_endpoint,
+        environment.chain_id(),
+        keys.main.clone(),
+        object_id,
+        Some(READER_SEED.to_string()),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("request PRE reencryption");
+    let pending_json = serde_json::to_string(&pending).expect("serialize pending PRE retrieval");
+
+    let crypto_feature =
+        std::env::var("ORBIS_INTEGRATION_CRYPTO").unwrap_or_else(|_| "bls12-381".to_string());
+    let image = test_support::build_cli_tool_sidecar_image(&crypto_feature)
+        .expect("build cli-tool sidecar image");
+    let stdout = test_support::run_sidecar_container(
+        &image,
+        &environment.sidecar_network_name(),
+        &["retrieve-pre", "--pending-json", &pending_json],
+    )
+    .expect("run cli-tool sidecar for PRE retrieval");
+
+    let decrypted = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Decrypted Secret:"))
+        .map(str::trim)
+        .expect("sidecar output must include a decrypted secret line");
+    assert_eq!(
+        decrypted.as_bytes(),
+        PLAINTEXT,
+        "decrypted plaintext must match the original secret"
+    );
 }

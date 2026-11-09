@@ -157,6 +157,57 @@ pub(super) fn stop_compose(compose_file: &str, project_name: &str) {
     }
 }
 
+/// Build the `cli-tool` sidecar image used by `defra_pre_scenario.rs`'s
+/// reader step — a one-off container run on the test network's own bridge
+/// for the one piece of that flow (Defra-stored PRE retrieval) a host
+/// process can't reach on Docker Desktop (macOS/Windows); see that test's
+/// own module doc comment. Idempotent: Docker's own build cache makes a
+/// repeat call with the same `crypto_feature` a fast no-op after the first.
+#[cfg(any(feature = "cosmos", feature = "native"))]
+pub fn build_cli_tool_sidecar_image(crypto_feature: &str) -> Result<String, String> {
+    let tag = format!("orbis-cli-tool-sidecar:{crypto_feature}");
+    let status = Command::new("docker")
+        .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..")
+        .args([
+            "build",
+            "-f",
+            "docker/Dockerfile.cli-tool-sidecar",
+            "--build-arg",
+            &format!("CRYPTO_FEATURE={crypto_feature}"),
+            "-t",
+            &tag,
+            ".",
+        ])
+        .status()
+        .map_err(|error| format!("Failed to run docker build for cli-tool sidecar: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "docker build failed for cli-tool sidecar image {tag}"
+        ));
+    }
+    Ok(tag)
+}
+
+/// Run a one-off `image` container joined to `network`, passing `args` to
+/// its entrypoint, and return its captured stdout. `--rm`: never left
+/// behind, regardless of exit status.
+#[cfg(any(feature = "cosmos", feature = "native"))]
+pub fn run_sidecar_container(image: &str, network: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("docker")
+        .args(["run", "--rm", "--network", network, image])
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to run sidecar container {image}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "sidecar container {image} exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::unique_project_name;

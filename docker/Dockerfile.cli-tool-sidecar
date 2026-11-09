@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# cli-tool sidecar image — a small, backend-agnostic gRPC client binary run
+# as a one-off container on a test network's own bridge, for the one step
+# (Defra-stored PRE retrieval) a host process can't reach on Docker Desktop.
+# See `defra_pre_scenario.rs`'s own module doc comment for why this exists.
+# ---------------------------------------------------------------------------
+ARG RUST_IMAGE=rust:latest
+FROM ${RUST_IMAGE} AS chef
+RUN apt-get update && apt-get install -y \
+    protobuf-compiler cmake golang build-essential libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN cargo install cargo-chef --locked --version ^0.1
+WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+# bls12-381 (default) | jubjub — must match the test network's own crypto
+# feature so the sidecar can deserialize the same wire types.
+ARG CRYPTO_FEATURE=bls12-381
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo chef cook --release --recipe-path recipe.json \
+      -p cli-tool --bin cli-tool --no-default-features --features "${CRYPTO_FEATURE}"
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo build --release --locked -p cli-tool --bin cli-tool --no-default-features \
+      --features "${CRYPTO_FEATURE}" && \
+    cp /app/target/release/cli-tool /cli-tool-bin
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /cli-tool-bin /usr/local/bin/cli-tool
+ENTRYPOINT ["cli-tool"]

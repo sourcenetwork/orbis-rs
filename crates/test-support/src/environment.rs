@@ -554,6 +554,15 @@ impl CosmosTestEnvironment {
         self.network.defra_container_url()
     }
 
+    /// This environment's own Docker network, for joining a one-off sidecar
+    /// container to it directly (`test_support::run_sidecar_container`) —
+    /// see `defra_pre_scenario.rs`'s own module doc comment. Not part of any
+    /// shared trait, but `NativeTestEnvironment` has its own mirrored method
+    /// of the same name.
+    pub fn sidecar_network_name(&self) -> String {
+        self.network.network_name()
+    }
+
     /// Updates a *non-member* running node's on-chain peer id and whitelists
     /// it for `ring`, so it can later be announced as a pure-new reshare
     /// target (e.g. the "node4 leads the new committee" shape several

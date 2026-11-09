@@ -102,6 +102,14 @@ impl NativeTestEnvironment {
     pub fn defra_container_url(&self) -> Option<String> {
         self.network.defra_container_url()
     }
+
+    /// This environment's own Docker network, for joining a one-off sidecar
+    /// container to it directly (`test_support::run_sidecar_container`) —
+    /// see `defra_pre_scenario.rs`'s own module doc comment. Mirrors
+    /// `CosmosTestEnvironment::sidecar_network_name`.
+    pub fn sidecar_network_name(&self) -> String {
+        self.network.cluster().network_name().to_string()
+    }
 }
 
 fn fixture_node(

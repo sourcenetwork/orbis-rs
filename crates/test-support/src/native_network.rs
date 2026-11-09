@@ -394,8 +394,25 @@ impl NativeTestNetwork {
     /// equivalent, no gateway-IP lookup is needed: this network's IPs are
     /// all statically pre-assigned (see `host_ip`/this module's doc
     /// comment), so Defra's address is known before any container exists.
+    ///
+    /// Same Docker-Desktop-on-macOS/Windows limitation as `CosmosNetwork::
+    /// defra_container_url` applies here too, confirmed empirically:
+    /// producer-side writes from sibling containers succeed, but a reader
+    /// running on the host (outside Docker) cannot route to this address at
+    /// all on Docker Desktop — only on a native Linux Docker host (e.g. CI),
+    /// where the host *is* the Docker host. Not a bug in this feature; see
+    /// `defra_pre_scenario.rs`'s own module doc comment.
     pub fn defra_container_url(&self) -> String {
         format!("http://{}:9181", self.defra_ip)
+    }
+
+    /// This project's own pre-created bridge network, by name — for joining
+    /// a one-off sidecar container to it directly via `docker run --network`.
+    /// Unlike Cosmos's equivalent, no Compose-generated-name guessing is
+    /// needed: this network was created directly (`create_external_network`),
+    /// so its name is already known verbatim.
+    pub fn network_name(&self) -> &str {
+        &self.network_name
     }
 
     pub fn node(&self, index: usize) -> &NativeTestNode {

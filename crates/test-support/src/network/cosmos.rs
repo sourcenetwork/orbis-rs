@@ -164,6 +164,15 @@ impl CosmosNetwork {
         self.defra_container_url.clone()
     }
 
+    /// This project's own Compose-managed bridge network, by its real,
+    /// Compose-generated name (not the compose-file network *key*,
+    /// `orbis-integration-network`) — for joining a one-off sidecar
+    /// container to it directly via `docker run --network`, bypassing
+    /// Compose entirely. Same formula `bridge_network_gateway` already uses.
+    pub fn network_name(&self) -> String {
+        format!("{}_orbis-integration-network", self.project_name)
+    }
+
     pub fn vera_rpc_url(&self) -> &str {
         &self.chain_config.rpc_url
     }
