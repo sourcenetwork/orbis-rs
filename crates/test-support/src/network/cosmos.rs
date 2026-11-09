@@ -154,9 +154,14 @@ impl CosmosNetwork {
     /// reachable both from sibling containers and, on a native Linux Docker
     /// host, from the host itself — the same host that commands `docker
     /// compose up` in the first place. `None` unless
-    /// `CosmosNetworkBuilder::with_defra` was used.
-    pub fn defra_container_url(&self) -> Option<&str> {
-        self.defra_container_url.as_deref()
+    /// `CosmosNetworkBuilder::with_defra` was used. `Option<String>` (not
+    /// `&str`): matches `NativeTestNetwork::defra_container_url`'s return
+    /// type, which has no stored string to borrow from (it formats the
+    /// address fresh from a static IP on every call) — same signature on
+    /// both lets a shared test body call either without backend-specific
+    /// handling.
+    pub fn defra_container_url(&self) -> Option<String> {
+        self.defra_container_url.clone()
     }
 
     pub fn vera_rpc_url(&self) -> &str {
@@ -463,56 +468,53 @@ impl CosmosNetworkBuilder {
             panic!("Failed to start integration test containers");
         }
 
-        let endpoints = (|| -> Result<(ChainConfig, Vec<String>, Option<String>, Option<String>), String> {
-            let chain_config = ChainConfig::builder()
-                .rpc_url(Some(localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    "vera",
-                    26657,
-                )?)))
-                .rest_url(Some(localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    "vera",
-                    1317,
-                )?)))
-                .grpc_url(Some(localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    "vera",
-                    9090,
-                )?)))
-                .build();
-            let mut node_endpoints = Vec::with_capacity(node_count);
-            for index in 1..=node_count {
-                let service = CosmosNetwork::service_name_for_node(index);
-                node_endpoints.push(localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    service,
-                    50051,
-                )?));
-            }
-            let (defra_url, defra_container_url) = if defra {
-                let url = localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    "defra",
-                    9181,
-                )?);
-                let gateway = bridge_network_gateway(&project_name)?;
-                (Some(url), Some(format!("http://{gateway}:9181")))
-            } else {
-                (None, None)
-            };
-            Ok((chain_config, node_endpoints, defra_url, defra_container_url))
-        })()
-        .unwrap_or_else(|error| {
-            report_compose_failure(&compose_file, &project_name);
-            stop_compose(&compose_file, &project_name);
-            panic!("Failed to discover integration test endpoints: {error}");
-        });
+        let endpoints =
+            (|| -> Result<(ChainConfig, Vec<String>, Option<String>, Option<String>), String> {
+                let chain_config = ChainConfig::builder()
+                    .rpc_url(Some(localhost_url(published_port(
+                        &compose_file,
+                        &project_name,
+                        "vera",
+                        26657,
+                    )?)))
+                    .rest_url(Some(localhost_url(published_port(
+                        &compose_file,
+                        &project_name,
+                        "vera",
+                        1317,
+                    )?)))
+                    .grpc_url(Some(localhost_url(published_port(
+                        &compose_file,
+                        &project_name,
+                        "vera",
+                        9090,
+                    )?)))
+                    .build();
+                let mut node_endpoints = Vec::with_capacity(node_count);
+                for index in 1..=node_count {
+                    let service = CosmosNetwork::service_name_for_node(index);
+                    node_endpoints.push(localhost_url(published_port(
+                        &compose_file,
+                        &project_name,
+                        service,
+                        50051,
+                    )?));
+                }
+                let (defra_url, defra_container_url) = if defra {
+                    let url =
+                        localhost_url(published_port(&compose_file, &project_name, "defra", 9181)?);
+                    let gateway = bridge_network_gateway(&project_name)?;
+                    (Some(url), Some(format!("http://{gateway}:9181")))
+                } else {
+                    (None, None)
+                };
+                Ok((chain_config, node_endpoints, defra_url, defra_container_url))
+            })()
+            .unwrap_or_else(|error| {
+                report_compose_failure(&compose_file, &project_name);
+                stop_compose(&compose_file, &project_name);
+                panic!("Failed to discover integration test endpoints: {error}");
+            });
         let (chain_config, node_endpoints, defra_url, defra_container_url) = endpoints;
 
         let network = CosmosNetwork {

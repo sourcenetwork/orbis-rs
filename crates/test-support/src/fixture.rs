@@ -179,11 +179,12 @@ pub struct ScenarioFixture {
     pub documents: Vec<DocumentFixture>,
     pub key_derivations: Vec<KeyDerivationFixture>,
     pub node_demerits: Vec<NodeDemeritFixture>,
-    /// Stand up a Defra container alongside the rest of the environment.
-    /// Cosmos-only today (`CosmosTestEnvironment::defra_url`/
-    /// `defra_container_url` read it); native ignores it — a ring created
-    /// through this environment has no `pre_share_endpoints` concept on
-    /// native yet.
+    /// Stand up a Defra container alongside the rest of the environment, for
+    /// a ring created with `RingSpec::pre_share_endpoints` set. Read by both
+    /// concrete environments (`CosmosTestEnvironment`/`NativeTestEnvironment`),
+    /// each exposing its own `defra_url`/`defra_container_url` escape
+    /// hatches (not part of any shared trait — see each one's own doc
+    /// comment).
     pub defra: bool,
 }
 

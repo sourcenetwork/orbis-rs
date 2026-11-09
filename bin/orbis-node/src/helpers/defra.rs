@@ -88,8 +88,7 @@ mod tests {
 
     const SIGNING_KEY_HEX: &str =
         "c4a48e2fce1481cd3294b4490f6678090ea98d3d0e5cd984558ab0968741b104";
-    const NODE_KEY_HEX: &str =
-        "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
+    const NODE_KEY_HEX: &str = "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
 
     #[tokio::test]
     async fn client_for_mints_a_client_for_a_valid_endpoint() {

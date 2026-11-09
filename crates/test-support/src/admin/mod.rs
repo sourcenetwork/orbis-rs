@@ -39,6 +39,14 @@ pub struct RingSpec {
     pub nonce: Option<String>,
     pub trusted_auth_relay_dids: Vec<String>,
     pub requires_pet: bool,
+    /// Selects Defra-backed PRE share storage over direct response delivery.
+    /// Empty (the common case) keeps today's direct-delivery behavior.
+    /// `register_ring`'s own implementation registers `policy_id` as a
+    /// `ring_policy` ACP object and grants itself the `creator` relation on
+    /// it before submitting — the caller's policy must define that shape
+    /// (see `defra_pre_scenario.rs`'s own ring-policy constant for the
+    /// expected YAML).
+    pub pre_share_endpoints: Vec<String>,
 }
 
 #[derive(Clone, Debug)]

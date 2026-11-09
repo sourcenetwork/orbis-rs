@@ -17,7 +17,10 @@ pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 // dead once `reporting.rs` (its last caller) was fully migrated and
 // deleted (harness-unification migration, PR 5f) — removed.
 // `create_ring_on_chain`/`create_ring_on_chain_with_trusted_relays` stayed
-// here; see their doc comments below.
+// here; see their doc comments below. The third sibling,
+// `create_ring_on_chain_with_pre_share_endpoints`, was removed once
+// `CosmosAdmin::register_ring`/`RingSpec::pre_share_endpoints` grew a real
+// (not `unimplemented!()`) implementation — that's the shared path now.
 // `test` (not just the feature) is required here specifically: `test_support`
 // is a dev-dependency, available to the lib's own unit-test build but not to
 // the library test tree links against — unlike
@@ -945,34 +948,4 @@ pub async fn create_ring_on_chain_with_trusted_relays(
     )
     .await
     .expect("create ring on-chain")
-}
-
-/// Same as [`create_ring_on_chain`], but sets the ring's `pre_share_endpoints`
-/// — selecting Defra-backed PRE share storage over today's direct response.
-/// A separate sibling (rather than a new parameter on the existing
-/// functions) so no existing call site needs to change.
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-pub async fn create_ring_on_chain_with_pre_share_endpoints(
-    chain_config: &ChainConfig,
-    node_keys: &[String],
-    threshold: u32,
-    policy_id: &str,
-    nonce: Option<&str>,
-    pre_share_endpoints: Vec<String>,
-) -> String {
-    cli_tool::create_ring(
-        node_keys.to_vec(),
-        threshold,
-        86400,
-        policy_id.to_string(),
-        nonce.map(String::from),
-        network::V0.version,
-        vec![],
-        false,
-        pre_share_endpoints,
-        chain_config.clone(),
-        TEST_ACCOUNT_HEX_KEY,
-    )
-    .await
-    .expect("create ring on-chain with pre_share_endpoints")
 }

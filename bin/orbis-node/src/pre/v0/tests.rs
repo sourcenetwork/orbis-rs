@@ -2456,15 +2456,20 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
         let body: serde_json::Value =
             serde_json::from_slice(&request.body).expect("valid JSON body");
         let participant = body["participant"].as_str().expect("participant field");
-        let envelope_json = body["envelope"].as_str().expect("envelope field").to_string();
+        let envelope_json = body["envelope"]
+            .as_str()
+            .expect("envelope field")
+            .to_string();
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path(format!(
                 "/api/v0/collections/{}/document/bae-{participant}",
                 pre_share::PRE_SHARE_COLLECTION
             )))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "envelope": envelope_json,
-            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "envelope": envelope_json,
+                })),
+            )
             .mount(&mock_server)
             .await;
     }
@@ -2487,7 +2492,9 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
 
     let recovered = pre_share::recover_from_manifest(&manifest, "")
         .await
-        .expect("recover_from_manifest should succeed against the real coordinator-produced manifest");
+        .expect(
+            "recover_from_manifest should succeed against the real coordinator-produced manifest",
+        );
 
     let decrypted = PreImpl::decrypt_secret(
         &aggregate_pk,

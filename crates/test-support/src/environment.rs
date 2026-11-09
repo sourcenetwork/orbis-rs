@@ -550,7 +550,7 @@ impl CosmosTestEnvironment {
     /// why the Compose service name alone doesn't work here. `None` unless
     /// `ScenarioFixture::defra` was set. Not part of any shared trait, but
     /// `NativeTestEnvironment` has its own mirrored method of the same name.
-    pub fn defra_container_url(&self) -> Option<&str> {
+    pub fn defra_container_url(&self) -> Option<String> {
         self.network.defra_container_url()
     }
 
@@ -671,11 +671,11 @@ impl AuthorizationTestDriver for CosmosTestEnvironment {
 #[async_trait::async_trait]
 impl BulletinTestDriver for CosmosTestEnvironment {
     async fn register_ring(&self, spec: RingSpec) -> RingId {
-        // Same `unimplemented!()` as `CosmosAdmin::register_ring` — not a new
-        // gap, see that method's doc comment. Fixture-driven ring creation
-        // (`provision()`, above) does not go through this method for Cosmos;
-        // it genesis-seeds instead, since a live `register_ring` here would
-        // need the same not-yet-available mechanism.
+        // Fixture-driven ring creation (`provision()`, above) does not go
+        // through this method for Cosmos; it genesis-seeds instead, since
+        // genesis is the only place a *fixture* ring's id needs to be known
+        // ahead of time. This is the live, post-provision path instead —
+        // see `CosmosAdmin::register_ring`.
         self.network.admin().register_ring(spec).await
     }
 

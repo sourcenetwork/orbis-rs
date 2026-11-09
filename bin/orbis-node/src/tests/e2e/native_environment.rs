@@ -102,99 +102,6 @@ impl NativeTestEnvironment {
     pub fn defra_container_url(&self) -> Option<String> {
         self.network.defra_container_url()
     }
-
-    /// Same ring-creation path as `register_ring`, but sets
-    /// `pre_share_endpoints` directly and performs the one-time ring-policy
-    /// registration/authorization that `provision()`'s fixture loop
-    /// otherwise does inline. `RingSpec` deliberately carries no
-    /// `pre_share_endpoints` field (see its own doc comment), so this is a
-    /// dedicated escape hatch for `defra_pre_scenario.rs`, mirroring
-    /// `CosmosTestEnvironment::chain_config()`'s role on the Cosmos side.
-    pub async fn create_ring_with_pre_share_endpoints(
-        &self,
-        policy_id: &PolicyId,
-        node_keys: &[String],
-        threshold: u32,
-        pre_share_endpoints: Vec<String>,
-    ) -> RingId {
-        let policy_bytes = Self::policy_bytes(policy_id);
-        let registered = self
-            .client
-            .native_register_object(&self.worker, policy_bytes, &policy_id.0, "ring_policy")
-            .await
-            .unwrap();
-        confirmed(&self.client, registered.transaction_hash, &self.trusted).await;
-        let granted = self
-            .client
-            .native_set_relationship(
-                &self.worker,
-                policy_bytes,
-                "ring_policy",
-                &policy_id.0,
-                "creator",
-                &self.actor,
-            )
-            .await
-            .unwrap();
-        confirmed(&self.client, granted.transaction_hash, &self.trusted).await;
-
-        let now = unix_now();
-        for info in self.nodes() {
-            for command in [
-                NodeCommand::SetPeer(info.p2p_address.clone()),
-                NodeCommand::Allow(NodeTarget::Policy(policy_id.0.clone())),
-            ] {
-                let current = self
-                    .client
-                    .read_threshold_node(&info.node_key, 1, &self.trusted)
-                    .await
-                    .unwrap()
-                    .record
-                    .unwrap();
-                let signed = sign_node_request(
-                    NodeRequest {
-                        deployment_root: self.root.0,
-                        deployment_id: DEPLOYMENT,
-                        node_key: info.node_key.clone(),
-                        sequence: current.sequence,
-                        expires_at: now + 300,
-                        command,
-                    },
-                    &self.controller,
-                )
-                .unwrap();
-                submit(
-                    &self.client,
-                    &self.worker,
-                    &self.trusted,
-                    encode_node_request(&signed).unwrap(),
-                    "authorize node for defra-backed ring",
-                    self.network.cluster(),
-                )
-                .await;
-            }
-        }
-
-        create_ring(
-            &self.client,
-            &self.worker,
-            &self.trusted,
-            &self.controller,
-            self.network.cluster(),
-            RingSpec {
-                node_keys: node_keys.to_vec(),
-                threshold,
-                pss_interval: Duration::from_secs(86_400),
-                policy_id: policy_id.clone(),
-                nonce: None,
-                trusted_auth_relay_dids: Vec::new(),
-                requires_pet: false,
-            },
-            ReportingConfig::default(),
-            pre_share_endpoints,
-        )
-        .await
-    }
 }
 
 fn fixture_node(
@@ -281,7 +188,6 @@ async fn create_ring(
     cluster: &NativeTestNetwork,
     spec: RingSpec,
     reporting: ReportingConfig,
-    pre_share_endpoints: Vec<String>,
 ) -> RingId {
     let mut members = spec.node_keys;
     members.sort();
@@ -305,7 +211,7 @@ async fn create_ring(
         trusted_auth_relay_dids: (!spec.trusted_auth_relay_dids.is_empty())
             .then_some(spec.trusted_auth_relay_dids),
         reporting,
-        pre_share_endpoints,
+        pre_share_endpoints: spec.pre_share_endpoints,
     };
     let ring_id = config.id().unwrap();
     let now = unix_now();
@@ -586,6 +492,7 @@ impl TestEnvironment for NativeTestEnvironment {
                     nonce: None,
                     trusted_auth_relay_dids: Vec::new(),
                     requires_pet: ring.requires_pet,
+                    pre_share_endpoints: Vec::new(),
                 },
                 ReportingConfig {
                     node_offline_demerits: ring.reporting.node_offline_demerits,
@@ -611,7 +518,6 @@ impl TestEnvironment for NativeTestEnvironment {
                         })
                         .collect(),
                 },
-                vec![],
             )
             .await;
             rings.insert(
@@ -765,6 +671,73 @@ impl AuthorizationTestDriver for NativeTestEnvironment {
 #[async_trait::async_trait]
 impl BulletinTestDriver for NativeTestEnvironment {
     async fn register_ring(&self, spec: RingSpec) -> RingId {
+        // `spec.policy_id` is an already-created, plain ACP policy (from
+        // `create_policy`, which never registers any object) — register it
+        // as a `ring_policy` object and grant this environment's own
+        // `actor` the `creator` relation its own policy must define for
+        // `create_ring`. See `RingSpec::pre_share_endpoints`'s doc comment.
+        let policy_bytes = Self::policy_bytes(&spec.policy_id);
+        let registered = self
+            .client
+            .native_register_object(&self.worker, policy_bytes, &spec.policy_id.0, "ring_policy")
+            .await
+            .unwrap();
+        confirmed(&self.client, registered.transaction_hash, &self.trusted).await;
+        let granted = self
+            .client
+            .native_set_relationship(
+                &self.worker,
+                policy_bytes,
+                "ring_policy",
+                &spec.policy_id.0,
+                "creator",
+                &self.actor,
+            )
+            .await
+            .unwrap();
+        confirmed(&self.client, granted.transaction_hash, &self.trusted).await;
+
+        // Every running node must be authorized for the policy before it
+        // can join the ring — unlike Cosmos, which only knows the ring id
+        // (and so whitelists by it) after creation, native authorizes by
+        // policy beforehand.
+        let now = unix_now();
+        for info in self.nodes() {
+            for command in [
+                NodeCommand::SetPeer(info.p2p_address.clone()),
+                NodeCommand::Allow(NodeTarget::Policy(spec.policy_id.0.clone())),
+            ] {
+                let current = self
+                    .client
+                    .read_threshold_node(&info.node_key, 1, &self.trusted)
+                    .await
+                    .unwrap()
+                    .record
+                    .unwrap();
+                let signed = sign_node_request(
+                    NodeRequest {
+                        deployment_root: self.root.0,
+                        deployment_id: DEPLOYMENT,
+                        node_key: info.node_key.clone(),
+                        sequence: current.sequence,
+                        expires_at: now + 300,
+                        command,
+                    },
+                    &self.controller,
+                )
+                .unwrap();
+                submit(
+                    &self.client,
+                    &self.worker,
+                    &self.trusted,
+                    encode_node_request(&signed).unwrap(),
+                    "authorize node for ring",
+                    self.network.cluster(),
+                )
+                .await;
+            }
+        }
+
         create_ring(
             &self.client,
             &self.worker,
@@ -773,7 +746,6 @@ impl BulletinTestDriver for NativeTestEnvironment {
             self.network.cluster(),
             spec,
             ReportingConfig::default(),
-            vec![],
         )
         .await
     }
