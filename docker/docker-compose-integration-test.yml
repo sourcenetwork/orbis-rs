@@ -82,7 +82,19 @@ services:
       # local-test fixture like the fixed password/keys above.
       - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
-    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    # `--network-private-routes-only`/`--network-bind-addr`: these 3 nodes
+    # can always reach each other directly on this same Compose bridge
+    # network, so there's no reason for DKG's P2P control messages to
+    # depend on iroh's public relay infrastructure (dns.iroh.link,
+    # *.relay.n0.iroh.link) at all -- a third-party network dependency a
+    # CI runner's own network path to it can make unreliable, independent
+    # of anything in this project. Matches the native compose file's own
+    # node commands, which already use this pairing successfully with the
+    # same real-container-address style (not the in-process harness's
+    # loopback addressing, where this combination was separately found to
+    # break `connect()` -- see `harness.rs`'s own "Tried and reverted" note,
+    # which doesn't apply here).
+    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001"]
     volumes:
       - ./services-config-vera.json:/etc/orbis/services.json:ro
     ports:
@@ -120,7 +132,7 @@ services:
       # local-test fixture like the fixed password/keys above.
       - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
-    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001"]
     volumes:
       - ./services-config-vera.json:/etc/orbis/services.json:ro
     ports:
@@ -158,7 +170,7 @@ services:
       # local-test fixture like the fixed password/keys above.
       - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
-    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001"]
     volumes:
       - ./services-config-vera.json:/etc/orbis/services.json:ro
     ports:
@@ -197,7 +209,7 @@ services:
       # local-test fixture like the fixed password/keys above.
       - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
-    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001"]
     volumes:
       - ./services-config-vera.json:/etc/orbis/services.json:ro
     ports:
