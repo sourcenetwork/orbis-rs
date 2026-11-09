@@ -486,7 +486,7 @@ async fn verify_results(
             reporting: ReportingConfig::default(),
             pre_share_endpoints: vec![],
         };
-        assert_eq!(config.id(network.root.0, actor).unwrap(), result.ring_id);
+        assert_eq!(config.id().unwrap(), result.ring_id);
         let keys = RingPublicKeys {
             public_key: result.public_key.clone(),
             pet_public_key: Some(result.pet_public_key.clone()),

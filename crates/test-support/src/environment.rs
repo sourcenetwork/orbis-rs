@@ -538,8 +538,8 @@ impl CosmosTestEnvironment {
     }
 
     /// Host-reachable Defra URL, when `ScenarioFixture::defra` was set.
-    /// `None` otherwise. Not part of any shared trait: native has no
-    /// equivalent concept.
+    /// `None` otherwise. Not part of any shared trait, but `NativeTestEnvironment`
+    /// has its own mirrored method of the same name.
     pub fn defra_url(&self) -> Option<&str> {
         self.network.defra_url()
     }
@@ -548,8 +548,8 @@ impl CosmosTestEnvironment {
     /// must use so both sibling node containers and this process can reach
     /// it — see `CosmosNetwork::defra_container_url`'s own doc comment for
     /// why the Compose service name alone doesn't work here. `None` unless
-    /// `ScenarioFixture::defra` was set. Not part of any shared trait: native
-    /// has no equivalent concept.
+    /// `ScenarioFixture::defra` was set. Not part of any shared trait, but
+    /// `NativeTestEnvironment` has its own mirrored method of the same name.
     pub fn defra_container_url(&self) -> Option<&str> {
         self.network.defra_container_url()
     }

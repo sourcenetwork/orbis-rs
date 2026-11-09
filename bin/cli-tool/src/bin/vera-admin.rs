@@ -38,12 +38,8 @@ struct Args {
 enum Command {
     /// Open or create a worker and print its delegation identity and pending request.
     Worker,
-    /// Derive a new ring's identity from its create request and actor DID.
-    RingId {
-        request: PathBuf,
-        #[arg(long)]
-        actor: String,
-    },
+    /// Derive a new ring's identity from its create request.
+    RingId { request: PathBuf },
     /// Read a ring from certified current state.
     Ring {
         ring_id: String,
@@ -159,11 +155,11 @@ async fn main() -> Result<()> {
     let raw: bulletin::native::NativeBulletinConfig =
         serde_json::from_slice(&read_bounded(&args.vera_config, 16 * 1024)?)?;
     let config = NativeConfig::try_from(raw).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    if let Command::RingId { request, actor } = &args.command {
+    if let Command::RingId { request } = &args.command {
         let RingCommand::Create(ring) = ring_command(request)? else {
             bail!("ring-id requires a Create request")
         };
-        return print(json!({"ring_id": ring.id(config.root, actor)?}));
+        return print(json!({"ring_id": ring.id()?}));
     }
     if let Command::SignNode {
         command,

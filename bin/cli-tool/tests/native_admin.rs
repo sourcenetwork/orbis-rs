@@ -427,15 +427,16 @@ async fn native_admin_provisions_ring_and_recovers_exact_results() {
         nonce: [1; 32],
         trusted_auth_relay_dids: None,
         reporting: ReportingConfig::default(),
+        pre_share_endpoints: Vec::new(),
     };
-    let ring_id = ring.id(root.0, &actor).unwrap();
+    let ring_id = ring.id().unwrap();
     std::fs::write(
         base.join("create.json"),
         serde_json::to_vec(&RingCommand::Create(ring)).unwrap(),
     )
     .unwrap();
     assert_eq!(
-        admin(base, &["ring-id", "create.json", "--actor", &actor], true).await["ring_id"],
+        admin(base, &["ring-id", "create.json"], true).await["ring_id"],
         ring_id
     );
     let prepared = admin(

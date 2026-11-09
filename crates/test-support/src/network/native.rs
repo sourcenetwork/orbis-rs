@@ -41,12 +41,17 @@ pub struct NativeNetworkAdapter {
     /// Lifecycle commands must replay it so blank/default values are not
     /// interpreted as desired-state changes.
     compose_env: Vec<(String, String)>,
+    /// Host-reachable Defra URL, set only when `start_configured`'s `defra`
+    /// flag was set — for the test driver's own HTTP calls (provisioning the
+    /// `PreShare` collection, polling health); nodes inside the Compose
+    /// network reach Defra via `cluster.defra_container_url()` instead.
+    defra_url: Option<String>,
     _node_fixtures: tempfile::TempDir,
 }
 
 impl NativeNetworkAdapter {
     pub async fn start(deployment: u64) -> Self {
-        Self::start_configured(deployment, DEFAULT_ORBIS_NODE_COUNT, false, false).await
+        Self::start_configured(deployment, DEFAULT_ORBIS_NODE_COUNT, false, false, false).await
     }
 
     pub async fn start_configured(
@@ -54,6 +59,7 @@ impl NativeNetworkAdapter {
         node_count: usize,
         production_node_build: bool,
         unsafe_testing_runtime_enabled: bool,
+        defra: bool,
     ) -> Self {
         assert!(
             (1..=4).contains(&node_count),
@@ -74,16 +80,53 @@ impl NativeNetworkAdapter {
             node_count,
             production_node_build,
             unsafe_testing_runtime_enabled,
+            defra,
         )
         .await;
         let mut compose_env = cluster.compose_env().to_vec();
         compose_env.extend(node_env);
+        let defra_url = if defra {
+            Some(localhost_url(
+                published_port_with_env(
+                    cluster.compose_file(),
+                    cluster.project_name(),
+                    "defra",
+                    9181,
+                    &compose_env,
+                )
+                .unwrap_or_else(|error| {
+                    report_compose_failure(cluster.compose_file(), cluster.project_name());
+                    stop_compose(cluster.compose_file(), cluster.project_name());
+                    panic!("discover defra endpoint: {error}");
+                }),
+            ))
+        } else {
+            None
+        };
         Self {
             cluster,
             orbis_nodes,
             compose_env,
+            defra_url,
             _node_fixtures: node_fixtures,
         }
+    }
+
+    /// Host-reachable URL for the Defra container, when
+    /// `start_configured`'s `defra` flag was set — `None` otherwise. See
+    /// this struct's `defra_url` field doc comment.
+    pub fn defra_url(&self) -> Option<&str> {
+        self.defra_url.as_deref()
+    }
+
+    /// Address for Defra reachable from *inside* the Compose network —
+    /// i.e. by orbis-node containers (a ring's `pre_share_endpoints`
+    /// resolves this). `None` unless `start_configured`'s `defra` flag was
+    /// set.
+    pub fn defra_container_url(&self) -> Option<String> {
+        self.defra_url
+            .as_ref()
+            .map(|_| self.cluster.defra_container_url())
     }
 
     pub fn cluster(&self) -> &NativeTestNetwork {
@@ -205,6 +248,7 @@ async fn bring_up_orbis_nodes(
     count: usize,
     production_node_build: bool,
     unsafe_testing_runtime_enabled: bool,
+    defra: bool,
 ) -> (Vec<NativeOrbisNode>, Vec<(String, String)>) {
     // All three orbis nodes point at the same validator for chain RPC — this
     // matches the Trust gateway startup (`cluster.node(0).rpc_url()`),
@@ -313,6 +357,30 @@ async fn bring_up_orbis_nodes(
         }
     }
 
+    // Defra's own image/build is independent of the orbis-node reuse flag
+    // above (there's only one `defra` service, so no multi-replica tag race
+    // to work around) — build it unconditionally whenever it's requested.
+    if defra {
+        let mut build = compose_command(cluster.compose_file(), cluster.project_name());
+        build.args(["build", "defra"]);
+        for (key, value) in cluster.compose_env() {
+            build.env(key, value);
+        }
+        for (key, value) in &node_env {
+            build.env(key, value);
+        }
+        let status = build.status().expect("Failed to build native defra image");
+        if !status.success() {
+            report_compose_failure(cluster.compose_file(), cluster.project_name());
+            stop_compose(cluster.compose_file(), cluster.project_name());
+            panic!("docker compose build failed for native defra");
+        }
+    }
+
+    let mut up_services = services.clone();
+    if defra {
+        up_services.push("defra");
+    }
     let mut command = compose_command(cluster.compose_file(), cluster.project_name());
     command.arg("up").arg("-d");
     for (key, value) in cluster.compose_env() {
@@ -321,7 +389,7 @@ async fn bring_up_orbis_nodes(
     for (key, value) in &node_env {
         command.env(key, value);
     }
-    command.args(&services);
+    command.args(&up_services);
 
     let status = command
         .status()

@@ -360,6 +360,37 @@ services:
       retries: 30
       start_period: 30s
 
+  # Defra-backed PRE share storage (ring `pre_share_endpoints`). Opt-in: only
+  # brought up when `NativeNetworkAdapter::start_configured`'s `defra` flag
+  # is set, which adds it to the explicit `docker compose up -d` service
+  # list — there is no profile gate here (unlike the Cosmos compose file's
+  # `--profile defra`) since nothing else in this file declares a profile
+  # either; native's own services are always named explicitly.
+  defra:
+    image: ${DEFRA_INTEGRATION_IMAGE:-orbis-defra-integration:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.defra-integration
+      args:
+        DEFRA_REF: ${DEFRA_REF:-main}
+    command: ["--rootdir", "/data", "--url", "0.0.0.0:9181", "--no-keyring=true", "start", "--store", "memory", "--no-p2p=true"]
+    ports:
+      - "127.0.0.1::9181"
+    networks:
+      orbis-native-integration-network:
+        # Statically assigned (see `host_ip`/`NativeTestNetwork::defra_ip`),
+        # unlike the Cosmos compose file's Defra service, which discovers its
+        # address via the bridge network's auto-assigned gateway IP — this
+        # network's addresses are all pre-assigned instead, so the same
+        # address is known before this container even starts.
+        ipv4_address: ${ORBIS_NATIVE_DEFRA_IP}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9181/health-check"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
 networks:
   # Pre-created by crates/test-support/src/native_network.rs (plain `docker
   # network create`, letting Docker pick a non-colliding subnet) so validator

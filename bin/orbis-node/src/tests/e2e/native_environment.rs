@@ -85,6 +85,116 @@ impl NativeTestEnvironment {
     fn policy_bytes(policy: &PolicyId) -> B256 {
         B256::from_slice(&hex::decode(&policy.0).expect("policy id is hex-encoded"))
     }
+
+    /// Host-reachable Defra URL, when `ScenarioFixture::defra` was set.
+    /// `None` otherwise. Mirrors `CosmosTestEnvironment::defra_url`.
+    pub fn defra_url(&self) -> Option<&str> {
+        self.network.defra_url()
+    }
+
+    /// The address a ring's `pre_share_endpoints` must use so both sibling
+    /// node containers and this process can reach it. Unlike Cosmos's
+    /// equivalent, this doesn't need a bridge-network gateway-IP lookup —
+    /// native's own project network pre-assigns every address statically
+    /// (see `NativeTestNetwork::defra_container_url`). `None` unless
+    /// `ScenarioFixture::defra` was set. Mirrors
+    /// `CosmosTestEnvironment::defra_container_url`.
+    pub fn defra_container_url(&self) -> Option<String> {
+        self.network.defra_container_url()
+    }
+
+    /// Same ring-creation path as `register_ring`, but sets
+    /// `pre_share_endpoints` directly and performs the one-time ring-policy
+    /// registration/authorization that `provision()`'s fixture loop
+    /// otherwise does inline. `RingSpec` deliberately carries no
+    /// `pre_share_endpoints` field (see its own doc comment), so this is a
+    /// dedicated escape hatch for `defra_pre_scenario.rs`, mirroring
+    /// `CosmosTestEnvironment::chain_config()`'s role on the Cosmos side.
+    pub async fn create_ring_with_pre_share_endpoints(
+        &self,
+        policy_id: &PolicyId,
+        node_keys: &[String],
+        threshold: u32,
+        pre_share_endpoints: Vec<String>,
+    ) -> RingId {
+        let policy_bytes = Self::policy_bytes(policy_id);
+        let registered = self
+            .client
+            .native_register_object(&self.worker, policy_bytes, &policy_id.0, "ring_policy")
+            .await
+            .unwrap();
+        confirmed(&self.client, registered.transaction_hash, &self.trusted).await;
+        let granted = self
+            .client
+            .native_set_relationship(
+                &self.worker,
+                policy_bytes,
+                "ring_policy",
+                &policy_id.0,
+                "creator",
+                &self.actor,
+            )
+            .await
+            .unwrap();
+        confirmed(&self.client, granted.transaction_hash, &self.trusted).await;
+
+        let now = unix_now();
+        for info in self.nodes() {
+            for command in [
+                NodeCommand::SetPeer(info.p2p_address.clone()),
+                NodeCommand::Allow(NodeTarget::Policy(policy_id.0.clone())),
+            ] {
+                let current = self
+                    .client
+                    .read_threshold_node(&info.node_key, 1, &self.trusted)
+                    .await
+                    .unwrap()
+                    .record
+                    .unwrap();
+                let signed = sign_node_request(
+                    NodeRequest {
+                        deployment_root: self.root.0,
+                        deployment_id: DEPLOYMENT,
+                        node_key: info.node_key.clone(),
+                        sequence: current.sequence,
+                        expires_at: now + 300,
+                        command,
+                    },
+                    &self.controller,
+                )
+                .unwrap();
+                submit(
+                    &self.client,
+                    &self.worker,
+                    &self.trusted,
+                    encode_node_request(&signed).unwrap(),
+                    "authorize node for defra-backed ring",
+                    self.network.cluster(),
+                )
+                .await;
+            }
+        }
+
+        create_ring(
+            &self.client,
+            &self.worker,
+            &self.trusted,
+            &self.controller,
+            self.network.cluster(),
+            RingSpec {
+                node_keys: node_keys.to_vec(),
+                threshold,
+                pss_interval: Duration::from_secs(86_400),
+                policy_id: policy_id.clone(),
+                nonce: None,
+                trusted_auth_relay_dids: Vec::new(),
+                requires_pet: false,
+            },
+            ReportingConfig::default(),
+            pre_share_endpoints,
+        )
+        .await
+    }
 }
 
 fn fixture_node(
@@ -168,11 +278,10 @@ async fn create_ring(
     worker: &BlsSigner,
     trusted: &ConsensusPublicKey,
     controller: &k256::ecdsa::SigningKey,
-    actor: &str,
-    root: B256,
     cluster: &NativeTestNetwork,
     spec: RingSpec,
     reporting: ReportingConfig,
+    pre_share_endpoints: Vec<String>,
 ) -> RingId {
     let mut members = spec.node_keys;
     members.sort();
@@ -196,9 +305,9 @@ async fn create_ring(
         trusted_auth_relay_dids: (!spec.trusted_auth_relay_dids.is_empty())
             .then_some(spec.trusted_auth_relay_dids),
         reporting,
-        pre_share_endpoints: vec![],
+        pre_share_endpoints,
     };
-    let ring_id = config.id(root.0, actor).unwrap();
+    let ring_id = config.id().unwrap();
     let now = unix_now();
     let token = create_scoped_bearer_token(
         controller,
@@ -252,6 +361,7 @@ impl TestEnvironment for NativeTestEnvironment {
             node_count,
             !requires_unsafe_testing,
             requires_unsafe_testing,
+            fixture.defra,
         )
         .await;
 
@@ -467,8 +577,6 @@ impl TestEnvironment for NativeTestEnvironment {
                 &worker,
                 &trusted,
                 &controller,
-                &actor,
-                root,
                 network.cluster(),
                 RingSpec {
                     node_keys: node_keys.clone(),
@@ -503,6 +611,7 @@ impl TestEnvironment for NativeTestEnvironment {
                         })
                         .collect(),
                 },
+                vec![],
             )
             .await;
             rings.insert(
@@ -661,11 +770,10 @@ impl BulletinTestDriver for NativeTestEnvironment {
             &self.worker,
             &self.trusted,
             &self.controller,
-            &self.actor,
-            self.root,
             self.network.cluster(),
             spec,
             ReportingConfig::default(),
+            vec![],
         )
         .await
     }
