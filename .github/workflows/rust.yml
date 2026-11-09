@@ -245,7 +245,7 @@ jobs:
   # actual run is release-mode, so its warm-up builds in release too (a
   # debug warm-up wouldn't populate the cache the release run reads from).
   compile:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'native'
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-compile-${{ strategy.job-index }}/spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
@@ -253,14 +253,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - backend: cosmos
-            crypto: bls12-381
-            cargo_flags: --features=integration-test,cosmos,test-support/cosmos,fault-injection,scale-testing
-            extra_flags: ""
-          - backend: cosmos
-            crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,test-support/cosmos,fault-injection,scale-testing
-            extra_flags: ""
           - backend: native
             crypto: bls12-381
             cargo_flags: --no-default-features --features=integration-test,native,redb,iroh,bls12-381
@@ -390,7 +382,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [cosmos, native]
+        backend: [native]
         crypto: [bls12-381, jubjub]
         shard: ["1", "2", "3"]
         include:
