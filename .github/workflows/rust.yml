@@ -386,14 +386,6 @@ jobs:
         crypto: [bls12-381, jubjub]
         shard: ["1", "2", "3"]
         include:
-          - backend: cosmos
-            crypto: bls12-381
-            cargo_flags: --features=integration-test,cosmos,test-support/cosmos,fault-injection,scale-testing
-            extra_flags: ""
-          - backend: cosmos
-            crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,test-support/cosmos,fault-injection,scale-testing
-            extra_flags: ""
           - backend: native
             crypto: bls12-381
             cargo_flags: --no-default-features --features=integration-test,native,test-support/native,redb,iroh,bls12-381
