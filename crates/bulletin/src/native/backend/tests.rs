@@ -252,9 +252,10 @@ fn ring_fixture(writer: &NativeVeraClient, requires_pet: bool, state: RingState)
         nonce: [4; 32],
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        pre_share_endpoints: Vec::new(),
     };
     let record = RingRecord {
-        id: config.id(writer.deployment_root, &creator).unwrap(),
+        id: config.id().unwrap(),
         deployment_root: writer.deployment_root,
         creator,
         config,

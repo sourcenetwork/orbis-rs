@@ -125,11 +125,12 @@ fn native_paired_ring_and_confirmation_match_v2_vectors() {
         nonce: [9; 32],
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        pre_share_endpoints: Vec::new(),
     };
-    let ring_id = config.id([7; 32], "did:key:fixture").unwrap();
+    let ring_id = config.id().unwrap();
     assert_eq!(
         ring_id,
-        "58b39d87fc52b1e447cef0835a9a11dafcfd97be06424283bdb2cd4eba7ed8b9"
+        "e5bfa730726c87e864244ca00ca8989d2eb3e9270359df1fd43b3d3d4c87a9fb"
     );
     let request = RingParticipantRequest {
         deployment_root: [7; 32],
@@ -144,6 +145,6 @@ fn native_paired_ring_and_confirmation_match_v2_vectors() {
     };
     assert_eq!(
         hex::encode(request.signing_digest().unwrap()),
-        "73d092c07a65a19a4d1e6c6f1dbcdb61aea7b2345d11cdb81b2d3f5f4da7a505"
+        "d46c645aeaa4fe3bea26bebb91253d40417e38c7330cd4dffabd70b8bdebf7ea"
     );
 }
