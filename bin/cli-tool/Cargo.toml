@@ -18,6 +18,7 @@ authn = { path = "../../crates/authn" }
 authz = { path = "../../crates/authz" }
 common = { path = "../../crates/common", features = ["funding"] }
 bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera"] }
+pre-share = { path = "../../crates/pre-share", default-features = false }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -39,8 +40,8 @@ required-features = ["native"]
 [features]
 native = ["bulletin/native", "dep:alloy-primitives", "dep:vera-client", "dep:vera-domain", "dep:local-storage", "dep:zeroize"]
 default = ["bls12-381"]
-bls12-381 = ["crypto/bls12-381", "bulletin/bls12-381", "common/bls12-381"]
-jubjub = ["crypto/jubjub", "bulletin/jubjub", "common/jubjub"]
+bls12-381 = ["crypto/bls12-381", "bulletin/bls12-381", "common/bls12-381", "pre-share/bls12-381"]
+jubjub = ["crypto/jubjub", "bulletin/jubjub", "common/jubjub", "pre-share/jubjub"]
 
 [[test]]
 name = "native_admin"

@@ -47,6 +47,10 @@ name = "blockchain_vera"
 required-features = ["cosmos"]
 
 [[test]]
+name = "cosmos_environment"
+required-features = ["cosmos"]
+
+[[test]]
 name = "native_validators"
 required-features = ["native"]
 

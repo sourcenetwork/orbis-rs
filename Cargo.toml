@@ -13,6 +13,7 @@ members = [
     "crates/common",
     "crates/bulletin",
     "crates/reporting",
+    "crates/pre-share",
     "crates/test-support",
     "crates/jubjub-wasm",
 ]
@@ -36,14 +37,14 @@ authors = ["Orbis Contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "523de40514848e9f0349f3bf7d5a0e9d161402c9" }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "523de40514848e9f0349f3bf7d5a0e9d161402c9" }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "523de40514848e9f0349f3bf7d5a0e9d161402c9" }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "523de40514848e9f0349f3bf7d5a0e9d161402c9" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "523de40514848e9f0349f3bf7d5a0e9d161402c9" }
-vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "523de40514848e9f0349f3bf7d5a0e9d161402c9" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "523de40514848e9f0349f3bf7d5a0e9d161402c9" }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "523de40514848e9f0349f3bf7d5a0e9d161402c9" }
+vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
+vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
 # Common dependencies across workspace
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }

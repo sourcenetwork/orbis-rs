@@ -6,8 +6,8 @@ use authn::{create_authenticated_request, JwtSigner};
 use crypto::context::CiphertextContext;
 use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
-use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
-use serde::Deserialize;
+use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode, ScalarField as Fr};
+use serde::{Deserialize, Serialize};
 use tonic::{Code, Request, Status};
 
 use proto::info_service::info_service_client::InfoServiceClient;
@@ -23,8 +23,30 @@ const DKG_START_MAX_ATTEMPTS: usize = 3;
 const DKG_START_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Response structure from PRE server (JSON in `StartPreResponse.encrypted_secret`).
-#[derive(Debug, Deserialize)]
-struct PreResponse {
+/// Mirrors `orbis_node`'s `coordinator::PreReencryptResponse` wire shape — kept as an
+/// independent local shadow type rather than a dependency on `orbis-node` (the wrong
+/// dependency direction; `orbis-node` depends on `cli-tool`, not the reverse).
+///
+/// `Serialize` is derived too (not just `Deserialize`) so a parsed response can be
+/// round-tripped through [`PendingPreRetrieval`] for the save-now/retrieve-later path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum PreResponse {
+    // Boxed (as a newtype variant, which serializes identically to the equivalent struct
+    // variant) since `Direct`'s fields are much larger than `Stored`'s, which clippy's
+    // `large_enum_variant` flags otherwise.
+    Direct(Box<DirectPreResponse>),
+    /// The ring's `pre_share_endpoints` delivery mode. `pre_share::
+    /// PreShareRetrievalManifest` is a real, independently-depended-on type now
+    /// (not a loosely-parsed placeholder) — `pre-share` is exactly the standalone
+    /// crate the Defra PRE-Share Storage plan's Step 2 built for this. Boxed for
+    /// the same `large_enum_variant` reason `Direct` already is.
+    Stored {
+        manifest: Box<pre_share::PreShareRetrievalManifest>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DirectPreResponse {
     /// Recovered reencrypted commitment (xnc_cmt) as hex string
     xnc_cmt: String,
     /// Original encrypted secret
@@ -350,6 +372,135 @@ async fn do_pre_impl(
     document: Option<proto::v0::pre::InlineDocument>,
     audit_target_object_id: Option<String>,
 ) -> Result<Vec<u8>> {
+    let (pre_response, reader_sk_scalar, ring_pk_bytes) = request_pre_reencryption(
+        endpoint,
+        chain_id,
+        ring_pk,
+        object_id,
+        reader_did_pk,
+        derivation.clone(),
+        salt,
+        valid_window_start,
+        valid_window_end,
+        document,
+        audit_target_object_id,
+    )
+    .await?;
+
+    decrypt_pre_response(
+        pre_response,
+        reader_sk_scalar,
+        &ring_pk_bytes,
+        derivation.as_deref(),
+    )
+    .await
+}
+
+/// A PRE request's wire response plus everything the reader needs to decrypt
+/// it *later*, independently of this process — saved instead of immediately
+/// calling [`decrypt_pre_response`]. `reader_sk_hex` is the ephemeral reader
+/// secret key [`request_pre_reencryption`] generated for this one request;
+/// losing it means the response (`Direct` or `Stored`) can never be
+/// decrypted, by design — see `do_pre_impl`'s own doc comment on why a fresh
+/// key per request is non-negotiable.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PendingPreRetrieval {
+    reader_sk_hex: String,
+    ring_pk: String,
+    derivation: Option<Vec<u8>>,
+    response: PreResponse,
+}
+
+/// Same request as [`do_pre`], but doesn't decrypt — returns a
+/// [`PendingPreRetrieval`] the caller can serialize and decrypt later via
+/// [`do_retrieve_pre`], independently of this process. Works for either
+/// delivery mode: a `Direct` response can also be decrypted later, there's
+/// just nothing additionally "in flight" to wait on in that case.
+// Only called via the `cli-tool` lib target (orbis-node integration tests) and the
+// `retrieve-pre`/`--save-only` CLI path; unused from the bin target's default flow.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub async fn do_pre_and_save(
+    endpoint: String,
+    chain_id: String,
+    ring_pk: String,
+    object_id: String,
+    reader_did_pk: Option<String>,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<PendingPreRetrieval> {
+    let (response, reader_sk_scalar, _ring_pk_bytes) = request_pre_reencryption(
+        endpoint,
+        chain_id,
+        ring_pk.clone(),
+        object_id,
+        reader_did_pk,
+        derivation.clone(),
+        salt,
+        valid_window_start,
+        valid_window_end,
+        None,
+        None,
+    )
+    .await?;
+
+    let reader_sk_hex = hex::encode(
+        CryptoSerialize::to_bytes(&reader_sk_scalar)
+            .map_err(|e| anyhow!("Failed to serialize reader secret key: {}", e))?,
+    );
+
+    Ok(PendingPreRetrieval {
+        reader_sk_hex,
+        ring_pk,
+        derivation,
+        response,
+    })
+}
+
+/// Decrypts a [`PendingPreRetrieval`] saved by [`do_pre_and_save`] — the
+/// deferred half of the save-now/retrieve-later path, independent of the
+/// process that made the original request.
+#[allow(dead_code)]
+pub async fn do_retrieve_pre(pending_json: String) -> Result<Vec<u8>> {
+    let pending: PendingPreRetrieval = serde_json::from_str(&pending_json)
+        .map_err(|e| anyhow!("Failed to parse pending PRE retrieval JSON: {}", e))?;
+    let reader_sk_bytes = hex::decode(&pending.reader_sk_hex)
+        .map_err(|e| anyhow!("Failed to decode reader secret key hex: {}", e))?;
+    let reader_sk_scalar = Fr::from_bytes(&reader_sk_bytes)
+        .map_err(|e| anyhow!("Failed to deserialize reader secret key: {}", e))?;
+    let ring_pk_bytes = hex::decode(&pending.ring_pk)
+        .map_err(|e| anyhow!("Failed to decode ring_pk hex: {}", e))?;
+
+    decrypt_pre_response(
+        pending.response,
+        reader_sk_scalar,
+        &ring_pk_bytes,
+        pending.derivation.as_deref(),
+    )
+    .await
+}
+
+/// Runs the on-wire part of a PRE request — ephemeral reader keypair, JWT,
+/// signed reader-authorization transcript, the actual `StartPre` call — and
+/// returns the parsed response plus the reader's own secret scalar and the
+/// decoded ring public key bytes. Shared by [`do_pre_impl`] (decrypts
+/// immediately) and [`do_pre_and_save`] (saves for later).
+#[allow(clippy::too_many_arguments)]
+async fn request_pre_reencryption(
+    endpoint: String,
+    chain_id: String,
+    ring_pk: String,
+    object_id: String,
+    reader_did_pk: Option<String>,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+    document: Option<proto::v0::pre::InlineDocument>,
+    audit_target_object_id: Option<String>,
+) -> Result<(PreResponse, Fr, Vec<u8>)> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
 
@@ -460,58 +611,97 @@ async fn do_pre_impl(
     println!("  Status: {}", response.status);
     println!("  Message: {}", response.message);
 
-    // Step 5: If we got a re-encrypted commitment back, decrypt it
-    if !response.encrypted_secret.is_empty() {
-        // Parse the response from server
-        let pre_response: PreResponse = serde_json::from_slice(&response.encrypted_secret)
-            .map_err(|e| anyhow!("Failed to parse PRE response: {}", e))?;
-
-        // Parse the re-encrypted commitment (xnc_cmt) from hex
-        let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt)
-            .map_err(|e| anyhow!("Failed to decode xnc_cmt hex: {}", e))?;
-        let xnc_cmt = G1Affine::from_bytes(&xnc_cmt_bytes)
-            .map_err(|e| anyhow!("Failed to deserialize xnc_cmt: {}", e))?;
-
-        println!();
-        println!("Step 5: Decrypting with reader secret key...");
-
-        // Parse the ring public key
-        let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
-            .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
-
-        // Compute effective_pk from derivation when provided, otherwise use ring_pk
-        let effective_pk = if let Some(ref deriv) = derivation {
-            ThresholdDealerNode::derive_public_key(&ring_pk_point, deriv)
-                .map_err(|e| anyhow!("Failed to derive public key: {}", e))?
-        } else {
-            ring_pk_point
-        };
-
-        // The node echoes back the ciphertext-binding context it verified the
-        // proof against; it is needed to rebuild the AES-GCM AAD. A wrong context
-        // (or a lying node) makes the authenticated decryption below fail.
-        let decrypted = ThresholdDealerNode::decrypt_secret(
-            &effective_pk,
-            &xnc_cmt,
-            &reader_sk_scalar,
-            &pre_response.secret,
-            &pre_response.context,
-        )
-        .map_err(|e| anyhow!("Decryption failed: {}", e))?;
-
-        if let Ok(decrypted_str) = String::from_utf8(decrypted.clone()) {
-            println!("  Decrypted Secret: {}", decrypted_str);
-        } else {
-            println!(
-                "  Decrypted Secret: <binary data, {} bytes>",
-                decrypted.len()
-            );
-        }
-
-        return Ok(decrypted);
+    if response.encrypted_secret.is_empty() {
+        return Err(anyhow!("PRE response did not contain encrypted_secret"));
     }
 
-    Err(anyhow!("PRE response did not contain encrypted_secret"))
+    let pre_response: PreResponse = serde_json::from_slice(&response.encrypted_secret)
+        .map_err(|e| anyhow!("Failed to parse PRE response: {}", e))?;
+
+    Ok((pre_response, reader_sk_scalar, ring_pk_bytes))
+}
+
+/// Step 5 of a PRE request: decrypt a parsed [`PreResponse`], handling both
+/// delivery modes. `Direct` decrypts immediately with its own
+/// `xnc_cmt`/`secret`/`context`. `Stored` fetches, verifies, and recovers via
+/// `pre_share::recover_from_manifest` first — an empty Defra bearer token
+/// (anonymous read) is deliberate, see that function's own doc comment on
+/// why — then uses the *recovered* `derivation` (pulled from the manifest's
+/// own independently-verified entries) rather than the caller-supplied one,
+/// since it's already authenticated and is the actual value every responder
+/// computed its share under.
+async fn decrypt_pre_response(
+    pre_response: PreResponse,
+    reader_sk_scalar: Fr,
+    ring_pk_bytes: &[u8],
+    derivation: Option<&[u8]>,
+) -> Result<Vec<u8>> {
+    let (xnc_cmt, secret, context, effective_derivation) = match pre_response {
+        PreResponse::Direct(direct) => {
+            let xnc_cmt_bytes = hex::decode(&direct.xnc_cmt)
+                .map_err(|e| anyhow!("Failed to decode xnc_cmt hex: {}", e))?;
+            let xnc_cmt = G1Affine::from_bytes(&xnc_cmt_bytes)
+                .map_err(|e| anyhow!("Failed to deserialize xnc_cmt: {}", e))?;
+            (
+                xnc_cmt,
+                direct.secret,
+                direct.context,
+                derivation.map(|d| d.to_vec()),
+            )
+        }
+        PreResponse::Stored { manifest } => {
+            println!();
+            println!("  Ring stores PRE shares in Defra; fetching and verifying entries...");
+            let recovered = pre_share::recover_from_manifest(&manifest, "")
+                .await
+                .map_err(|e| anyhow!("Failed to recover Defra-stored PRE shares: {}", e))?;
+            (
+                recovered.xnc_cmt,
+                manifest.secret,
+                manifest.context,
+                recovered.derivation,
+            )
+        }
+    };
+
+    println!();
+    println!("Step 5: Decrypting with reader secret key...");
+
+    // Parse the ring public key
+    let ring_pk_point = G1Affine::from_bytes(ring_pk_bytes)
+        .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
+
+    // Compute effective_pk from derivation when provided, otherwise use ring_pk
+    let effective_pk = if let Some(ref deriv) = effective_derivation {
+        ThresholdDealerNode::derive_public_key(&ring_pk_point, deriv)
+            .map_err(|e| anyhow!("Failed to derive public key: {}", e))?
+    } else {
+        ring_pk_point
+    };
+
+    // The node echoes back (or, for `Stored`, the verified entries themselves carry)
+    // the ciphertext-binding context the proof was verified against; it is needed to
+    // rebuild the AES-GCM AAD. A wrong context (or a lying node) makes the
+    // authenticated decryption below fail.
+    let decrypted = ThresholdDealerNode::decrypt_secret(
+        &effective_pk,
+        &xnc_cmt,
+        &reader_sk_scalar,
+        &secret,
+        &context,
+    )
+    .map_err(|e| anyhow!("Decryption failed: {}", e))?;
+
+    if let Ok(decrypted_str) = String::from_utf8(decrypted.clone()) {
+        println!("  Decrypted Secret: {}", decrypted_str);
+    } else {
+        println!(
+            "  Decrypted Secret: <binary data, {} bytes>",
+            decrypted.len()
+        );
+    }
+
+    Ok(decrypted)
 }
 
 /// Result of a Sign operation

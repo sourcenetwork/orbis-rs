@@ -47,6 +47,7 @@ env:
   # job runs the complement. Validate with `cargo nextest list -E "<this>"`.
   DOCKER_TESTS: >-
     binary(blockchain_vera)
+    | binary(cosmos_environment)
     | (package(authz) & test(/^vera::tests::/))
     | (package(bulletin) & test(/^vera::tests::/))
     | (package(orbis-node) & (test(/^tests::e2e::/) | test(/^tests::node::/)

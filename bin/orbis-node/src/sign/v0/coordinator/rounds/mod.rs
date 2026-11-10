@@ -196,6 +196,7 @@ mod tests {
             threshold: 1,
             total_participants: 1,
             public_polynomial_hex: String::new(),
+            pre_share_endpoints: vec![],
         };
         let to_observation = make_sign_drain_observation(
             ring,

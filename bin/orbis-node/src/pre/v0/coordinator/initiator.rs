@@ -1,4 +1,6 @@
-use super::verification::{PeerResponseVerification, PreResponseReportContext};
+use super::verification::{
+    verify_peer_ack, PeerAckVerification, PeerResponseVerification, PreResponseReportContext,
+};
 use super::{PreCoordinator, PreResponse};
 use crate::app_state::AppState;
 use crate::constants::PRE_COLLECTION_TIMEOUT;
@@ -44,10 +46,15 @@ struct PreResponseDrainArgs<D: Dkg> {
 /// The polynomial for the ring's current PSS generation, and (when
 /// `self_in_list`) this node's own share bundle for that same generation —
 /// loaded from a single atomic `RingShareBundle` read (see the TOCTOU comment
-/// in `resolve_reencryption_material`).
+/// in `resolve_reencryption_material`). `public_polynomial_hex` is the exact
+/// hex string that read resolved to, on whichever branch — the authoritative
+/// value `PreRequestContext::pinned_public_polynomial` is set from, since it
+/// comes from the same snapshot as `pub_poly`/`local_share_bundle` rather than
+/// an earlier, possibly-stale read.
 struct ReencryptionMaterial<D: Dkg> {
     pub_poly: D::PubPoly,
     local_share_bundle: Option<RingShareBundle>,
+    public_polynomial_hex: String,
 }
 
 /// The reader public key and ciphertext commitment this reencryption request
@@ -216,50 +223,103 @@ where
         node_id: u32,
         self_in_list: bool,
         actual_peer_count: usize,
-        ctx: PreRequestContext,
+        mut ctx: PreRequestContext,
         report_binding: PreReportBinding,
         local_reader_auth_context: ReaderAuthorizationContext,
     ) -> Result<Vec<u8>> {
         let material = self
             .resolve_reencryption_material(&ring, self_in_list, actual_peer_count)
             .await?;
+        // Pin from the exact snapshot `material` was just resolved from — not from
+        // whatever `prepare_pre_relay` left on `ctx` — so every peer this request
+        // dispatches to, and our own local share below, are checked against the same
+        // generation this node is itself using. See `ReencryptionMaterial`'s doc comment.
+        ctx.pinned_public_polynomial = material.public_polynomial_hex.clone();
         let request_material = Self::resolve_reencryption_request(&ctx, &secret_bytes)?;
 
         let dealer = T::new();
-        let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
+
+        // Note: Cleanup is handled by the outer initiate_reencryption function, on
+        // either branch below.
+        let Some(endpoint) = ring.pre_share_endpoints.first() else {
+            let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
+            let mut seen_node_ids: HashSet<u32> = HashSet::new();
+
+            if let Some(share) = Self::compute_local_reencryption_share(
+                &dealer,
+                self_in_list,
+                &material,
+                &request_material,
+                &ctx,
+                &local_reader_auth_context,
+            )? {
+                seen_node_ids.insert(share.i);
+                verified_shares.push(share);
+            }
+
+            let already_verified = verified_shares.len();
+            verified_shares.extend(
+                self.collect_network_reencryption_shares(
+                    &dealer,
+                    &request_id,
+                    &ring,
+                    node_id,
+                    &ctx,
+                    &report_binding,
+                    &material,
+                    &request_material,
+                    &mut seen_node_ids,
+                    already_verified,
+                )
+                .await?,
+            );
+
+            return self
+                .finalize_reencryption(&dealer, verified_shares, &ring, secret_bytes, &request_id)
+                .await;
+        };
+
+        // This ring stores shares in Defra instead of collecting them directly — the
+        // same pipeline shape (local contribution + network collection + finalize),
+        // but acks replace shares and there is no Lagrange recovery. See
+        // `verify_peer_ack`'s doc comment for why this is a parallel pipeline rather
+        // than a generalization of the one above: an ack has no cryptographic proof
+        // to verify, only identity/context.
+        let mut entries: Vec<pre_share::PreShareManifestEntry> = Vec::new();
         let mut seen_node_ids: HashSet<u32> = HashSet::new();
 
-        if let Some(share) = Self::compute_local_reencryption_share(
-            &dealer,
-            self_in_list,
-            &material,
-            &request_material,
-            &ctx,
-            &local_reader_auth_context,
-        )? {
-            seen_node_ids.insert(share.i);
-            verified_shares.push(share);
+        if let Some(entry) = self
+            .compute_local_stored_contribution(
+                &dealer,
+                self_in_list,
+                &material,
+                &request_material,
+                &ctx,
+                &local_reader_auth_context,
+                &report_binding,
+                &request_id,
+                endpoint,
+            )
+            .await?
+        {
+            seen_node_ids.insert(entry.from_node_id);
+            entries.push(entry);
         }
 
-        let already_verified = verified_shares.len();
-        verified_shares.extend(
-            self.collect_network_reencryption_shares(
-                &dealer,
+        let already_verified = entries.len();
+        entries.extend(
+            self.collect_network_reencryption_acks(
                 &request_id,
                 &ring,
                 node_id,
                 &ctx,
-                &report_binding,
-                &material,
-                &request_material,
                 &mut seen_node_ids,
                 already_verified,
             )
             .await?,
         );
 
-        // Note: Cleanup is handled by the outer initiate_reencryption function
-        self.finalize_reencryption(&dealer, verified_shares, &ring, secret_bytes, &request_id)
+        self.finalize_stored_reencryption(entries, &ring, &ctx, secret_bytes, &request_id)
             .await
     }
 
@@ -284,7 +344,7 @@ where
         self_in_list: bool,
         actual_peer_count: usize,
     ) -> Result<ReencryptionMaterial<D>> {
-        let (pub_poly, local_share_bundle) =
+        let (pub_poly, local_share_bundle, public_polynomial_hex) =
             load_ring_pub_poly_and_bundle::<D>(&self.app_state.local_storage, ring, self_in_list)
                 .map_err(PreError::Deserialization)?;
 
@@ -306,6 +366,7 @@ where
         Ok(ReencryptionMaterial {
             pub_poly,
             local_share_bundle,
+            public_polynomial_hex,
         })
     }
 
@@ -394,6 +455,94 @@ where
         } else {
             Ok(None)
         }
+    }
+
+    /// Compute, sign, and upload our own stored-delivery share, if we're in the peer
+    /// list. Mirrors `compute_local_reencryption_share`'s shape (a missing local
+    /// bundle is a hard error when `self_in_list`, matching that function's own
+    /// reasoning), but unlike direct mode, our own share is never implicitly trusted
+    /// just because we computed it locally — every participant's contribution,
+    /// including ours, becomes a signed, Defra-stored envelope the reader verifies
+    /// independently later.
+    #[allow(clippy::too_many_arguments)]
+    async fn compute_local_stored_contribution(
+        &self,
+        dealer: &T,
+        self_in_list: bool,
+        material: &ReencryptionMaterial<D>,
+        request_material: &ReencryptionRequestMaterial<D>,
+        ctx: &PreRequestContext,
+        local_reader_auth_context: &ReaderAuthorizationContext,
+        report_binding: &PreReportBinding,
+        request_id: &str,
+        endpoint: &str,
+    ) -> Result<Option<pre_share::PreShareManifestEntry>> {
+        if !self_in_list {
+            return Ok(None);
+        }
+
+        let bundle = material.local_share_bundle.as_ref().ok_or_else(|| {
+            PreError::Storage("Local share bundle missing for ring member".to_string())
+        })?;
+        let pri_share =
+            PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes).map_err(|error| {
+                PreError::Deserialization(format!("Failed to deserialize local share: {}", error))
+            })?;
+        let dist_key_share = DistKeyShare { pri_share };
+
+        let reply = dealer
+            .reencrypt(
+                &dist_key_share,
+                &request_material.secret,
+                &request_material.rdr_pk,
+                local_reader_auth_context,
+                &ctx.rdr_pk_signature,
+            )
+            .map_err(|error| PreError::Crypto(format!("Local reencryption failed: {}", error)))?;
+
+        dealer
+            .verify(
+                &request_material.rdr_pk,
+                &material.pub_poly,
+                &request_material.enc_cmt,
+                &reply,
+                ctx.derivation.as_deref(),
+            )
+            .map_err(|error| {
+                PreError::Crypto(format!("Local share failed self-verification: {}", error))
+            })?;
+
+        let ack = super::stored_delivery::build_and_store_envelope::<D, T>(
+            &self.app_state,
+            &reply,
+            super::stored_delivery::StoredShareParams {
+                chain_id: report_binding.chain_id.clone(),
+                ring_id: report_binding.ring_id.clone(),
+                ring_pk: report_binding.ring_pk.clone(),
+                ring_state_sha256: report_binding.ring_state_sha256.clone(),
+                protocol_version: self.routes.version,
+                request_id,
+                object_id: &ctx.object_id,
+                rdr_pk_bytes: &ctx.rdr_pk_bytes,
+                derivation: ctx.derivation.as_deref(),
+                document_inline: report_binding.inline_document.is_some(),
+                timestamp: report_binding.timestamp,
+                pinned_public_polynomial: ctx.pinned_public_polynomial.clone(),
+                endpoint,
+            },
+        )
+        .await?;
+
+        tracing::debug!(
+            from_node_id = ack.from_node_id,
+            "PRE Coordinator: Added local stored-delivery contribution"
+        );
+
+        Ok(Some(pre_share::PreShareManifestEntry {
+            from_node_id: ack.from_node_id,
+            responder_node_key: self.app_state.node_key.clone(),
+            defra_locator: ack.defra_locator,
+        }))
     }
 
     /// Request reencryption shares from peers, collect verified responses
@@ -669,6 +818,200 @@ where
         Ok(verified_shares)
     }
 
+    /// Request stored-delivery acks from peers, collect verified ones until
+    /// threshold or timeout, hand off stragglers to a background drain, then pick
+    /// up anything already stored before cancellation. Mirrors
+    /// `collect_network_reencryption_shares`'s shape exactly, but there is no
+    /// cryptographic proof to verify here (see `verify_peer_ack`'s doc comment) —
+    /// only identity/context — so there is no `InvalidProof` branch, just
+    /// `Verified`/`Rejected`.
+    async fn collect_network_reencryption_acks(
+        &self,
+        request_id: &str,
+        ring: &RingConfig,
+        node_id: u32,
+        ctx: &PreRequestContext,
+        seen_node_ids: &mut HashSet<u32>,
+        already_verified_count: usize,
+    ) -> Result<Vec<pre_share::PreShareManifestEntry>> {
+        let mut entries: Vec<pre_share::PreShareManifestEntry> = Vec::new();
+        let min_needed_from_network = ring.threshold.saturating_sub(already_verified_count);
+
+        let mut set = tokio::task::JoinSet::new();
+
+        if min_needed_from_network > 0 {
+            for peer_id_str in &ring.peer_ids {
+                if is_self_peer_id(&self.app_state.network, peer_id_str) {
+                    tracing::debug!(peer_id = %peer_id_str, "Skipping self when sending reencrypt request");
+                    continue;
+                }
+
+                let request = PreMessage::ReencryptRequest(Box::new(ReencryptRequest {
+                    request_id: request_id.to_string(),
+                    from_node_id: node_id,
+                    context: ctx.clone(),
+                }));
+
+                let peer_id = peer_id_str.clone();
+                let req_id = request_id.to_string();
+                let app_state = self.app_state.clone();
+                let routes = self.routes;
+
+                set.spawn(async move {
+                    let coordinator = PreCoordinator::<D, T>::with_routes(app_state, routes);
+                    let result = coordinator
+                        .send_request_and_receive_response(&peer_id, request, &req_id)
+                        .await;
+                    (peer_id, result)
+                });
+            }
+        }
+
+        let mut successful_acks = 0usize;
+        if min_needed_from_network > 0 {
+            match tokio::time::timeout(PRE_COLLECTION_TIMEOUT, async {
+                while let Some(res) = set.join_next().await {
+                    match res {
+                        Ok((peer_id, Ok(Some(response)))) => {
+                            let Some(expected_node_id) =
+                                determine_ring_node_id_from_peer_id(&peer_id, ring)
+                            else {
+                                tracing::error!(
+                                    peer_id = %peer_id,
+                                    "PRE Coordinator: accepted ack from peer outside ring"
+                                );
+                                continue;
+                            };
+                            let Some(accused_node_key) = node_key_for_peer(ring, &peer_id) else {
+                                tracing::error!(
+                                    peer_id = %peer_id,
+                                    "PRE Coordinator: accepted ack from peer without node key"
+                                );
+                                continue;
+                            };
+                            match verify_peer_ack(
+                                response,
+                                expected_node_id,
+                                accused_node_key,
+                                request_id,
+                                &ctx.pinned_public_polynomial,
+                                seen_node_ids,
+                            ) {
+                                PeerAckVerification::Verified(entry) => {
+                                    entries.push(entry);
+                                    successful_acks += 1;
+                                    if successful_acks >= min_needed_from_network {
+                                        break;
+                                    }
+                                }
+                                PeerAckVerification::Rejected => {}
+                            }
+                        }
+                        Ok((_, Ok(None))) => {}
+                        Ok((peer_id, Err(e))) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                peer_id = %peer_id,
+                                error = %e,
+                                "PRE peer stored-delivery request failed"
+                            );
+                            if let Some(observation) = offline_observation_from_pre_error(
+                                ring,
+                                &peer_id,
+                                &e,
+                                self.routes.version,
+                                request_id,
+                            ) {
+                                let _ = queue_report::<D, SignImpl>(
+                                    self.app_state.clone(),
+                                    self.routes,
+                                    ReportObservation::NodeOffline(observation),
+                                )
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        peer_id = %peer_id,
+                                        error = %error,
+                                        "Failed to queue offline report observation"
+                                    );
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(error = ?e, "Peer stored-delivery task panicked");
+                        }
+                    }
+                }
+                Ok::<(), PreError>(())
+            })
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        "PRE ack collection timed out; proceeding with partial acks"
+                    );
+                }
+            }
+        }
+
+        // Drain remaining peer tasks in the background so late transport failures
+        // still trigger offline-observation reports. Unlike the direct-mode drain,
+        // a late *valid* ack has no in-flight upload to clean up — the upload it
+        // describes already finished (that's how the ack exists at all) — so there's
+        // nothing to do with it once the manifest (if threshold was already met) has
+        // already been returned; see the plan's cleanup-policy note.
+        self.spawn_stored_ack_drain(StoredAckDrainArgs {
+            set,
+            ring: ring.clone(),
+            request_id: request_id.to_string(),
+            pinned_public_polynomial: ctx.pinned_public_polynomial.clone(),
+            seen_node_ids: seen_node_ids.clone(),
+        });
+
+        let collected_responses = self
+            .app_state
+            .pre_response_state
+            .take_authenticated_responses_for_version(self.routes.version, request_id)
+            .await
+            .ok_or_else(|| {
+                PreError::Timeout(format!("No responses found for request {}", request_id))
+            })?;
+
+        for response in collected_responses {
+            let Some(expected_node_id) =
+                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, ring)
+            else {
+                tracing::error!(
+                    sender_peer = %response.sender_peer_hex,
+                    "PRE Coordinator: stored ack from peer outside ring"
+                );
+                continue;
+            };
+            let Some(accused_node_key) = node_key_for_peer(ring, &response.sender_peer_hex) else {
+                tracing::error!(
+                    sender_peer = %response.sender_peer_hex,
+                    "PRE Coordinator: stored ack from peer without node key"
+                );
+                continue;
+            };
+            match verify_peer_ack(
+                response.message,
+                expected_node_id,
+                accused_node_key,
+                request_id,
+                &ctx.pinned_public_polynomial,
+                seen_node_ids,
+            ) {
+                PeerAckVerification::Verified(entry) => entries.push(entry),
+                PeerAckVerification::Rejected => {}
+            }
+        }
+
+        Ok(entries)
+    }
+
     /// Check we recovered enough shares, recover the reencrypted commitment,
     /// and encode the final response bytes.
     async fn finalize_reencryption(
@@ -718,7 +1061,7 @@ where
 
         // 10. Create the coordinator output. The service layer wraps this into a
         // PreReencryptResponse with the ciphertext-binding context it verified.
-        let pre_response = PreResponse {
+        let pre_response = PreResponse::Direct {
             xnc_cmt: xnc_cmt_hex,
             secret,
         };
@@ -730,6 +1073,64 @@ where
         tracing::info!(
             request_id = %request_id,
             "PRE Coordinator: Successfully recovered reencrypted commitment"
+        );
+
+        Ok(response_bytes)
+    }
+
+    /// Check we collected enough stored-delivery acks and assemble the coordinator's
+    /// half of the retrieval manifest (everything but `context` — see
+    /// `PreResponse::Stored`'s doc comment for why that's the service layer's job).
+    /// No Lagrange recovery: unlike `finalize_reencryption`, this never touches the
+    /// share contents themselves.
+    async fn finalize_stored_reencryption(
+        &self,
+        entries: Vec<pre_share::PreShareManifestEntry>,
+        ring: &RingConfig,
+        ctx: &PreRequestContext,
+        secret_bytes: Vec<u8>,
+        request_id: &str,
+    ) -> Result<Vec<u8>> {
+        if entries.len() < ring.threshold {
+            if is_ring_reshare_in_progress(&ring.ring_pk_bytes, &self.app_state.dkg_session_state)
+                .await
+            {
+                tracing::info!(
+                    request_id = %request_id,
+                    "PRE Coordinator: insufficient stored-delivery acks due to ongoing reshare"
+                );
+                return Err(PreError::ReshareInProgress);
+            }
+            return Err(PreError::InsufficientShares {
+                got: entries.len(),
+                need: ring.threshold,
+            });
+        }
+
+        let secret: Secret = serde_json::from_slice(&secret_bytes).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
+        })?;
+
+        let pre_response = PreResponse::Stored(Box::new(super::StoredPreResponse {
+            request_id: request_id.to_string(),
+            ring_id: ring.ring_id.clone(),
+            ring_pk: hex::encode(&ring.ring_pk_bytes),
+            threshold: ring.threshold,
+            total_participants: ring.total_participants,
+            pinned_public_polynomial: ctx.pinned_public_polynomial.clone(),
+            rdr_pk_bytes: ctx.rdr_pk_bytes.clone(),
+            object_id: ctx.object_id.clone(),
+            secret,
+            pre_share_endpoints: ring.pre_share_endpoints.clone(),
+            entries,
+        }));
+
+        let response_bytes = serde_json::to_vec(&pre_response)
+            .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
+
+        tracing::info!(
+            request_id = %request_id,
+            "PRE Coordinator: Successfully assembled stored-delivery manifest"
         );
 
         Ok(response_bytes)
@@ -894,6 +1295,124 @@ where
             ),
         ))
     }
+
+    /// Stored-delivery sibling of `spawn_response_drain`/`run_pre_response_drain`:
+    /// late transport failures still trigger offline-observation reports; a late
+    /// *valid* ack is just logged (see `collect_network_reencryption_acks`'s doc
+    /// comment on why there's nothing left to do with one).
+    fn spawn_stored_ack_drain(&self, args: StoredAckDrainArgs) {
+        let app_state = self.app_state.clone();
+        let routes = self.routes;
+        tokio::spawn(async move {
+            Self::run_stored_ack_drain(app_state, routes, args).await;
+        });
+    }
+
+    async fn run_stored_ack_drain(
+        app_state: Arc<AppState<D>>,
+        routes: &'static network::ProtocolRoutes,
+        mut args: StoredAckDrainArgs,
+    ) {
+        let deadline = tokio::time::Instant::now() + PRE_COLLECTION_TIMEOUT;
+        while let Ok(Some(result)) = tokio::time::timeout_at(deadline, args.set.join_next()).await {
+            Self::handle_stored_ack_drain_result(&app_state, routes, &mut args, result).await;
+        }
+    }
+
+    async fn handle_stored_ack_drain_result(
+        app_state: &Arc<AppState<D>>,
+        routes: &'static network::ProtocolRoutes,
+        args: &mut StoredAckDrainArgs,
+        result: std::result::Result<(String, Result<Option<PreMessage>>), tokio::task::JoinError>,
+    ) {
+        match result {
+            Ok((peer_id, Ok(Some(response)))) => {
+                Self::handle_stored_ack_drain_response(args, peer_id, response);
+            }
+            Ok((peer_id, Err(e))) => {
+                tracing::warn!(
+                    peer_id = %peer_id,
+                    error = %e,
+                    "PRE peer stored-delivery request failed (post-threshold drain)"
+                );
+                if let Some(observation) = offline_observation_from_pre_error(
+                    &args.ring,
+                    &peer_id,
+                    &e,
+                    routes.version,
+                    &args.request_id,
+                ) {
+                    let _ = queue_report::<D, SignImpl>(
+                        app_state.clone(),
+                        routes,
+                        ReportObservation::NodeOffline(observation),
+                    )
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            peer_id = %peer_id,
+                            error = %error,
+                            "Failed to queue offline report observation (post-threshold drain)"
+                        );
+                    });
+                }
+            }
+            Ok((_, Ok(None))) => {}
+            Err(join_err) => {
+                tracing::error!(
+                    error = ?join_err,
+                    "Peer stored-delivery task panicked in response drain"
+                );
+            }
+        }
+    }
+
+    fn handle_stored_ack_drain_response(
+        args: &mut StoredAckDrainArgs,
+        peer_id: String,
+        response: PreMessage,
+    ) {
+        let Some(expected_node_id) = determine_ring_node_id_from_peer_id(&peer_id, &args.ring)
+        else {
+            tracing::error!(
+                peer_id = %peer_id,
+                "PRE Coordinator: late ack from peer outside ring"
+            );
+            return;
+        };
+        let Some(accused_node_key) = node_key_for_peer(&args.ring, &peer_id) else {
+            tracing::error!(
+                peer_id = %peer_id,
+                "PRE Coordinator: late ack from peer without node key"
+            );
+            return;
+        };
+
+        match verify_peer_ack(
+            response,
+            expected_node_id,
+            accused_node_key,
+            &args.request_id,
+            &args.pinned_public_polynomial,
+            &mut args.seen_node_ids,
+        ) {
+            PeerAckVerification::Verified(_) => {
+                tracing::debug!(
+                    peer_id = %peer_id,
+                    "PRE Coordinator: valid ack arrived after collection completed"
+                );
+            }
+            PeerAckVerification::Rejected => {}
+        }
+    }
+}
+
+struct StoredAckDrainArgs {
+    set: tokio::task::JoinSet<(String, Result<Option<PreMessage>>)>,
+    ring: RingConfig,
+    request_id: String,
+    pinned_public_polynomial: String,
+    seen_node_ids: HashSet<u32>,
 }
 
 /// Chain/ring context an invalid-proof report needs, captured from the same

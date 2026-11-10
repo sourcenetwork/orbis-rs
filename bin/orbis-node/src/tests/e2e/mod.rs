@@ -100,6 +100,17 @@ mod native_lifecycle;
 #[cfg(all(feature = "native", not(feature = "cosmos")))]
 use native_environment::NativeTestEnvironment as TestEnvironmentImpl;
 
+// Real `CosmosNetwork` + a real Defra container, outside the shared
+// scenario/fixture contract: `BackendAdmin::register_ring`/`RingSpec` has no
+// `pre_share_endpoints` concept (native doesn't support it in this PR), so
+// this drives ring creation directly via `cli_tool::create_ring` instead.
+// Unconditional (not `#[cfg(feature = "cosmos")]`): the module stays visible
+// in a native build too, as an `#[ignore]`d stub naming exactly what's
+// missing, rather than silently disappearing — so adding native's
+// `pre_share_endpoints` support later has an obvious test to un-ignore
+// instead of a gap nobody's reminded to fill.
+mod defra_pre_scenario;
+
 // In-process FaultNetwork qualifications. Isolated from the shared scenario
 // contract: only the Cosmos adapter has this harness today.
 #[cfg(all(feature = "cosmos", feature = "fault-injection"))]

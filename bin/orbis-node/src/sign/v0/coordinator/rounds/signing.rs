@@ -790,7 +790,7 @@ where
                     (pub_poly, dks)
                 }
                 None => {
-                    let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
+                    let (poly, bundle, _) = load_ring_pub_poly_and_bundle::<D>(
                         &self.app_state.local_storage,
                         ring,
                         self_in_list,
@@ -806,7 +806,7 @@ where
                 }
             }
         } else {
-            let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
+            let (poly, bundle, _) = load_ring_pub_poly_and_bundle::<D>(
                 &self.app_state.local_storage,
                 ring,
                 self_in_list,
@@ -1357,6 +1357,7 @@ mod tests {
             threshold: 2,
             total_participants: 3,
             public_polynomial_hex: String::new(),
+            pre_share_endpoints: vec![],
         };
 
         assert_eq!(

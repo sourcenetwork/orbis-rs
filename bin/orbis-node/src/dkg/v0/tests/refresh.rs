@@ -1259,6 +1259,7 @@ fn write_pet_ring_to_bulletin(
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: Some("aa".repeat(32)),
+        pre_share_endpoints: vec![],
     };
     bulletin
         .set_ring(ring_id.to_string(), payload)

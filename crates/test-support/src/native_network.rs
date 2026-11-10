@@ -86,6 +86,7 @@ pub struct NativeTestNetwork {
     // `ipv4_address`) reads as blank — which Compose treats as configuration
     // drift on that *other*, already-running service, recreating it.
     env_vars: Vec<(String, String)>,
+    defra_ip: String,
     _root: tempfile::TempDir,
 }
 
@@ -119,6 +120,11 @@ impl NativeTestNetwork {
         let network_name = format!("{project_name}-net");
         let subnet = create_external_network(&network_name);
         let validator_ips: Vec<String> = (0..4).map(|i| host_ip(&subnet, 11 + i as u32)).collect();
+        // Offset 31: clear of validators (11-14) and orbis nodes (21-24).
+        // Always allocated, whether or not a scenario actually brings up
+        // Defra — same convention as the orbis node IPs below, which are set
+        // unconditionally regardless of `node_count`.
+        let defra_ip = host_ip(&subnet, 31);
 
         let validators: Vec<ValidatorConfig> = keys
             .participants()
@@ -229,6 +235,10 @@ impl NativeTestNetwork {
                 host_ip(&subnet, 21 + i),
             )
         }))
+        .chain(std::iter::once((
+            "ORBIS_NATIVE_DEFRA_IP".to_string(),
+            defra_ip.clone(),
+        )))
         .collect();
 
         // All four `vera{1..4}` services share one identical `build:` block
@@ -373,8 +383,36 @@ impl NativeTestNetwork {
             root_hex,
             consensus_key_hex,
             env_vars,
+            defra_ip,
             _root: root,
         }
+    }
+
+    /// Address for Defra reachable from *inside* this project's own
+    /// pre-created bridge network — i.e. by orbis-node containers (a ring's
+    /// `pre_share_endpoints` resolves this). Unlike `CosmosNetwork`'s
+    /// equivalent, no gateway-IP lookup is needed: this network's IPs are
+    /// all statically pre-assigned (see `host_ip`/this module's doc
+    /// comment), so Defra's address is known before any container exists.
+    ///
+    /// Same Docker-Desktop-on-macOS/Windows limitation as `CosmosNetwork::
+    /// defra_container_url` applies here too, confirmed empirically:
+    /// producer-side writes from sibling containers succeed, but a reader
+    /// running on the host (outside Docker) cannot route to this address at
+    /// all on Docker Desktop — only on a native Linux Docker host (e.g. CI),
+    /// where the host *is* the Docker host. Not a bug in this feature; see
+    /// `defra_pre_scenario.rs`'s own module doc comment.
+    pub fn defra_container_url(&self) -> String {
+        format!("http://{}:9181", self.defra_ip)
+    }
+
+    /// This project's own pre-created bridge network, by name — for joining
+    /// a one-off sidecar container to it directly via `docker run --network`.
+    /// Unlike Cosmos's equivalent, no Compose-generated-name guessing is
+    /// needed: this network was created directly (`create_external_network`),
+    /// so its name is already known verbatim.
+    pub fn network_name(&self) -> &str {
+        &self.network_name
     }
 
     pub fn node(&self, index: usize) -> &NativeTestNode {

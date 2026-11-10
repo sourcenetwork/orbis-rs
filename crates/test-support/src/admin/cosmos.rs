@@ -11,14 +11,16 @@
 //! **not** move here — they call `cli_tool::create_ring`, and `cli-tool`
 //! hardcodes a default crypto feature (`bls12-381`) that would conflict with
 //! a jubjub build's feature unification if pulled into this crate. They stay
-//! in `test_helpers.rs`, unchanged; `CosmosAdmin::register_ring` is
-//! `unimplemented!()` pending a real decision on that dependency (see the
-//! Phase A report).
+//! in `test_helpers.rs`, unchanged. `CosmosAdmin::register_ring` doesn't need
+//! that dependency at all, though: it drives `VeraClient` directly (the same
+//! client every other method here already uses), the same way `cli_tool::
+//! create_ring` itself ultimately does underneath.
 
 use super::{BackendAdmin, DocumentId, PolicyId, RingId, RingKeys, RingSpec, RingView};
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
+    orbis::WhitelistTarget,
+    ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
 };
 use std::time::Duration;
 
@@ -325,15 +327,69 @@ impl BackendAdmin for CosmosAdmin {
             .expect("revoke relationship");
     }
 
-    async fn register_ring(&self, _spec: RingSpec) -> RingId {
-        // `create_ring_on_chain_with_trusted_relays` (test_helpers.rs) does
-        // this via `cli_tool::create_ring`, intentionally not moved here —
-        // see this module's doc comment.
-        unimplemented!(
-            "CosmosAdmin::register_ring: ring creation stays in \
-             bin/orbis-node/src/helpers/test_helpers.rs::create_ring_on_chain_with_trusted_relays \
-             pending a cli-tool dependency decision (Phase A report)"
-        )
+    async fn register_ring(&self, spec: RingSpec) -> RingId {
+        let client = self.signed_client().await;
+        // `spec.policy_id` is an already-created, plain ACP policy (from
+        // `create_policy`, which never registers any object) — register it
+        // as a `ring_policy` object and grant the submitter (this struct's
+        // own `signed_client`, always `TEST_ACCOUNT_HEX_KEY`) the `creator`
+        // relation its own policy must define for `create_ring`. See
+        // `RingSpec::pre_share_endpoints`'s doc comment.
+        client
+            .acp_register_object(
+                &spec.policy_id.0,
+                Object {
+                    resource: "ring_policy".to_string(),
+                    id: spec.policy_id.0.clone(),
+                },
+            )
+            .await
+            .expect("register ring_policy object");
+        let creator_did = secp256k1_pubkey_to_did(TEST_ACCOUNT_PUBKEY_HEX);
+        client
+            .acp_set_relationship(
+                &spec.policy_id.0,
+                Relationship {
+                    object: Some(Object {
+                        resource: "ring_policy".to_string(),
+                        id: spec.policy_id.0.clone(),
+                    }),
+                    relation: "creator".to_string(),
+                    subject: Some(Subject {
+                        kind: Some(SubjectKind::Actor(Actor { id: creator_did })),
+                    }),
+                },
+            )
+            .await
+            .expect("grant ring creator");
+        let trusted_auth_relay_dids =
+            (!spec.trusted_auth_relay_dids.is_empty()).then_some(spec.trusted_auth_relay_dids);
+        let (_, ring_id) = client
+            .orbis_create_ring_get_id(
+                spec.node_keys.clone(),
+                spec.threshold,
+                spec.pss_interval.as_secs(),
+                &spec.policy_id.0,
+                spec.nonce,
+                0,
+                None,
+                trusted_auth_relay_dids,
+                spec.requires_pet,
+                spec.pre_share_endpoints,
+            )
+            .await
+            .expect("create ring on chain");
+        // Dockerized nodes self-register with nothing whitelisted — unlike
+        // native, whose equivalent authorization is granted by *policy* and
+        // happens before ring creation, Cosmos only knows the ring id
+        // afterward, so each member is whitelisted by it here instead.
+        for node_key in &spec.node_keys {
+            client
+                .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring_id.clone()))
+                .await
+                .expect("whitelist node for ring");
+        }
+        RingId(ring_id)
     }
 
     async fn read_ring(&self, ring: &RingId) -> Option<RingView> {

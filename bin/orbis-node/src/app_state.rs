@@ -1,6 +1,7 @@
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::SessionStateManager;
 use crate::dkg::v0::transport::{CeremonyConfig, MessageId};
+use crate::helpers::defra::DefraNodeConfig;
 use crate::helpers::jti_replay::JtiReplayGuard;
 use crate::pet::v0::pending_blind::PetPendingBlindingStore;
 use crate::pet::v0::response_state::PetResponseManager;
@@ -351,6 +352,10 @@ where
     /// accepted). Checked at `start_pre` / `start_sign` / `store_secret` and at the
     /// PRE / Sign-Round-1 responder handlers.
     pub jti_guard: Arc<JtiReplayGuard>,
+    /// This node's Defra client cache (bearer JWTs minted on demand from this node's
+    /// own signing key), used when a ring's `pre_share_endpoints` selects Defra-backed
+    /// PRE share storage.
+    pub defra: Arc<DefraNodeConfig>,
 }
 
 impl<D> AppState<D>
@@ -379,6 +384,7 @@ where
             peer_connection_pool: Arc::new(PeerConnectionPool::new()),
             reporting_state: Arc::new(ReportingState::new()),
             jti_guard: Arc::new(JtiReplayGuard::new()),
+            defra: Arc::new(DefraNodeConfig::new()),
         }
     }
 }
@@ -397,6 +403,7 @@ where
             .field("pet_pending_blind", &"<PetPendingBlindingStore>")
             .field("sign_response_state", &"<SignResponseManager>")
             .field("reporting_state", &"<ReportingState>")
+            .field("defra", &"<DefraNodeConfig>")
             .finish()
     }
 }

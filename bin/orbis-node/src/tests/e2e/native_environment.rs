@@ -85,6 +85,31 @@ impl NativeTestEnvironment {
     fn policy_bytes(policy: &PolicyId) -> B256 {
         B256::from_slice(&hex::decode(&policy.0).expect("policy id is hex-encoded"))
     }
+
+    /// Host-reachable Defra URL, when `ScenarioFixture::defra` was set.
+    /// `None` otherwise. Mirrors `CosmosTestEnvironment::defra_url`.
+    pub fn defra_url(&self) -> Option<&str> {
+        self.network.defra_url()
+    }
+
+    /// The address a ring's `pre_share_endpoints` must use so both sibling
+    /// node containers and this process can reach it. Unlike Cosmos's
+    /// equivalent, this doesn't need a bridge-network gateway-IP lookup —
+    /// native's own project network pre-assigns every address statically
+    /// (see `NativeTestNetwork::defra_container_url`). `None` unless
+    /// `ScenarioFixture::defra` was set. Mirrors
+    /// `CosmosTestEnvironment::defra_container_url`.
+    pub fn defra_container_url(&self) -> Option<String> {
+        self.network.defra_container_url()
+    }
+
+    /// This environment's own Docker network, for joining a one-off sidecar
+    /// container to it directly (`test_support::run_sidecar_container`) —
+    /// see `defra_pre_scenario.rs`'s own module doc comment. Mirrors
+    /// `CosmosTestEnvironment::sidecar_network_name`.
+    pub fn sidecar_network_name(&self) -> String {
+        self.network.cluster().network_name().to_string()
+    }
 }
 
 fn fixture_node(
@@ -168,8 +193,6 @@ async fn create_ring(
     worker: &BlsSigner,
     trusted: &ConsensusPublicKey,
     controller: &k256::ecdsa::SigningKey,
-    actor: &str,
-    root: B256,
     cluster: &NativeTestNetwork,
     spec: RingSpec,
     reporting: ReportingConfig,
@@ -196,8 +219,9 @@ async fn create_ring(
         trusted_auth_relay_dids: (!spec.trusted_auth_relay_dids.is_empty())
             .then_some(spec.trusted_auth_relay_dids),
         reporting,
+        pre_share_endpoints: spec.pre_share_endpoints,
     };
-    let ring_id = config.id(root.0, actor).unwrap();
+    let ring_id = config.id().unwrap();
     let now = unix_now();
     let token = create_scoped_bearer_token(
         controller,
@@ -251,6 +275,7 @@ impl TestEnvironment for NativeTestEnvironment {
             node_count,
             !requires_unsafe_testing,
             requires_unsafe_testing,
+            fixture.defra,
         )
         .await;
 
@@ -466,8 +491,6 @@ impl TestEnvironment for NativeTestEnvironment {
                 &worker,
                 &trusted,
                 &controller,
-                &actor,
-                root,
                 network.cluster(),
                 RingSpec {
                     node_keys: node_keys.clone(),
@@ -477,6 +500,7 @@ impl TestEnvironment for NativeTestEnvironment {
                     nonce: None,
                     trusted_auth_relay_dids: Vec::new(),
                     requires_pet: ring.requires_pet,
+                    pre_share_endpoints: Vec::new(),
                 },
                 ReportingConfig {
                     node_offline_demerits: ring.reporting.node_offline_demerits,
@@ -655,13 +679,78 @@ impl AuthorizationTestDriver for NativeTestEnvironment {
 #[async_trait::async_trait]
 impl BulletinTestDriver for NativeTestEnvironment {
     async fn register_ring(&self, spec: RingSpec) -> RingId {
+        // `spec.policy_id` is an already-created, plain ACP policy (from
+        // `create_policy`, which never registers any object) — register it
+        // as a `ring_policy` object and grant this environment's own
+        // `actor` the `creator` relation its own policy must define for
+        // `create_ring`. See `RingSpec::pre_share_endpoints`'s doc comment.
+        let policy_bytes = Self::policy_bytes(&spec.policy_id);
+        let registered = self
+            .client
+            .native_register_object(&self.worker, policy_bytes, &spec.policy_id.0, "ring_policy")
+            .await
+            .unwrap();
+        confirmed(&self.client, registered.transaction_hash, &self.trusted).await;
+        let granted = self
+            .client
+            .native_set_relationship(
+                &self.worker,
+                policy_bytes,
+                "ring_policy",
+                &spec.policy_id.0,
+                "creator",
+                &self.actor,
+            )
+            .await
+            .unwrap();
+        confirmed(&self.client, granted.transaction_hash, &self.trusted).await;
+
+        // Every running node must be authorized for the policy before it
+        // can join the ring — unlike Cosmos, which only knows the ring id
+        // (and so whitelists by it) after creation, native authorizes by
+        // policy beforehand.
+        let now = unix_now();
+        for info in self.nodes() {
+            for command in [
+                NodeCommand::SetPeer(info.p2p_address.clone()),
+                NodeCommand::Allow(NodeTarget::Policy(spec.policy_id.0.clone())),
+            ] {
+                let current = self
+                    .client
+                    .read_threshold_node(&info.node_key, 1, &self.trusted)
+                    .await
+                    .unwrap()
+                    .record
+                    .unwrap();
+                let signed = sign_node_request(
+                    NodeRequest {
+                        deployment_root: self.root.0,
+                        deployment_id: DEPLOYMENT,
+                        node_key: info.node_key.clone(),
+                        sequence: current.sequence,
+                        expires_at: now + 300,
+                        command,
+                    },
+                    &self.controller,
+                )
+                .unwrap();
+                submit(
+                    &self.client,
+                    &self.worker,
+                    &self.trusted,
+                    encode_node_request(&signed).unwrap(),
+                    "authorize node for ring",
+                    self.network.cluster(),
+                )
+                .await;
+            }
+        }
+
         create_ring(
             &self.client,
             &self.worker,
             &self.trusted,
             &self.controller,
-            &self.actor,
-            self.root,
             self.network.cluster(),
             spec,
             ReportingConfig::default(),

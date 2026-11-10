@@ -351,6 +351,7 @@ impl GatewayNetwork {
             nonce: [2; 32],
             trusted_auth_relay_dids: None,
             reporting: ReportingConfig::default(),
+            pre_share_endpoints: vec![],
         };
         let token = create_scoped_bearer_token(
             &controller,
@@ -483,8 +484,9 @@ async fn verify_results(
             trusted_auth_relay_dids: (mode == Mode::Relay)
                 .then(|| vec![input.trusted_orbis_relay_did.clone()]),
             reporting: ReportingConfig::default(),
+            pre_share_endpoints: vec![],
         };
-        assert_eq!(config.id(network.root.0, actor).unwrap(), result.ring_id);
+        assert_eq!(config.id().unwrap(), result.ring_id);
         let keys = RingPublicKeys {
             public_key: result.public_key.clone(),
             pet_public_key: Some(result.pet_public_key.clone()),

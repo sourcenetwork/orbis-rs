@@ -112,6 +112,7 @@ mod tests {
             threshold: 1,
             total_participants: peer_ids.len(),
             public_polynomial_hex: String::new(),
+            pre_share_endpoints: vec![],
         }
     }
 

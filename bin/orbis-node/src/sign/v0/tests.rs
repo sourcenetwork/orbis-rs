@@ -167,6 +167,7 @@ async fn test_dkg_then_sign_end_to_end() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             message.clone(),
             SignContext::Bulletin {
@@ -384,6 +385,7 @@ async fn test_sign_different_messages() {
                     )
                     .expect("load RingPolyState")
                     .public_polynomial,
+                    pre_share_endpoints: vec![],
                 },
                 message.clone(),
                 SignContext::Bulletin {
@@ -495,6 +497,7 @@ async fn test_sign_fails_wrong_message() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             original_message.clone(),
             SignContext::Bulletin {
@@ -611,6 +614,7 @@ async fn test_sign_response_cleanup() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             message,
             SignContext::Bulletin { object_id },
@@ -715,6 +719,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             invalid_message.to_vec(),
             SignContext::Bulletin {
@@ -833,6 +838,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             fake_message,
             SignContext::Bulletin {
@@ -974,6 +980,7 @@ async fn test_sign_fails_tampered_payload() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             tampered_message,
             SignContext::Bulletin { object_id: post_id },
@@ -1095,6 +1102,7 @@ async fn test_sign_fails_invalid_ring_id() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             message,
             SignContext::Bulletin { object_id: post_id },
@@ -1254,6 +1262,7 @@ async fn test_delegated_dkg_then_sign_policy_end_to_end() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             message.clone(),
             SignContext::Policy(Box::new(PolicyContext {
@@ -1400,6 +1409,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             b"some message".to_vec(),
             SignContext::Policy(Box::new(PolicyContext {
@@ -1508,6 +1518,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             b"some message".to_vec(),
             SignContext::Policy(Box::new(PolicyContext {
@@ -1883,6 +1894,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
                 )
                 .expect("load RingPolyState")
                 .public_polynomial,
+                pre_share_endpoints: vec![],
             },
             different_message,
             SignContext::Policy(Box::new(PolicyContext {

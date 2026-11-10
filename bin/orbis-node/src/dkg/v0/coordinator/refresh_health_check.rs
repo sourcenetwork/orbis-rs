@@ -95,6 +95,7 @@ where
         threshold: candidate.threshold,
         total_participants: candidate.peer_ids.len(),
         public_polynomial_hex: candidate.bundle.public_polynomial.clone(),
+        pre_share_endpoints: vec![],
     };
     let sign_context = SignContext::RefreshHealthCheck(Box::new(RefreshHealthCheckContext {
         statement: statement.clone(),

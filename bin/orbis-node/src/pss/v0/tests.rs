@@ -203,6 +203,7 @@ async fn test_refresh_ring_reconciles_finalized_removed_member() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
@@ -278,6 +279,7 @@ async fn test_reconcile_finalized_removed_member_deletes_pet_material() {
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: Some("aabb".to_string()),
+        pre_share_endpoints: vec![],
     };
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
@@ -391,6 +393,7 @@ async fn test_removed_member_reconciliation_preserves_an_active_ring() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
     RingShareBundle {
@@ -449,6 +452,7 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -508,6 +512,7 @@ async fn test_refresh_follower_does_not_fall_back_when_canonical_route_is_missin
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     let state = Arc::new(app_state);
@@ -588,6 +593,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let post_id = "test-pss-ring-pk-mismatch".to_string();
@@ -637,6 +643,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let mut entry = post_ring_and_seed_index_with_local_key(
@@ -712,6 +719,7 @@ async fn test_pending_fresh_dkg_cancellation_failure_still_cleans_local_state() 
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let mut entry = post_ring_and_seed_index_with_local_key(
@@ -774,6 +782,7 @@ async fn test_pending_fresh_dkg_missing_bulletin_ring_cleans_local_state() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     let entry = post_ring_and_seed_index_with_local_key(
         &app_state,
@@ -828,6 +837,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_preserves_completed_bundle() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let mut entry = post_ring_and_seed_index_with_local_key(
@@ -903,6 +913,7 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let entry = post_ring_and_seed_index_with_local_key(
@@ -1068,6 +1079,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1117,6 +1129,7 @@ async fn test_pss_ring_reshare_rejects_new_committee_node_without_allowlist() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1162,6 +1175,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1197,6 +1211,7 @@ async fn test_pss_ring_refresh_skips_before_interval_elapsed() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1238,6 +1253,7 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1282,6 +1298,7 @@ async fn test_check_and_trigger_refresh_pet_skips_when_ring_does_not_require_pet
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
 
@@ -1321,6 +1338,7 @@ async fn test_check_and_trigger_refresh_pet_skips_when_pet_pk_not_finalized() {
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: None, // FreshPet hasn't finalized on-chain yet
+        pre_share_endpoints: vec![],
     };
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
 
@@ -1362,6 +1380,7 @@ async fn test_check_and_trigger_refresh_pet_skips_before_interval_elapsed() {
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: Some("aa".repeat(32)),
+        pre_share_endpoints: vec![],
     };
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     RingShareBundle {
@@ -1411,6 +1430,7 @@ async fn test_check_and_trigger_refresh_pet_triggers_when_due() {
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: Some("bb".repeat(32)),
+        pre_share_endpoints: vec![],
     };
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     // No PET bundle seeded: `trigger_refresh_pet` must be reached and fail
@@ -1462,6 +1482,7 @@ async fn test_pss_ring_pet_refresh_triggers_independently_when_main_refresh_is_n
         reporting: Default::default(),
         requires_pet: true,
         pet_pk: Some("cc".repeat(32)),
+        pre_share_endpoints: vec![],
     };
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     // Main key: a `last_pss` far in the future makes `elapsed` saturate to
@@ -1556,6 +1577,7 @@ fn reshare_test_ring_payload_pending(
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     }
 }
 

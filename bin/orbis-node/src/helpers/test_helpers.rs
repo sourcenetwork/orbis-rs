@@ -17,7 +17,10 @@ pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 // dead once `reporting.rs` (its last caller) was fully migrated and
 // deleted (harness-unification migration, PR 5f) — removed.
 // `create_ring_on_chain`/`create_ring_on_chain_with_trusted_relays` stayed
-// here; see their doc comments below.
+// here; see their doc comments below. The third sibling,
+// `create_ring_on_chain_with_pre_share_endpoints`, was removed once
+// `CosmosAdmin::register_ring`/`RingSpec::pre_share_endpoints` grew a real
+// (not `unimplemented!()`) implementation — that's the shared path now.
 // `test` (not just the feature) is required here specifically: `test_support`
 // is a dev-dependency, available to the lib's own unit-test build but not to
 // the library test tree links against — unlike
@@ -329,6 +332,7 @@ fn seed_three_node_dummy_bulletin(
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     dummy_bulletin
         .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
@@ -684,6 +688,7 @@ pub async fn write_ring_to_bulletin(
         reporting: Default::default(),
         requires_pet: false,
         pet_pk: None,
+        pre_share_endpoints: vec![],
     };
     let post_id = format!("test-ring-{ring_pk}");
     bulletin
@@ -937,6 +942,7 @@ pub async fn create_ring_on_chain_with_trusted_relays(
         network::V0.version,
         trusted_auth_relay_dids,
         requires_pet,
+        vec![],
         chain_config.clone(),
         TEST_ACCOUNT_HEX_KEY,
     )

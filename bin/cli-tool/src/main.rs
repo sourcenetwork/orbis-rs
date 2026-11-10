@@ -6,13 +6,14 @@ use clap::{Args, Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_node_to_whitelist, add_policy_to_chain,
     cancel_ring_reshare_by_acp, cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring,
-    derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_sign, do_store_secret,
-    fund_with_signer, get_account_sequence, get_latest_ring, list_bulletin_posts,
-    post_key_derivation, prepare_secret, query_node_info, query_pet_ring_state, query_ring_state,
-    read_bulletin_post_with_config, register_bulletin_namespace, register_object_to_chain,
-    remove_node_from_whitelist, schedule_ring_upgrade_by_acp, set_relationship_on_chain,
-    set_ring_pss_interval_by_acp, start_ring_reshare_by_acp, store_prepared_secret,
-    transfer_node_controller, update_node_peer_id, PreparedSecret, SignResult,
+    derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_pre_and_save, do_retrieve_pre,
+    do_sign, do_store_secret, fund_with_signer, get_account_sequence, get_latest_ring,
+    list_bulletin_posts, post_key_derivation, prepare_secret, query_node_info,
+    query_pet_ring_state, query_ring_state, read_bulletin_post_with_config,
+    register_bulletin_namespace, register_object_to_chain, remove_node_from_whitelist,
+    schedule_ring_upgrade_by_acp, set_relationship_on_chain, set_ring_pss_interval_by_acp,
+    start_ring_reshare_by_acp, store_prepared_secret, transfer_node_controller,
+    update_node_peer_id, PendingPreRetrieval, PreparedSecret, SignResult,
 };
 use commands::{reader_did_from_seed, secp256k1_pubkey_to_did};
 use common::blockchain::{orbis::WhitelistTarget, ChainConfig};
@@ -151,6 +152,11 @@ pub enum SubCommands {
         /// Opt this ring into requiring a PET check before PRE release
         #[clap(long)]
         requires_pet: bool,
+        /// DefraDB HTTP base URLs. When set, PRE responders store their
+        /// signed reencryption share in Defra instead of returning it
+        /// directly to the relayer (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        pre_share_endpoints: Vec<String>,
     },
     /// Start a Distributed Key Generation session
     Dkg {
@@ -187,6 +193,17 @@ pub enum SubCommands {
         /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
         #[clap(long)]
         valid_window_end: Option<u64>,
+
+        /// Don't decrypt now — print a JSON blob (reader key + raw response)
+        /// that `retrieve-pre` can decrypt later, independently of this process.
+        #[clap(long)]
+        save_only: bool,
+    },
+    /// Decrypt a PRE response saved earlier via `pre --save-only`
+    RetrievePre {
+        /// The JSON printed by `pre --save-only`
+        #[clap(long)]
+        pending_json: String,
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
@@ -605,6 +622,7 @@ async fn main() -> Result<()> {
             current_version,
             trusted_auth_relay_dids,
             requires_pet,
+            pre_share_endpoints,
         } => {
             let signing_key = network.require_signing_key()?;
             let ring_id = create_ring(
@@ -616,6 +634,7 @@ async fn main() -> Result<()> {
                 current_version,
                 trusted_auth_relay_dids,
                 requires_pet,
+                pre_share_endpoints,
                 network.chain_config(),
                 &signing_key,
             )
@@ -633,22 +652,48 @@ async fn main() -> Result<()> {
             salt,
             valid_window_start,
             valid_window_end,
+            save_only,
         } => {
             require_valid_window_pair(valid_window_start, valid_window_end)?;
             let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             let derivation_bytes = parse_derivation_hex(derivation)?;
-            do_pre(
-                network.endpoint.clone(),
-                network.chain_id.clone(),
-                ring_pk,
-                object_id,
-                Some(reader_did_pk),
-                derivation_bytes,
-                salt,
-                valid_window_start,
-                valid_window_end,
-            )
-            .await?;
+            if save_only {
+                let pending = do_pre_and_save(
+                    network.endpoint.clone(),
+                    network.chain_id.clone(),
+                    ring_pk,
+                    object_id,
+                    Some(reader_did_pk),
+                    derivation_bytes,
+                    salt,
+                    valid_window_start,
+                    valid_window_end,
+                )
+                .await?;
+                println!(
+                    "PENDING_PRE_RETRIEVAL={}",
+                    serde_json::to_string(&pending).map_err(|e| anyhow::anyhow!(
+                        "Failed to serialize pending retrieval: {}",
+                        e
+                    ))?
+                );
+            } else {
+                do_pre(
+                    network.endpoint.clone(),
+                    network.chain_id.clone(),
+                    ring_pk,
+                    object_id,
+                    Some(reader_did_pk),
+                    derivation_bytes,
+                    salt,
+                    valid_window_start,
+                    valid_window_end,
+                )
+                .await?;
+            }
+        }
+        SubCommands::RetrievePre { pending_json } => {
+            do_retrieve_pre(pending_json).await?;
         }
         SubCommands::EncryptSecret {
             secret,

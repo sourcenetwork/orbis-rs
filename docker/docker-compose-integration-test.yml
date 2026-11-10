@@ -82,6 +82,15 @@ services:
       # local-test fixture like the fixed password/keys above.
       - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
+    # `--network-private-routes-only` was tried here (same pairing native's
+    # own node commands use) to remove DKG's dependency on iroh's public
+    # relay infrastructure, but reverted: confirmed empirically it breaks
+    # `connect()` outright ("No addressing information available",
+    # `ip_addresses=[]`) even against real container IPs, not just the
+    # loopback addressing `harness.rs`'s own "Tried and reverted" note
+    # originally scoped this failure mode to. Don't reintroduce without
+    # re-diagnosing why `clear_address_lookup()` drops an already-resolved
+    # peer address before `connect()` uses it.
     command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     volumes:
       - ./services-config-vera.json:/etc/orbis/services.json:ro
@@ -214,6 +223,51 @@ services:
       timeout: 5s
       retries: 30
       start_period: 30s
+
+  # Defra-backed PRE share storage (ring `pre_share_endpoints`). Opt-in via
+  # `--profile defra`, same convention as `node4`'s `profiles: ["node4"]`,
+  # so every other integration test's `docker compose up` is unaffected.
+  defra:
+    profiles: ["defra"]
+    image: ${DEFRA_INTEGRATION_IMAGE:-orbis-defra-integration:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.defra-integration
+      # Unpinned by default (floats on defradb.rs's `main`) — set DEFRA_REF
+      # to pin to a specific ref/branch/tag for one build without editing
+      # this file, e.g. to pin back temporarily after an upstream break.
+      args:
+        DEFRA_REF: ${DEFRA_REF:-main}
+    # `--workers 2 --worker-priority nice:10`: defra's own default
+    # (`--workers auto`, one worker per detected core, at a `SCHED_RR 50`
+    # real-time priority it tries to grab on startup) is sized for serving
+    # real traffic, not for a test fixture cooperatively storing a handful
+    # of PRE shares -- confirmed empirically to starve the sibling orbis
+    # node containers' DKG prepare-phase of CPU scheduling time badly enough
+    # to blow `DKG_PREPARATION_TIMEOUT` (2 minutes), on both a sandboxed
+    # Docker Desktop VM (where the real-time grab silently fails but
+    # `workers=auto` still claims every core) and presumably worse on a
+    # real Linux CI runner (where the real-time grab could actually
+    # succeed, preempting everything else outright). See
+    # `defra_pre_scenario.rs`'s own module doc comment.
+    command: ["--rootdir", "/data", "--url", "0.0.0.0:9181", "--no-keyring=true", "start", "--store", "memory", "--no-p2p=true", "--workers", "2", "--worker-priority", "nice:10"]
+    ports:
+      # Fixed, published on all interfaces (not restricted to 127.0.0.1) —
+      # a loopback-only bind (the convention every other service in this file
+      # uses) is never reachable from a sibling container. Fixed rather than
+      # ephemeral: the test resolves this same port via the bridge network's
+      # gateway IP (`CosmosNetwork::defra_container_url`) for `pre_share_endpoints`,
+      # which both producer nodes *and* the test's own reader-role `do_pre`
+      # call need to agree on without per-run port discovery.
+      - "9181:9181"
+    networks:
+      - orbis-integration-network
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9181/health-check"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
 
 networks:
   orbis-integration-network:

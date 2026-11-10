@@ -69,6 +69,16 @@ pub enum PreError {
     #[error("Ring generation changed, try again shortly")]
     ReshareInProgress,
 
+    /// This responder's local `RingShareBundle.public_polynomial` doesn't match the
+    /// generation the coordinator pinned into the request
+    /// (`PreRequestContext::pinned_public_polynomial`). Distinct from `ReshareInProgress`:
+    /// that variant is detected via an active local PSS session on *this* node, whereas
+    /// this one can fire even with no active session here — e.g. this node already
+    /// rotated to a new generation locally while the coordinator's pin (and other peers)
+    /// haven't yet. Same client-visible remedy either way: retry shortly.
+    #[error("Pinned generation mismatch: expected {expected}, have {actual}")]
+    PinnedGenerationMismatch { expected: String, actual: String },
+
     /// Generic PRE error
     #[error("PRE error: {0}")]
     Generic(String),
@@ -84,6 +94,16 @@ pub enum PreError {
     /// AuthZ error
     #[error("Authz error: {0}")]
     AuthZ(String),
+
+    /// A Defra upload or fetch genuinely failed — a transport/server error from
+    /// `pre_share::DefraClientError`, or a failure minting this node's own bearer
+    /// JWT (invalid key material, clock error). Distinct from `Storage` (today's
+    /// variant, meaning *local* disk failures) so logs/metrics can tell "my disk"
+    /// apart from "the configured remote endpoint" immediately. There is no
+    /// "not configured" case: every node able to participate in PRE already has the
+    /// signing key this JWT is minted from.
+    #[error("Defra storage error: {0}")]
+    DefraStorage(String),
 }
 
 /// Result type for PRE operations
@@ -106,7 +126,7 @@ impl GrpcServiceError for PreError {
             PreError::SessionNotFound(_) => {
                 GrpcErrorClassification::new(Code::NotFound, Level::TRACE, false)
             }
-            PreError::ReshareInProgress => {
+            PreError::ReshareInProgress | PreError::PinnedGenerationMismatch { .. } => {
                 GrpcErrorClassification::new(Code::Unavailable, Level::TRACE, true)
             }
             PreError::InsufficientShares { .. } => {
@@ -115,7 +135,7 @@ impl GrpcServiceError for PreError {
             PreError::Timeout(_) => {
                 GrpcErrorClassification::new(Code::DeadlineExceeded, Level::WARN, true)
             }
-            PreError::NetworkConnection(_) => {
+            PreError::NetworkConnection(_) | PreError::DefraStorage(_) => {
                 GrpcErrorClassification::new(Code::Unavailable, Level::WARN, true)
             }
             PreError::VerificationFailed(_) => {
@@ -260,6 +280,15 @@ mod tests {
                 true,
             ),
             (
+                PreError::PinnedGenerationMismatch {
+                    expected: "a".into(),
+                    actual: "b".into(),
+                },
+                Code::Unavailable,
+                Level::TRACE,
+                true,
+            ),
+            (
                 PreError::Generic("test".into()),
                 Code::Internal,
                 Level::ERROR,
@@ -282,6 +311,12 @@ mod tests {
                 Code::Unauthenticated,
                 Level::TRACE,
                 false,
+            ),
+            (
+                PreError::DefraStorage("test".into()),
+                Code::Unavailable,
+                Level::WARN,
+                true,
             ),
         ];
 

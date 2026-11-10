@@ -252,3 +252,46 @@ fn prepare_secret_rejects_hex_that_is_not_a_valid_curve_point() {
     .unwrap_err();
     assert!(err.to_string().contains("Invalid ring_pk"));
 }
+
+/// `PendingPreRetrieval`'s fields are private to `commands::node` (an opaque
+/// resume token, matching the `prepared_json`-as-a-raw-string convention
+/// `StorePreparedSecret` already uses) — so this builds one through its own
+/// `Serialize`/`Deserialize` shape via JSON, the same way `do_pre_and_save`'s
+/// caller and `do_retrieve_pre` do, rather than via struct-literal
+/// construction, which isn't available outside its own module anyway.
+#[test]
+fn pending_pre_retrieval_roundtrips_through_json() {
+    let json = serde_json::json!({
+        "reader_sk_hex": "aabbcc",
+        "ring_pk": "ring-pk-hex",
+        "derivation": null,
+        "response": {
+            "Direct": {
+                "xnc_cmt": "deadbeef",
+                "secret": {
+                    "enc_cmt": [1, 2, 3],
+                    "encrypted_data": [4, 5, 6],
+                    "nonce": [7, 8, 9, 10, 11, 12]
+                },
+                "context": {
+                    "ring_pk": [1, 2, 3],
+                    "policy_id": "policy-1",
+                    "resource": "resource",
+                    "permission": "read",
+                    "tier": null,
+                    "timestamp": null,
+                    "salt": null,
+                    "pet_tag": null
+                }
+            }
+        }
+    })
+    .to_string();
+
+    let pending: PendingPreRetrieval = serde_json::from_str(&json).expect("deserialize");
+    let round_tripped_json = serde_json::to_string(&pending).expect("serialize");
+    let round_tripped: PendingPreRetrieval =
+        serde_json::from_str(&round_tripped_json).expect("deserialize again");
+
+    assert_eq!(format!("{:?}", pending), format!("{:?}", round_tripped));
+}

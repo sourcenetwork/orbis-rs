@@ -25,8 +25,9 @@ use crypto::r#trait::{
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{PolynomialCommitmentImpl, PubPolyImpl, SigShareInner, SignImpl, SignaturePoint};
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::stored_delivery;
 impl<D, T> PreCoordinator<D, T>
 where
     D: Dkg<
@@ -79,6 +80,18 @@ where
                     "PRE Coordinator: Received ReencryptResponse"
                 );
                 // Responses are collected by initiate_reencryption, not here
+                Ok(None)
+            }
+            PreMessage::ReencryptStored(_) => {
+                tracing::debug!(
+                    request_id = %message.request_id(),
+                    "PRE Coordinator: Received ReencryptStored"
+                );
+                // Like ReencryptResponse, acks are captured by `try_store_response`
+                // before `handle_message` is ever called, then collected by
+                // `initiate_reencryption` — this arm only exists so `PreMessage` stays
+                // exhaustively matched (and as a safety net if that capture is ever
+                // bypassed).
                 Ok(None)
             }
             PreMessage::Error { request_id, error } => {
@@ -365,6 +378,16 @@ where
         let bundle = RingShareBundle::load(&self.app_state.local_storage, &ring_pk)
             .map_err(|e| PreError::Storage(format!("Failed to load share bundle: {}", e)))?;
 
+        // Reject up front if our committed generation doesn't match what the coordinator
+        // pinned this request to — releasing a share from the wrong generation would only
+        // fail later, at decrypt time, for the reader. See `PreRequestContext::pinned_public_polynomial`.
+        if bundle.public_polynomial != ctx.pinned_public_polynomial {
+            return Err(PreError::PinnedGenerationMismatch {
+                expected: ctx.pinned_public_polynomial.clone(),
+                actual: bundle.public_polynomial.clone(),
+            });
+        }
+
         // 4. Deserialize final share from bundle
         let pri_share: PriShare<D::ShareValue> = PriShare::from_bytes(&bundle.share_bytes)
             .map_err(|e| {
@@ -388,6 +411,39 @@ where
                 &ctx.rdr_pk_signature,
             )
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
+
+        // This ring stores shares in Defra instead of returning them directly — build,
+        // sign, and upload the envelope, and ack it, rather than steps 7-8 below.
+        if let Some(endpoint) = ring_payload.pre_share_endpoints.first() {
+            let ack = stored_delivery::build_and_store_envelope::<D, T>(
+                &self.app_state,
+                &reply,
+                stored_delivery::StoredShareParams {
+                    chain_id: self.app_state.bulletin.chain_id(),
+                    ring_id: document_payload.ring_id.clone(),
+                    ring_pk: ring_payload.ring_pk.clone(),
+                    ring_state_sha256: ring_state_sha256(&ring_payload),
+                    protocol_version: self.routes.version,
+                    request_id: &request_id,
+                    object_id: &ctx.object_id,
+                    rdr_pk_bytes: &ctx.rdr_pk_bytes,
+                    derivation: ctx.derivation.as_deref(),
+                    document_inline: document_evidence.is_some(),
+                    timestamp: document_payload.timestamp,
+                    pinned_public_polynomial: ctx.pinned_public_polynomial.clone(),
+                    endpoint,
+                },
+            )
+            .await?;
+
+            tracing::debug!(
+                request_id = %request_id,
+                to_node_id = from_node_id,
+                "PRE Coordinator: Sending ReencryptStored"
+            );
+
+            return Ok(Some(PreMessage::ReencryptStored(ack)));
+        }
 
         // 7. Serialize the reply components using trait methods
         let share_bytes = CryptoSerialize::to_bytes(&reply.share.v)
@@ -426,15 +482,7 @@ where
             timestamp: document_payload.timestamp,
             document_inline: document_evidence.is_some(),
         };
-        let signing_key = self
-            .app_state
-            .local_storage
-            .get_encrypted(LocalStorageKeys::NodeSigningKey)
-            .map_err(|e| PreError::Storage(format!("Failed to read node signing key: {}", e)))?
-            .ok_or_else(|| PreError::Storage("Node signing key is not configured".to_string()))?;
-        let signing_key_hex = String::from_utf8(signing_key.to_vec()).map_err(|e| {
-            PreError::Storage(format!("Stored node signing key is not UTF-8: {}", e))
-        })?;
+        let signing_key_hex = stored_delivery::load_node_signing_key_hex(&self.app_state)?;
         let response_signature =
             sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
                 .map_err(|e| PreError::Crypto(format!("Failed to sign PRE response: {}", e)))?;

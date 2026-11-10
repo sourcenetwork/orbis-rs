@@ -530,6 +530,7 @@ fn ring_post(record: RingRecord) -> crate::error::Result<BulletinPost> {
             backup_node_keys: settings.reporting.backup_node_keys,
             kick_threshold: settings.reporting.kick_threshold,
         },
+        pre_share_endpoints: record.config.pre_share_endpoints,
     };
     Ok(BulletinPost {
         id: record.id,
@@ -794,10 +795,11 @@ mod tests {
                 kick_threshold: 7,
                 ..Default::default()
             },
+            pre_share_endpoints: Vec::new(),
         };
         let creator = "did:key:creator".to_string();
         let mut record = RingRecord {
-            id: config.id([7; 32], &creator).unwrap(),
+            id: config.id().unwrap(),
             creator,
             deployment_root: [7; 32],
             config: config.clone(),

@@ -17,6 +17,7 @@ impl VeraClient {
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
         requires_pet: bool,
+        pre_share_endpoints: Vec<String>,
     ) -> Result<BroadcastResult> {
         let signer = self.require_signer()?;
         let msg = MsgCreateRing::new(
@@ -30,6 +31,7 @@ impl VeraClient {
             reporting,
             trusted_auth_relay_dids,
             requires_pet,
+            pre_share_endpoints,
         );
         self.broadcast_proto_msg_with_gas(
             MsgCreateRing::TYPE_URL,
@@ -54,6 +56,7 @@ impl VeraClient {
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
         requires_pet: bool,
+        pre_share_endpoints: Vec<String>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_create_ring(
@@ -66,6 +69,7 @@ impl VeraClient {
                 reporting,
                 trusted_auth_relay_dids,
                 requires_pet,
+                pre_share_endpoints,
             )
             .await?;
 

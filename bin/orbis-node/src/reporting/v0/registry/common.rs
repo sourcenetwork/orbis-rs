@@ -36,6 +36,7 @@ pub(super) async fn build_signing_ring_config(
         threshold: signing_committee.threshold as usize,
         total_participants: node_routes.len(),
         public_polynomial_hex: poly_state.public_polynomial,
+        pre_share_endpoints: vec![],
     };
 
     Ok((ring, ring_config))

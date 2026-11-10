@@ -257,6 +257,7 @@ where
         threshold: new_threshold as usize,
         total_participants: prepared.new_committee_size,
         public_polynomial_hex: hex::encode(pub_poly_bytes),
+        pre_share_endpoints: vec![],
     };
     let sign_context =
         SignContext::RingReshareUpdate(Box::new(RingReshareUpdateContext { statement }));

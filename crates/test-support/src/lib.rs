@@ -32,6 +32,8 @@ mod network;
 pub mod node_readiness;
 
 pub use admin::BackendAdmin;
+#[cfg(any(feature = "cosmos", feature = "native"))]
+pub use compose::{build_cli_tool_sidecar_image, run_sidecar_container};
 #[cfg(feature = "cosmos")]
 pub use environment::CosmosTestEnvironment;
 #[cfg(feature = "cosmos")]

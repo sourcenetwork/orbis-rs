@@ -120,6 +120,7 @@ fn build_fixture(committee_size: usize, threshold: u32, target: &str) -> TagFixt
         pet_pk: Some(hex::encode(
             CryptoSerialize::to_bytes(&pet_pk).expect("serialize pet_pk"),
         )),
+        pre_share_endpoints: vec![],
     };
 
     let (r_tag, r_point) =

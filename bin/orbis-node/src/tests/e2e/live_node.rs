@@ -894,8 +894,9 @@ impl Chain {
             nonce: nonce_bytes,
             trusted_auth_relay_dids,
             reporting: ReportingConfig::default(),
+            pre_share_endpoints: vec![],
         };
-        let ring_id = config.id(self.root, &self.actor).expect("derive ring id");
+        let ring_id = config.id().expect("derive ring id");
 
         let now = unix_now();
         let token = create_scoped_bearer_token(
