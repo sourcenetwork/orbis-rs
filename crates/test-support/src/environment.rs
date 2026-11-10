@@ -566,13 +566,14 @@ impl CosmosTestEnvironment {
         self.network.network_name()
     }
 
-    /// Republishes a *non-member* running node's on-chain peer id and
-    /// whitelists it for `ring`, so it can later be announced as a pure-new
-    /// reshare target. `provision` publishes every running node's route but
-    /// only whitelists `ring.members`, which a pure-new target deliberately
-    /// isn't. Not part of any shared trait: native's `Allow` authorization
-    /// step applies to every running node regardless of ring membership,
-    /// so this gap is Cosmos-only.
+    /// Whitelists a *non-member* running node for `ring`, so it can later be
+    /// announced as a pure-new reshare target. `provision` already
+    /// publishes every running node's route unconditionally, regardless of
+    /// ring membership — this only needs to add the whitelist entry
+    /// `provision`'s own ring loop skips for a non-member. Not part of any
+    /// shared trait: native's `Allow` authorization step applies to every
+    /// running node regardless of ring membership, so this gap is
+    /// Cosmos-only.
     pub async fn whitelist_node_for_ring(&self, ring: &RingId, node_index: usize) {
         let client = VeraClient::with_signer(
             self.network.chain_config(),
@@ -582,19 +583,6 @@ impl CosmosTestEnvironment {
         .await
         .expect("signed chain client for node whitelisting");
         let node_key = &self.fixture.nodes[node_index].node_key;
-        let peer_address = CosmosNetwork::transform_p2p_address(
-            &self.fixture.nodes[node_index].p2p_address,
-            CosmosNetwork::service_name_for_node(node_index + 1),
-        );
-        let peer_update = client
-            .orbis_update_node_peer_id(node_key, &peer_address)
-            .await
-            .expect("update NodeInfo peer ID");
-        assert_eq!(
-            peer_update.code, 0,
-            "update NodeInfo peer ID tx failed: {}",
-            peer_update.log
-        );
         client
             .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring.0.clone()))
             .await
