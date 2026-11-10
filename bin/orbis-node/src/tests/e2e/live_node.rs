@@ -796,8 +796,8 @@ impl Chain {
         Option<std::path::PathBuf>,
     ) {
         let node_dir = runtime_base_path.join(format!("node{node_index}"));
-        let identity =
-            initialize_identity(local_storage, &node_dir).expect("initialize native identity");
+        let identity = initialize_identity(local_storage, &node_dir, None)
+            .expect("initialize native identity");
 
         let worker_dir = node_dir.join("native-vera").join(hex::encode(self.root));
         let endpoint = self.cluster.node(0).rpc_url();

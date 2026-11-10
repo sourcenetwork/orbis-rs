@@ -153,6 +153,7 @@ services:
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
+      - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001
       - RUST_LOG=info
       # Compiled in by default (BACKEND=native always adds unsafe-testing when
       # ENABLE_INTEGRATION_TEST=true at build time, above) but disabled at
@@ -210,6 +211,7 @@ services:
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
+      - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000002
       - RUST_LOG=info
       # Compiled in by default (BACKEND=native always adds unsafe-testing when
       # ENABLE_INTEGRATION_TEST=true at build time, above) but disabled at
@@ -267,6 +269,7 @@ services:
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
+      - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000003
       - RUST_LOG=info
       # Compiled in by default (BACKEND=native always adds unsafe-testing when
       # ENABLE_INTEGRATION_TEST=true at build time, above) but disabled at
@@ -325,6 +328,7 @@ services:
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
+      - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000004
       - RUST_LOG=info
       # Compiled in by default (BACKEND=native always adds unsafe-testing when
       # ENABLE_INTEGRATION_TEST=true at build time, above) but disabled at

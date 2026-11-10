@@ -2,6 +2,8 @@
 
 mod backend;
 mod config;
+#[cfg(all(feature = "unsafe-testing", feature = "select-native"))]
+pub mod integration_startup;
 #[cfg(test)]
 mod pet_tests;
 #[cfg(test)]
