@@ -15,6 +15,9 @@ use crypto::r#trait::{CryptoSerialize, Dkg, ReencryptReply, ThresholdDealer};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use pre_share::{PreShareFields, StoredShareEnvelope, PRE_SHARE_COLLECTION};
+use rand::rngs::OsRng;
+use rand::seq::IndexedRandom;
+use rand::TryRngCore;
 use sha2::{Digest, Sha256};
 
 use crate::app_state::AppState;
@@ -22,6 +25,15 @@ use crate::constants::PRE_COLLECTION_TIMEOUT;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::messages::StoredShareAck;
 use crate::reporting::v0::types::{PreReencryptResponseStatement, PRE_REENCRYPT_RESPONSE_DOMAIN};
+
+/// Picks one of `endpoints` at random (OS-entropy-backed, not a seeded PRNG) rather
+/// than always the first — each node's independent per-request choice spreads write
+/// load across every configured endpoint over time, instead of every node in every
+/// ring hammering `endpoints[0]` alone. `None` iff `endpoints` is empty, same as
+/// `.first()` — callers' existing "no endpoints configured" branching is unchanged.
+pub(super) fn select_pre_share_endpoint(endpoints: &[String]) -> Option<&String> {
+    endpoints.choose(&mut OsRng.unwrap_err())
+}
 
 /// Loads this node's own hex-encoded node signing key from local storage. Shared by
 /// the direct-mode `response_signature` path (`handlers.rs`) and this module's own
@@ -54,9 +66,8 @@ pub(super) struct StoredShareParams<'a> {
     pub document_inline: bool,
     pub timestamp: Option<u64>,
     pub pinned_public_polynomial: String,
-    /// The one endpoint this call uploads to — callers pick
-    /// `ring.pre_share_endpoints[0]`; see that field's doc comment for why there's no
-    /// per-request failover across multiple configured endpoints yet.
+    /// The one endpoint this call uploads to — callers pick one at random via
+    /// `select_pre_share_endpoint` above, not always the same entry.
     pub endpoint: &'a str,
 }
 
@@ -153,4 +164,50 @@ where
         .map_err(|e| PreError::Crypto(format!("Failed to sign stored share ack: {}", e)))?;
 
     Ok(ack)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_pre_share_endpoint;
+    use std::collections::HashSet;
+
+    #[test]
+    fn select_pre_share_endpoint_returns_none_for_an_empty_list() {
+        assert_eq!(select_pre_share_endpoint(&[]), None);
+    }
+
+    #[test]
+    fn select_pre_share_endpoint_returns_the_only_entry_for_a_single_element_list() {
+        let endpoints = vec!["http://defra-a:9181".to_string()];
+        assert_eq!(select_pre_share_endpoint(&endpoints), Some(&endpoints[0]));
+    }
+
+    #[test]
+    fn select_pre_share_endpoint_only_ever_returns_a_configured_entry() {
+        let endpoints: Vec<String> = (0..4)
+            .map(|index| format!("http://defra-{index}:9181"))
+            .collect();
+        for _ in 0..200 {
+            let selected = select_pre_share_endpoint(&endpoints).expect("non-empty list");
+            assert!(endpoints.contains(selected));
+        }
+    }
+
+    /// Not a statistical fairness test — just confirms selection actually varies
+    /// across calls instead of silently always landing on the same entry (which
+    /// would defeat the whole point of this helper over the old `.first()`).
+    #[test]
+    fn select_pre_share_endpoint_visits_more_than_one_entry_over_many_calls() {
+        let endpoints: Vec<String> = (0..4)
+            .map(|index| format!("http://defra-{index}:9181"))
+            .collect();
+        let mut seen: HashSet<&String> = HashSet::new();
+        for _ in 0..200 {
+            seen.insert(select_pre_share_endpoint(&endpoints).expect("non-empty list"));
+        }
+        assert!(
+            seen.len() > 1,
+            "expected random selection to visit more than one endpoint over 200 draws, saw {seen:?}"
+        );
+    }
 }

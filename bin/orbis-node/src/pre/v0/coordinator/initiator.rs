@@ -241,7 +241,9 @@ where
 
         // Note: Cleanup is handled by the outer initiate_reencryption function, on
         // either branch below.
-        let Some(endpoint) = ring.pre_share_endpoints.first() else {
+        let Some(endpoint) =
+            super::stored_delivery::select_pre_share_endpoint(&ring.pre_share_endpoints)
+        else {
             let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
             let mut seen_node_ids: HashSet<u32> = HashSet::new();
 
