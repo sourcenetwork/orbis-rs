@@ -19,7 +19,7 @@ use proto::unsafe_testing::{
 };
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use test_support::admin::{DocumentId, PolicyId, RingId, RingSpec, RingView};
+use test_support::admin::{DocumentId, PolicyId, RingId, RingSpec, RingStateFacts, RingView};
 use test_support::fixture::{
     AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeRef, NodeRole,
     PolicyHandle, ProvisionedFixture, RingHandle, ScenarioFixture, TestEnvironment,
@@ -940,6 +940,31 @@ impl BulletinTestDriver for NativeTestEnvironment {
                 .map(|target| target.threshold),
             backup_node_keys: record.config.reporting.backup_node_keys.clone(),
         })
+    }
+
+    /// Reuses `bulletin::native::ring_payload_from_record` — the same
+    /// `RingRecord` -> `RingPayload` mapping production code uses for
+    /// `Bulletin::read` — so `ring_state_sha256` here is guaranteed to
+    /// match whatever a real responder independently computes when
+    /// verifying evidence against this ring's current state.
+    async fn read_ring_state_facts(&self, ring: &RingId) -> RingStateFacts {
+        let record = self
+            .client
+            .read_threshold_ring(&ring.0, 1, &self.trusted)
+            .await
+            .expect("certified ring read failed")
+            .record
+            .expect("ring must exist");
+        let payload =
+            bulletin::native::ring_payload_from_record(&record).expect("build RingPayload");
+        RingStateFacts {
+            ring_pk: payload.ring_pk.clone(),
+            peer_node_keys: payload.peer_node_keys.clone(),
+            threshold: payload.threshold,
+            new_peer_node_keys: payload.new_peer_node_keys.clone(),
+            new_threshold: payload.new_threshold,
+            state_sha256: bulletin::reporting::ring_state_sha256(&payload),
+        }
     }
 
     async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingView {

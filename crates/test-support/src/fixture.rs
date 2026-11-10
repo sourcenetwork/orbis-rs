@@ -16,7 +16,7 @@
 //! — this type family exists to stop describing that same state as raw JSON
 //! once per test, not to invent new scenario shapes.
 
-use crate::admin::{DocumentId, PolicyId, RingId, RingSpec, RingView};
+use crate::admin::{DocumentId, PolicyId, RingId, RingSpec, RingStateFacts, RingView};
 use crate::network::NodeInfo;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -320,6 +320,13 @@ pub trait BulletinTestDriver {
     async fn register_ring(&self, spec: RingSpec) -> RingId;
 
     async fn read_ring(&self, ring: &RingId) -> Option<RingView>;
+
+    /// The ring's current state, pre-hashed into `state_sha256` — see
+    /// [`RingStateFacts`]'s own doc comment for why the hash crosses this
+    /// trait boundary instead of a raw `RingPayload`. For building evidence
+    /// (e.g. a forged DKG-commitment statement) that must match a real
+    /// responder's own independently-computed `ring_state_sha256`.
+    async fn read_ring_state_facts(&self, ring: &RingId) -> RingStateFacts;
 
     /// Returns the full view (not just [`RingKeys`]) once `ring_pk` is set —
     /// callers that only need the main key still get it via `.ring_pk`, but

@@ -489,8 +489,14 @@ fn ring_status(record: &RingRecord) -> crate::error::Result<RingFinalizationStat
     }
 }
 
-fn ring_post(record: RingRecord) -> crate::error::Result<BulletinPost> {
-    let status = ring_status(&record)?;
+/// The authoritative native `RingRecord` -> `RingPayload` mapping — the same
+/// shape production code uses for `Bulletin::read`/`ring_post` below, and
+/// what test code needs to reconstruct a ring's *current* payload directly
+/// (e.g. to build evidence against it) without a Cosmos-only cli-tool
+/// round trip. Exposed `pub` specifically for that reuse — see
+/// `ring_post`'s own doc comment.
+pub fn ring_payload_from_record(record: &RingRecord) -> crate::error::Result<RingPayload> {
+    let status = ring_status(record)?;
     let settings = record.current_settings();
     let (new_peer_node_keys, new_threshold) =
         settings.pending_reshare.map_or((None, None), |target| {
@@ -500,7 +506,7 @@ fn ring_post(record: RingRecord) -> crate::error::Result<BulletinPost> {
         settings.scheduled_upgrade.map_or((None, None), |upgrade| {
             (Some(upgrade.version), Some(upgrade.activates_at))
         });
-    let ring = RingPayload {
+    Ok(RingPayload {
         requires_pet: record.config.requires_pet,
         pet_pk: match &record.state {
             RingState::Active { keys } => keys.pet_public_key.clone(),
@@ -513,7 +519,7 @@ fn ring_post(record: RingRecord) -> crate::error::Result<BulletinPost> {
         threshold: settings.threshold,
         pss_interval: settings.pss_interval,
         block_number_nonce: record.sequence,
-        policy_id: Some(record.config.policy_id),
+        policy_id: Some(record.config.policy_id.clone()),
         trusted_auth_relay_dids: settings.trusted_auth_relay_dids,
         upgrade_info: UpgradeInfo {
             current_version: settings.current_version,
@@ -532,10 +538,17 @@ fn ring_post(record: RingRecord) -> crate::error::Result<BulletinPost> {
             backup_node_keys: settings.reporting.backup_node_keys,
             kick_threshold: settings.reporting.kick_threshold,
         },
-        pre_share_endpoints: record.config.pre_share_endpoints,
-    };
+        pre_share_endpoints: record.config.pre_share_endpoints.clone(),
+    })
+}
+
+/// Thin `BulletinPost` wrapper around [`ring_payload_from_record`] for
+/// `Bulletin::read`'s own JSON-bytes contract.
+fn ring_post(record: RingRecord) -> crate::error::Result<BulletinPost> {
+    let id = record.id.clone();
+    let ring = ring_payload_from_record(&record)?;
     Ok(BulletinPost {
-        id: record.id,
+        id,
         payload: serde_json::to_vec(&ring)
             .map_err(|e| crate::error::BulletinError::ParseError(e.to_string()))?,
     })

@@ -8,7 +8,7 @@
 
 use crate::admin::{
     cosmos::create_ring_governance_with_ring, BackendAdmin, DocumentId, PolicyId, RingId, RingSpec,
-    RingView,
+    RingStateFacts, RingView,
 };
 use crate::fixture::{
     AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeRef, NodeRole,
@@ -679,6 +679,30 @@ impl BulletinTestDriver for CosmosTestEnvironment {
 
     async fn read_ring(&self, ring: &RingId) -> Option<RingView> {
         self.network.admin().read_ring(ring).await
+    }
+
+    /// Same direct `VeraBulletin::read` pattern `read_document` already
+    /// uses — the raw `RingPayload` this reads is exactly what a real
+    /// responder hashes when verifying evidence against the ring's current
+    /// state, so `ring_state_sha256` here is guaranteed to match.
+    async fn read_ring_state_facts(&self, ring: &RingId) -> RingStateFacts {
+        let payload_bytes = VeraBulletin::new(self.network.chain_config_builder())
+            .await
+            .expect("bulletin read client")
+            .read(ring.0.clone(), BulletinKind::Ring)
+            .await
+            .expect("read ring payload")
+            .payload;
+        let payload: bulletin::r#trait::RingPayload =
+            serde_json::from_slice(&payload_bytes).expect("parse RingPayload");
+        RingStateFacts {
+            ring_pk: payload.ring_pk.clone(),
+            peer_node_keys: payload.peer_node_keys.clone(),
+            threshold: payload.threshold,
+            new_peer_node_keys: payload.new_peer_node_keys.clone(),
+            new_threshold: payload.new_threshold,
+            state_sha256: bulletin::reporting::ring_state_sha256(&payload),
+        }
     }
 
     async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingView {
