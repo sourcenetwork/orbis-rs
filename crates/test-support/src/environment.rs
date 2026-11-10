@@ -386,18 +386,39 @@ impl TestEnvironment for CosmosTestEnvironment {
             node.p2p_address = publishable_p2p_address(&network, index, &node.grpc_endpoint).await;
         }
 
+        let controller_client = VeraClient::with_signer(
+            network.chain_config(),
+            TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, network.chain_config())
+                .expect("test account signer"),
+        )
+        .await
+        .expect("signed chain client for fixture setup");
+
+        // Publish routes for every running node, even when the fixture has
+        // no genesis rings. A ring created later through `register_ring`
+        // still needs these routes; startup may have registered a bare peer
+        // ID or a public address that sibling containers cannot dial.
+        for (index, node) in nodes.iter().enumerate() {
+            wait_for_node_info_on_chain(&controller_client, &node.node_key).await;
+            let peer_address = CosmosNetwork::transform_p2p_address(
+                &node.p2p_address,
+                CosmosNetwork::service_name_for_node(index + 1),
+            );
+            let peer_update = controller_client
+                .orbis_update_node_peer_id(&node.node_key, &peer_address)
+                .await
+                .expect("update NodeInfo peer ID");
+            assert_eq!(
+                peer_update.code, 0,
+                "update NodeInfo peer ID tx failed: {}",
+                peer_update.log
+            );
+        }
+
         let mut policies: HashMap<FixtureId, PolicyId> = HashMap::new();
         let mut rings: HashMap<FixtureId, RingHandle> = HashMap::new();
 
         if !fixture.rings.is_empty() {
-            let controller_client = VeraClient::with_signer(
-                network.chain_config(),
-                TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, network.chain_config())
-                    .expect("test account signer"),
-            )
-            .await
-            .expect("signed chain client for ring governance");
-
             for ring in &fixture.rings {
                 let members = resolve_members(&ring.members);
                 for node_key in &members {
@@ -412,30 +433,12 @@ impl TestEnvironment for CosmosTestEnvironment {
                      embedded policy_id to match"
                 );
                 for (node_ref, node_key) in ring.members.iter().zip(&members) {
-                    let NodeRef::Running(index) = node_ref else {
+                    let NodeRef::Running(_) = node_ref else {
                         panic!(
                             "CosmosTestEnvironment::provision: NodeRole::Offline/Backup isn't \
                              supported yet"
                         );
                     };
-                    // Each node's self-reported `p2p_address` (from
-                    // `wait_for_nodes_ready`) isn't reachable by other
-                    // containers as-is — it must be rewritten to the
-                    // Compose service name before other members can "prepare"
-                    // with it during DKG, same as the pre-fixture adapter did.
-                    let peer_address = CosmosNetwork::transform_p2p_address(
-                        &nodes[*index].p2p_address,
-                        CosmosNetwork::service_name_for_node(*index + 1),
-                    );
-                    let peer_update = controller_client
-                        .orbis_update_node_peer_id(node_key, &peer_address)
-                        .await
-                        .expect("update NodeInfo peer ID");
-                    assert_eq!(
-                        peer_update.code, 0,
-                        "update NodeInfo peer ID tx failed: {}",
-                        peer_update.log
-                    );
                     controller_client
                         .orbis_add_node_to_whitelist(
                             node_key,
@@ -563,15 +566,13 @@ impl CosmosTestEnvironment {
         self.network.network_name()
     }
 
-    /// Updates a *non-member* running node's on-chain peer id and whitelists
-    /// it for `ring`, so it can later be announced as a pure-new reshare
-    /// target (e.g. the "node4 leads the new committee" shape several
-    /// `reporting.rs`-migrated tests use) — `provision`'s own ring loop only
-    /// does this for `ring.members`, which a pure-new target deliberately
-    /// isn't. Not part of any shared trait: native's `SetPeer`/`Allow`
-    /// authorization step has no such member/non-member distinction to
-    /// begin with (every running node gets both regardless of ring
-    /// membership), so this gap is Cosmos-only.
+    /// Republishes a *non-member* running node's on-chain peer id and
+    /// whitelists it for `ring`, so it can later be announced as a pure-new
+    /// reshare target. `provision` publishes every running node's route but
+    /// only whitelists `ring.members`, which a pure-new target deliberately
+    /// isn't. Not part of any shared trait: native's `Allow` authorization
+    /// step applies to every running node regardless of ring membership,
+    /// so this gap is Cosmos-only.
     pub async fn whitelist_node_for_ring(&self, ring: &RingId, node_index: usize) {
         let client = VeraClient::with_signer(
             self.network.chain_config(),
