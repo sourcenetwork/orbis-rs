@@ -32,7 +32,10 @@ use vera_client::{
         encode_node_request, sign_node_request, NodeCommand, NodeInfo as VeraNodeInfo, NodeRequest,
         NodeTarget,
     },
-    rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig, RingState, RingUpdate},
+    rings::{
+        encode_ring_command, ReportingConfig, RingCommand, RingConfig, RingState, RingUpdate,
+        ScheduledUpgrade,
+    },
     threshold_objects::{
         encode_threshold_object, EncryptedDocument, KeyDerivation, ObjectKind, ThresholdObject,
     },
@@ -1250,11 +1253,81 @@ impl BulletinTestDriver for NativeTestEnvironment {
         );
     }
 
-    /// Native's chain module has no reshare-cancellation command at all —
-    /// `vera_client::rings::RingUpdate` has no cancel variant, only
-    /// `StartReshare` (and unrelated updates) — so there's nothing to call.
-    async fn cancel_reshare(&self, _ring: &RingId) {
-        unimplemented!("NativeTestEnvironment::cancel_reshare: no RingUpdate variant exists")
+    async fn cancel_reshare(&self, ring: &RingId) {
+        let record = self
+            .client
+            .read_threshold_ring(&ring.0, 1, &self.trusted)
+            .await
+            .expect("read native ring before cancelling reshare")
+            .record
+            .expect("ring must exist to cancel its reshare");
+        let now = unix_now();
+        let token = create_scoped_bearer_token(
+            &self.controller,
+            self.worker.did(),
+            DEPLOYMENT,
+            now,
+            now + 300,
+            DelegationScope::ManageRings,
+        )
+        .expect("create native cancel-reshare delegation");
+        submit(
+            &self.client,
+            &self.worker,
+            &self.trusted,
+            encode_ring_command(
+                &RingCommand::Update {
+                    ring_id: ring.0.clone(),
+                    expected_sequence: record.sequence,
+                    update: RingUpdate::CancelReshare,
+                },
+                &token,
+            )
+            .expect("encode native cancel reshare"),
+            "cancel stuck native reshare",
+            self.network.cluster(),
+        )
+        .await;
+    }
+
+    async fn schedule_ring_upgrade(&self, ring: &RingId, next_version: u64, activation_time: u64) {
+        let record = self
+            .client
+            .read_threshold_ring(&ring.0, 1, &self.trusted)
+            .await
+            .expect("read native ring before scheduling upgrade")
+            .record
+            .expect("ring must exist to schedule its upgrade");
+        let now = unix_now();
+        let token = create_scoped_bearer_token(
+            &self.controller,
+            self.worker.did(),
+            DEPLOYMENT,
+            now,
+            now + 300,
+            DelegationScope::ManageRings,
+        )
+        .expect("create native schedule-upgrade delegation");
+        submit(
+            &self.client,
+            &self.worker,
+            &self.trusted,
+            encode_ring_command(
+                &RingCommand::Update {
+                    ring_id: ring.0.clone(),
+                    expected_sequence: record.sequence,
+                    update: RingUpdate::ScheduleUpgrade(ScheduledUpgrade {
+                        version: next_version,
+                        activates_at: activation_time,
+                    }),
+                },
+                &token,
+            )
+            .expect("encode native schedule ring upgrade"),
+            "schedule native ring upgrade",
+            self.network.cluster(),
+        )
+        .await;
     }
 
     async fn read_node_demerits(&self, ring: &RingId, node_key: &str) -> u64 {

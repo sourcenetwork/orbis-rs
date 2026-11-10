@@ -37,14 +37,14 @@ authors = ["Orbis Contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
-vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "b0cdcb54bd57b131dede6cd007edcd611883ea0e" }
+vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "3c4e47e8c6a49770d8cbbd976232b374495ee2a0" }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "3c4e47e8c6a49770d8cbbd976232b374495ee2a0" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "3c4e47e8c6a49770d8cbbd976232b374495ee2a0" }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "3c4e47e8c6a49770d8cbbd976232b374495ee2a0" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "3c4e47e8c6a49770d8cbbd976232b374495ee2a0" }
+vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "3c4e47e8c6a49770d8cbbd976232b374495ee2a0" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "3c4e47e8c6a49770d8cbbd976232b374495ee2a0" }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "3c4e47e8c6a49770d8cbbd976232b374495ee2a0" }
 # Common dependencies across workspace
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }

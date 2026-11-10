@@ -873,6 +873,25 @@ impl BulletinTestDriver for CosmosTestEnvironment {
         );
     }
 
+    async fn schedule_ring_upgrade(&self, ring: &RingId, next_version: u64, activation_time: u64) {
+        let client = VeraClient::with_signer(
+            self.network.chain_config(),
+            TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
+                .expect("test account signer"),
+        )
+        .await
+        .expect("signed chain client for ring upgrade scheduling");
+        let result = client
+            .orbis_schedule_ring_upgrade_by_acp(&ring.0, next_version, activation_time)
+            .await
+            .expect("schedule Cosmos ring upgrade");
+        assert!(
+            result.code == 0,
+            "schedule Cosmos ring upgrade failed: {}",
+            result.log
+        );
+    }
+
     async fn read_node_demerits(&self, ring: &RingId, node_key: &str) -> u64 {
         self.network
             .admin()

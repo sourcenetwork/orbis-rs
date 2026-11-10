@@ -427,10 +427,18 @@ pub trait BulletinTestDriver {
     }
 
     /// Cancel an announced-but-stuck reshare, reverting `ring` to its
-    /// pre-reshare committee/threshold. Cosmos-only: native's chain module
-    /// has no equivalent `RingUpdate` variant (only `StartReshare`), so
-    /// implementations may `unimplemented!()`.
+    /// pre-reshare committee/threshold. Real on both backends (native's
+    /// `RingUpdate::CancelReshare`, Cosmos's `CancelRingReshareByAcp`).
     async fn cancel_reshare(&self, ring: &RingId);
+
+    /// Schedule a protocol-version upgrade on an already-finalized
+    /// (DKG'd) ring. Real on both backends with identical constraints —
+    /// Cosmos's `ScheduleRingUpgradeByAcp` and native's `RingUpdate::
+    /// ScheduleUpgrade` both require the ring to already be active and
+    /// both enforce the same 600-second minimum lead between "now" and
+    /// `activation_time`, so there's no backend-specific timing model to
+    /// hide here.
+    async fn schedule_ring_upgrade(&self, ring: &RingId, next_version: u64, activation_time: u64);
 
     /// Current demerit points recorded against `node_key` on `ring`, or 0
     /// if none. Real on both backends. Deliberately ignores reset-interval
