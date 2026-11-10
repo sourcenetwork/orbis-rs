@@ -40,6 +40,22 @@ async fn test_stale_pending_dkg_is_cancelled() {
     const PLACEHOLDER_POLICY_YAML: &str = r#"
 name: pending ring cancellation placeholder policy
 resources:
+- name: ring_policy
+  relations:
+  - name: creator
+    types:
+    - actor
+  permissions:
+  - name: create_ring
+    expr: creator
+- name: ring
+  relations:
+  - name: operator
+    types:
+    - actor
+  permissions:
+  - name: update_ring
+    expr: operator
 - name: document
   permissions:
   - name: read

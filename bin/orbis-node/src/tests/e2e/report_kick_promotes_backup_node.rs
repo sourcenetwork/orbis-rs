@@ -42,6 +42,13 @@ async fn test_report_kick_promotes_backup_node() {
     let ring_policy = FixtureId::new("ring-policy");
     let backup_node = FixtureId::new("backup-node");
     let fixture = ScenarioFixture {
+        // Native's genesis `node_demerits` seeding predicts the ring's id
+        // ahead of boot from each node's *deterministic* key — only present
+        // when the cluster runs in `unsafe-testing` mode (see
+        // `crates/bulletin/src/native/integration_startup.rs`). Without
+        // this, nodes get random keys and the prediction silently diverges
+        // from the real, live-created ring id.
+        requires_unsafe_testing: true,
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),
@@ -203,8 +210,16 @@ async fn test_report_kick_promotes_backup_node() {
         ring_view.peer_node_keys.contains(&node3_key),
         "active committee is unchanged until the reshare finalizes"
     );
+    // Cosmos represents "the auto-reshare didn't touch the threshold" as
+    // `None`; native's `ReshareTarget.threshold` is a plain (non-optional)
+    // `u32`, so its `new_threshold` is always `Some(_)` once any reshare is
+    // pending — but still the *unchanged* value. Check the actual property
+    // (no override happened) rather than the backend-specific
+    // representation of it.
     assert!(
-        ring_view.new_threshold.is_none(),
+        ring_view
+            .new_threshold
+            .map_or(true, |threshold| threshold == ring_view.threshold),
         "auto-reshare must not change the threshold"
     );
 
