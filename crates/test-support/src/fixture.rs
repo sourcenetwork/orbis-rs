@@ -342,6 +342,41 @@ pub trait BulletinTestDriver {
 
     async fn read_document(&self, id: &DocumentId) -> Vec<u8>;
 
+    /// Register an ACP-governed PRE document and return its id. Unlike
+    /// `store_document` (arbitrary raw bytes, policy attached separately
+    /// via `register_object`), native's own document model bakes
+    /// `policy`/`resource`/`permission` directly into the object's
+    /// content-addressed id — mirrors `register_key_derivation`'s shape
+    /// for exactly that reason. `document`/`proof` are the same
+    /// JSON-serialized `Secret`/`EncryptionProof` strings `cli_tool`'s own
+    /// `prepare_secret` produces.
+    async fn register_document(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String;
+
+    /// Compute the id a document would get from `register_document` with
+    /// these exact fields, without actually registering it. Pure/sync on
+    /// both backends — Cosmos's content-addressed id and native's
+    /// `ThresholdObject::id()` are both deterministic functions of these
+    /// fields alone, no chain round-trip needed. Used for the "inline
+    /// document, never stored" sub-case, where a report must still carry
+    /// the id the document *would* have.
+    fn predict_document_id(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String;
+
     /// Register a key-derivation object and return its id. Deriving the
     /// *public key* for it is pure curve math, identical on both backends —
     /// that stays in scenario code (which already depends on `crypto`),

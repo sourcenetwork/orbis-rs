@@ -17,11 +17,13 @@ use crate::fixture::{
 };
 use crate::network::{select_publish_port, CosmosNetwork, NodeInfo};
 use crate::node_readiness::wait_for_nodes_ready;
-use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation};
+use bulletin::r#trait::{
+    Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, KeyDerivation,
+};
 use bulletin::vera::VeraBulletin;
 use common::blockchain::{
-    orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
-    TEST_ACCOUNT_PUBKEY_HEX,
+    orbis::{generate_document_id, WhitelistTarget},
+    ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
 };
 use proto::info_service::{info_service_client::InfoServiceClient, GetNodeInfoRequest};
 use std::collections::HashMap;
@@ -772,6 +774,50 @@ impl BulletinTestDriver for CosmosTestEnvironment {
             .post(BulletinWriteKind::KeyDerivation, payload)
             .await
             .expect("post shared Sign key derivation")
+    }
+
+    async fn register_document(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String {
+        let payload = serde_json::to_vec(&DocumentPayload {
+            ring_id: ring.0.clone(),
+            document: document.to_string(),
+            proof: proof.to_string(),
+            policy_id: policy.0.clone(),
+            resource: resource.to_string(),
+            permission: permission.to_string(),
+            tier: None,
+            timestamp: None,
+            pet_tag: None,
+            pet_tag_proof: None,
+        })
+        .expect("serialize shared PRE document");
+        self.signed_bulletin()
+            .await
+            .post(BulletinWriteKind::Document, payload)
+            .await
+            .expect("post shared PRE document")
+    }
+
+    fn predict_document_id(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String {
+        generate_document_id(
+            &ring.0, document, proof, &policy.0, resource, permission, None, None, None, None,
+        )
+        .expect("predict shared PRE document id")
     }
 
     async fn authorize_reshare_candidate(&self, ring: &RingId, node_index: usize) {

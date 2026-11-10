@@ -33,7 +33,9 @@ use vera_client::{
         NodeTarget,
     },
     rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig, RingState, RingUpdate},
-    threshold_objects::{encode_threshold_object, KeyDerivation, ObjectKind, ThresholdObject},
+    threshold_objects::{
+        encode_threshold_object, EncryptedDocument, KeyDerivation, ObjectKind, ThresholdObject,
+    },
     BlsSigner, DelegationScope, VeraClient,
 };
 use vera_domain::ConsensusPublicKey;
@@ -1047,6 +1049,77 @@ impl BulletinTestDriver for NativeTestEnvironment {
         )
         .await;
         derivation_id
+    }
+
+    async fn register_document(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String {
+        let document = EncryptedDocument {
+            ring_id: ring.0.clone(),
+            document: document.to_string(),
+            proof: proof.to_string(),
+            policy_id: policy.0.clone(),
+            resource: resource.to_string(),
+            permission: permission.to_string(),
+            tier: None,
+            timestamp: None,
+            pet_tag: None,
+            pet_tag_proof: None,
+        };
+        let object = ThresholdObject::Document(document);
+        let document_id = object.id().expect("derive native document id");
+        let now = unix_now();
+        let token = create_scoped_bearer_token(
+            &self.controller,
+            self.worker.did(),
+            DEPLOYMENT,
+            now,
+            now + 300,
+            DelegationScope::StoreThresholdObject,
+        )
+        .expect("create native document delegation");
+        submit(
+            &self.client,
+            &self.worker,
+            &self.trusted,
+            encode_threshold_object(&object, &token).expect("encode native document"),
+            "store shared PRE document",
+            self.network.cluster(),
+        )
+        .await;
+        document_id
+    }
+
+    fn predict_document_id(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String {
+        let document = EncryptedDocument {
+            ring_id: ring.0.clone(),
+            document: document.to_string(),
+            proof: proof.to_string(),
+            policy_id: policy.0.clone(),
+            resource: resource.to_string(),
+            permission: permission.to_string(),
+            tier: None,
+            timestamp: None,
+            pet_tag: None,
+            pet_tag_proof: None,
+        };
+        ThresholdObject::Document(document)
+            .id()
+            .expect("predict native document id")
     }
 
     async fn update_membership(
