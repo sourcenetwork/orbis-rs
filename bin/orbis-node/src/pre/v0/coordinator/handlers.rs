@@ -414,7 +414,9 @@ where
 
         // This ring stores shares in Defra instead of returning them directly — build,
         // sign, and upload the envelope, and ack it, rather than steps 7-8 below.
-        if let Some(endpoint) = ring_payload.pre_share_endpoints.first() {
+        if let Some(endpoint) =
+            stored_delivery::select_pre_share_endpoint(&ring_payload.pre_share_endpoints)
+        {
             let ack = stored_delivery::build_and_store_envelope::<D, T>(
                 &self.app_state,
                 &reply,
