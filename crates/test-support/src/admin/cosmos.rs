@@ -397,6 +397,10 @@ impl BackendAdmin for CosmosAdmin {
             .await
             .expect("chain client for ring read");
         let ring = client.orbis_read_ring(&ring.0).await.expect("read ring")?;
+        let backup_node_keys = ring
+            .reporting
+            .map(|reporting| reporting.backup_node_keys)
+            .unwrap_or_default();
         Some(RingView {
             ring_pk: ring.ring_pk,
             peer_node_keys: ring.peer_node_keys,
@@ -406,6 +410,7 @@ impl BackendAdmin for CosmosAdmin {
             confirmations: ring.confirmations.len(),
             new_peer_node_keys: ring.new_peer_node_keys,
             new_threshold: ring.new_threshold,
+            backup_node_keys,
         })
     }
 

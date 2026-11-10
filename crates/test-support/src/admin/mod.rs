@@ -66,6 +66,10 @@ pub struct RingView {
     /// until this clears.
     pub new_peer_node_keys: Vec<String>,
     pub new_threshold: Option<u32>,
+    /// The ring's current reporting-config backup pool — a promoted key is
+    /// consumed from this list, so a test can confirm promotion happened
+    /// without a backend-specific raw read.
+    pub backup_node_keys: Vec<String>,
 }
 
 impl RingView {

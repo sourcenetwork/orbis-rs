@@ -37,9 +37,25 @@ use vera_client::{
     BlsSigner, DelegationScope, VeraClient,
 };
 use vera_domain::ConsensusPublicKey;
-use vera_harness::cluster::KeySet;
+use vera_harness::cluster::{GenesisBuilder, KeySet};
+use vera_modules::acp::{types::PolicyMarshalingType, AcpModule};
 
 const DEPLOYMENT: u64 = 9000;
+/// Deterministic secp256k1 node identities, now that `ORBIS_SIGNING_KEY` in
+/// `docker/docker-compose-native-integration-test.yml` fixes each running
+/// node's identity by compose topology. Same raw secret bytes
+/// (`[0,...,0,N]`) and so the same resulting pubkeys as Cosmos's own
+/// `NODE_KEYS` in `crates/test-support/src/environment.rs` — not shared
+/// directly since that module lives in a crate without native's chain
+/// client dependencies. Needed to predict a ring's id before genesis
+/// exists (for fixture-driven `node_demerits` seeding), since live node
+/// identities aren't known until after the cluster boots.
+const NODE_KEYS: [&str; 4] = [
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+    "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+    "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+];
 const OFFLINE_NODE_SECRET: [u8; 32] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6,
 ];
@@ -109,6 +125,30 @@ impl NativeTestEnvironment {
     /// `CosmosTestEnvironment::sidecar_network_name`.
     pub fn sidecar_network_name(&self) -> String {
         self.network.cluster().network_name().to_string()
+    }
+}
+
+/// Pure — the same `node_key` a running/offline/backup fixture node will
+/// eventually have, computable before the cluster (or even genesis) exists.
+/// `Running`/`Offline`/`Backup` identities are all deterministic today
+/// (`NODE_KEYS`, `OFFLINE_NODE_SECRET`, `BACKUP_NODE_SECRET`), so this never
+/// needs a live chain read — unlike Cosmos, which doesn't need this at all
+/// (its genesis-seeded ring/node ids are caller-chosen, not content-derived).
+fn deterministic_node_key(node_ref: &NodeRef) -> String {
+    match node_ref {
+        NodeRef::Running(index) => NODE_KEYS[*index].to_string(),
+        NodeRef::Offline(_) => hex::encode(
+            k256::ecdsa::SigningKey::from_slice(&OFFLINE_NODE_SECRET)
+                .unwrap()
+                .verifying_key()
+                .to_sec1_bytes(),
+        ),
+        NodeRef::Backup(_) => hex::encode(
+            k256::ecdsa::SigningKey::from_slice(&BACKUP_NODE_SECRET)
+                .unwrap()
+                .verifying_key()
+                .to_sec1_bytes(),
+        ),
     }
 }
 
@@ -183,24 +223,18 @@ async fn create_policy(
     PolicyId(id)
 }
 
-/// Shared by `provision()` (fixture-driven rings) and
-/// `BulletinTestDriver::register_ring` (a standalone, callable-after-
-/// provision ring creation — unlike Cosmos, native has no genesis-timing
-/// problem, so both paths can share this one real implementation).
-#[allow(clippy::too_many_arguments)]
-async fn create_ring(
-    client: &VeraClient,
-    worker: &BlsSigner,
-    trusted: &ConsensusPublicKey,
-    controller: &k256::ecdsa::SigningKey,
-    cluster: &NativeTestNetwork,
-    spec: RingSpec,
-    reporting: ReportingConfig,
-) -> RingId {
-    let mut members = spec.node_keys;
+/// Pure — no I/O. Builds the exact `RingConfig` the chain will hash into a
+/// ring's id, from the same backend-neutral `RingSpec`/`ReportingConfig`
+/// inputs `create_ring` below takes for live creation. Also used by
+/// `provision()` to *predict* a fixture ring's id before genesis exists
+/// (for fixture-driven `node_demerits` seeding) — kept as one shared
+/// function specifically so prediction and live creation can never drift
+/// apart from each other.
+fn build_ring_config(spec: &RingSpec, reporting: ReportingConfig) -> RingConfig {
+    let mut members = spec.node_keys.clone();
     members.sort();
-    let config = RingConfig {
-        policy_id: spec.policy_id.0,
+    RingConfig {
+        policy_id: spec.policy_id.0.clone(),
         peer_node_keys: members,
         threshold: spec.threshold,
         // Native creates rings through the live production command, whose
@@ -217,10 +251,27 @@ async fn create_ring(
         // `[2; 32]`.
         nonce: [2; 32],
         trusted_auth_relay_dids: (!spec.trusted_auth_relay_dids.is_empty())
-            .then_some(spec.trusted_auth_relay_dids),
+            .then_some(spec.trusted_auth_relay_dids.clone()),
         reporting,
-        pre_share_endpoints: spec.pre_share_endpoints,
-    };
+        pre_share_endpoints: spec.pre_share_endpoints.clone(),
+    }
+}
+
+/// Shared by `provision()` (fixture-driven rings) and
+/// `BulletinTestDriver::register_ring` (a standalone, callable-after-
+/// provision ring creation — unlike Cosmos, native has no genesis-timing
+/// problem, so both paths can share this one real implementation).
+#[allow(clippy::too_many_arguments)]
+async fn create_ring(
+    client: &VeraClient,
+    worker: &BlsSigner,
+    trusted: &ConsensusPublicKey,
+    controller: &k256::ecdsa::SigningKey,
+    cluster: &NativeTestNetwork,
+    spec: RingSpec,
+    reporting: ReportingConfig,
+) -> RingId {
+    let config = build_ring_config(&spec, reporting);
     let ring_id = config.id().unwrap();
     let now = unix_now();
     let token = create_scoped_bearer_token(
@@ -247,23 +298,112 @@ async fn create_ring(
 #[async_trait::async_trait]
 impl TestEnvironment for NativeTestEnvironment {
     async fn provision(fixture: ScenarioFixture) -> Self {
-        // Fixture-driven document/key-derivation/demerit materialization
-        // isn't implemented yet — those records need either a
-        // finalized ring (live DKG, which only happens in the scenario
-        // itself, after provisioning) or genesis-injection support that
-        // doesn't exist in Vera today. See the harness-unification plan.
+        // Fixture-driven document/key-derivation materialization isn't
+        // implemented yet — those records need a finalized ring (live DKG,
+        // which only happens in the scenario itself, after provisioning).
+        // `node_demerits` *is* handled below, via genesis seeding (same
+        // "predict the id, don't create the ring" approach Cosmos's own
+        // `node_demerits_genesis_json` uses).
         assert!(
-            fixture.documents.is_empty()
-                && fixture.key_derivations.is_empty()
-                && fixture.node_demerits.is_empty(),
-            "NativeTestEnvironment::provision: fixture-driven document/key-derivation/\
-             demerit materialization isn't implemented yet"
+            fixture.documents.is_empty() && fixture.key_derivations.is_empty(),
+            "NativeTestEnvironment::provision: fixture-driven document/key-derivation \
+             materialization isn't implemented yet"
         );
         let node_count = fixture
             .nodes
             .iter()
             .filter(|node| node.role == NodeRole::Running)
             .count();
+
+        // `node_demerits` must land in genesis (there is no live "seed a
+        // demerit score directly" chain command, by design, on either
+        // backend — see `project_pre_share_endpoints_immutable_gap`-style
+        // memory for why that's deliberate). Genesis is written before the
+        // cluster boots, before any policy/ring exists live, so predicting
+        // each referenced ring's id ahead of time needs its governing
+        // policy's id to also be predictable. Native resolves a *live*
+        // policy's id by diffing chain state after creation (`create_policy`
+        // below) — too late for genesis — so a node_demerits-bearing ring's
+        // policy is genesis-seeded directly instead, with its id predicted
+        // via `AcpModule::predict_policy_id`, the same mechanism
+        // `operators`/`node_demerits` genesis seeding already relies on.
+        let mut genesis = GenesisBuilder::devnet();
+        let now = unix_now();
+        let mut genesis_seeded_policies: HashMap<FixtureId, PolicyId> = HashMap::new();
+        let mut policy_counter: u64 = 0;
+        for ring in &fixture.rings {
+            let demerits: Vec<_> = fixture
+                .node_demerits
+                .iter()
+                .filter(|demerit| demerit.ring == ring.id)
+                .collect();
+            if demerits.is_empty() {
+                continue;
+            }
+            let policy_fixture = fixture
+                .policies
+                .iter()
+                .find(|policy| policy.id == ring.policy)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "NativeTestEnvironment::provision: node_demerits-bearing ring {:?} \
+                         needs an explicit PolicyFixture — an auto ring-governance policy's \
+                         id isn't genesis-predictable yet",
+                        ring.id
+                    )
+                });
+            policy_counter += 1;
+            let marshal_type = PolicyMarshalingType::ShortYaml;
+            let policy_id = AcpModule::predict_policy_id(
+                &policy_fixture.definition,
+                &marshal_type,
+                policy_counter,
+            )
+            .expect("predict genesis-seeded policy id");
+            genesis = genesis.policy(policy_fixture.definition.clone(), marshal_type);
+            genesis_seeded_policies.insert(ring.policy.clone(), PolicyId(policy_id.clone()));
+
+            let peer_node_keys: Vec<String> =
+                ring.members.iter().map(deterministic_node_key).collect();
+            let backup_node_keys: Vec<String> = ring
+                .reporting
+                .backup_node_keys
+                .iter()
+                .map(deterministic_node_key)
+                .collect();
+            let reporting = ReportingConfig {
+                node_offline_demerits: ring.reporting.node_offline_demerits,
+                invalid_crypto_response_demerits: ring.reporting.invalid_crypto_response_demerits,
+                unauthorized_request_demerits: ring.reporting.unauthorized_request_demerits,
+                reset_interval_seconds: ring.reporting.reset_interval.as_secs(),
+                kick_threshold: ring.reporting.kick_threshold,
+                backup_node_keys,
+            };
+            let config = build_ring_config(
+                &RingSpec {
+                    node_keys: peer_node_keys,
+                    threshold: ring.threshold,
+                    pss_interval: ring.pss_interval,
+                    policy_id: PolicyId(policy_id),
+                    nonce: None,
+                    trusted_auth_relay_dids: Vec::new(),
+                    requires_pet: ring.requires_pet,
+                    pre_share_endpoints: Vec::new(),
+                },
+                reporting,
+            );
+            let ring_id = config
+                .id()
+                .expect("predict ring id for genesis demerit seeding");
+            for demerit in demerits {
+                genesis = genesis.node_demerit(
+                    ring_id.clone(),
+                    deterministic_node_key(&demerit.node),
+                    demerit.points,
+                    now + demerit.window_started_offset.as_secs(),
+                );
+            }
+        }
 
         // Deployment seed is not yet part of `ScenarioFixture` — every
         // `NativeTestEnvironment` currently gets the builder's default
@@ -276,6 +416,7 @@ impl TestEnvironment for NativeTestEnvironment {
             !requires_unsafe_testing,
             requires_unsafe_testing,
             fixture.defra,
+            genesis,
         )
         .await;
 
@@ -320,8 +461,16 @@ impl TestEnvironment for NativeTestEnvironment {
         // genesis-timing concern the way Cosmos has. Calling the chain
         // client directly (rather than `self.create_policy`/`self.grant`)
         // since `Self` hasn't been constructed yet at this point.
-        let mut policies: HashMap<FixtureId, PolicyId> = HashMap::new();
+        // Policies already genesis-seeded above (predicted via
+        // `AcpModule::predict_policy_id`) must not be created live too —
+        // that would mint a *second*, different-id policy under the same
+        // definition, diverging from whatever `node_demerits` was seeded
+        // against.
+        let mut policies: HashMap<FixtureId, PolicyId> = genesis_seeded_policies;
         for policy in &fixture.policies {
+            if policies.contains_key(&policy.id) {
+                continue;
+            }
             let id = create_policy(&client, &worker, &trusted, policy.definition.as_bytes()).await;
             policies.insert(policy.id.clone(), id);
         }
@@ -789,6 +938,7 @@ impl BulletinTestDriver for NativeTestEnvironment {
                 .pending_reshare
                 .as_ref()
                 .map(|target| target.threshold),
+            backup_node_keys: record.config.reporting.backup_node_keys.clone(),
         })
     }
 

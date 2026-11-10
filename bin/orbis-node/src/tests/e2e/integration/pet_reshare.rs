@@ -173,6 +173,7 @@ fn convergence_requires_the_exact_finalized_committee() {
         confirmations: 0,
         new_peer_node_keys: Vec::new(),
         new_threshold: None,
+        backup_node_keys: Vec::new(),
     };
     let mut current = expected.clone();
     current.peer_node_keys.reverse();
