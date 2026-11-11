@@ -112,7 +112,7 @@ iroh = ["network/iroh"]
 # selected with the same production features (`authz-*` and `bulletin-*`) used
 # by the node; there are no test-only backend aliases.
 integration-test = ["cli-tool", "unsafe-testing", "bulletin/integration-test"]
-unsafe-testing = []
+unsafe-testing = ["bulletin/unsafe-testing"]
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead
 # of Vera. Not used by the production binary.

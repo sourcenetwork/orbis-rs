@@ -80,3 +80,14 @@ test-group = 'serial'
 [[profile.ci.overrides]]
 filter = 'package(test-support)'
 test-group = 'serial'
+
+# `upgrade::test_v0_services_rejected_after_ring_upgrade` schedules its
+# ring upgrade live rather than genesis-seeding it, so it's bound by both
+# backends' real, unavoidable 600s minimum schedule-upgrade lead (Cosmos's
+# `ScheduleRingUpgradeByAcp`/native's `RingUpdate::ScheduleUpgrade`, not a
+# test-harness choice) plus DKG/setup/verification overhead — comfortably
+# over the suite's normal 720s kill threshold. Give it its own, longer one
+# rather than loosening the ceiling for every other test.
+[[profile.ci.overrides]]
+filter = 'test(=tests::e2e::upgrade::test_v0_services_rejected_after_ring_upgrade)'
+slow-timeout = { period = "120s", terminate-after = 9 }

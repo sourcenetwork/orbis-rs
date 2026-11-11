@@ -16,6 +16,7 @@ use crate::compose::{
 };
 use crate::native_network::{self, NativeTestNetwork};
 use std::{fs, time::Duration};
+use vera_harness::cluster::GenesisBuilder;
 
 const ORBIS_GRPC_PORT: u16 = 50051;
 const DEFAULT_ORBIS_NODE_COUNT: usize = 3;
@@ -51,15 +52,25 @@ pub struct NativeNetworkAdapter {
 
 impl NativeNetworkAdapter {
     pub async fn start(deployment: u64) -> Self {
-        Self::start_configured(deployment, DEFAULT_ORBIS_NODE_COUNT, false, false, false).await
+        Self::start_configured(
+            deployment,
+            DEFAULT_ORBIS_NODE_COUNT,
+            false,
+            false,
+            false,
+            GenesisBuilder::devnet(),
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_configured(
         deployment: u64,
         node_count: usize,
         production_node_build: bool,
         unsafe_testing_runtime_enabled: bool,
         defra: bool,
+        genesis: GenesisBuilder,
     ) -> Self {
         assert!(
             (1..=4).contains(&node_count),
@@ -69,7 +80,7 @@ impl NativeNetworkAdapter {
             !production_node_build || !unsafe_testing_runtime_enabled,
             "a production native node build cannot expose the unsafe testing service"
         );
-        let cluster = NativeTestNetwork::start(deployment).await;
+        let cluster = NativeTestNetwork::start_with_genesis(deployment, genesis).await;
         let node_fixtures = tempfile::Builder::new()
             .prefix("orbis-native-nodes-")
             .tempdir()

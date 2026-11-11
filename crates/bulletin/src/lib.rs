@@ -45,8 +45,15 @@ compile_error!(
     "Features 'select-native' and 'select-vera' are mutually exclusive for BulletinFactoryImpl."
 );
 
-#[cfg(feature = "select-native")]
-pub use native::startup::NativeBulletinFactory as BulletinFactoryImpl;
+// Gated on `unsafe-testing`, not `integration-test` -- see
+// `unsafe-testing`'s own doc comment in `Cargo.toml` for why native can't
+// reuse `integration-test` here without leaking Cosmos dependencies.
+#[cfg(all(feature = "select-native", not(feature = "unsafe-testing")))]
+pub type BulletinFactoryImpl = native::startup::NativeBulletinFactory;
+#[cfg(all(feature = "select-native", feature = "unsafe-testing"))]
+pub type BulletinFactoryImpl = native::startup::NativeBulletinFactory<
+    native::integration_startup::IntegrationTestNativeStartup,
+>;
 #[cfg(all(feature = "select-vera", not(feature = "integration-test")))]
 pub type BulletinFactoryImpl = vera::startup::VeraBulletinFactory;
 #[cfg(all(feature = "select-vera", feature = "integration-test"))]

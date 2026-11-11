@@ -8,16 +8,15 @@
 //! container, so the test asserts the announced pending committee, not the
 //! finalized one.
 //!
-//! `NodeRole::Backup` and fixture-driven `node_demerits` genesis seeding are
-//! both Cosmos-only today (`CosmosTestEnvironment::provision`'s new
-//! `backup_node_infos_json`/`node_demerits_genesis_json` — native's
-//! `NativeTestEnvironment::provision` still panics on both), so this is
-//! Cosmos-real/native-`#[ignore]`d. The one other Cosmos-specific piece —
-//! confirming the promoted key was consumed from `reporting.
-//! backup_node_keys` — needs a raw `Ring` read (`VeraClient::
-//! orbis_read_ring`, no portable equivalent exposed via `RingView`); kept
-//! as the function's last statement so it can be `#[cfg]`-split without any
-//! unreachable-code fallout on native.
+//! Fully backend-neutral — no `#[cfg]` split in this file. `RingView` now
+//! carries `backup_node_keys` portably (both `read_ring` implementations
+//! populate it from their own backend's `reporting` config), so confirming
+//! the promoted key was consumed needs no raw, backend-specific `Ring` read.
+//! `NodeRole::Backup` has live registration support on native
+//! (`NativeTestEnvironment::provision`'s `fixture_node`/`NodeCommand::Register`
+//! path); fixture-driven `node_demerits` is genesis-seeded there too, by
+//! predicting the ring's (and its governing policy's) id before the chain
+//! boots — see that function's own doc comments for the mechanism.
 
 use super::report_scenario::{pre_with_retry, store_secret_with_retry, STANDARD_RING_POLICY_YAML};
 use super::{pre_scenario, TestEnvironmentImpl};
@@ -35,12 +34,6 @@ const NODE_KEY_BACKUP: &str = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758
 
 #[tokio::test]
 #[serial_test::serial]
-#[cfg_attr(
-    all(feature = "integration-test", feature = "native"),
-    ignore = "commonware/native's NativeTestEnvironment::provision doesn't \
-              support NodeRole::Backup or fixture-driven node_demerits \
-              genesis seeding yet; fix when native grows both"
-)]
 async fn test_report_kick_promotes_backup_node() {
     println!("Starting backup-node promotion integration test...");
 
@@ -49,6 +42,13 @@ async fn test_report_kick_promotes_backup_node() {
     let ring_policy = FixtureId::new("ring-policy");
     let backup_node = FixtureId::new("backup-node");
     let fixture = ScenarioFixture {
+        // Native's genesis `node_demerits` seeding predicts the ring's id
+        // ahead of boot from each node's *deterministic* key — only present
+        // when the cluster runs in `unsafe-testing` mode (see
+        // `crates/bulletin/src/native/integration_startup.rs`). Without
+        // this, nodes get random keys and the prediction silently diverges
+        // from the real, live-created ring id.
+        requires_unsafe_testing: true,
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),
@@ -210,8 +210,16 @@ async fn test_report_kick_promotes_backup_node() {
         ring_view.peer_node_keys.contains(&node3_key),
         "active committee is unchanged until the reshare finalizes"
     );
+    // Cosmos represents "the auto-reshare didn't touch the threshold" as
+    // `None`; native's `ReshareTarget.threshold` is a plain (non-optional)
+    // `u32`, so its `new_threshold` is always `Some(_)` once any reshare is
+    // pending — but still the *unchanged* value. Check the actual property
+    // (no override happened) rather than the backend-specific
+    // representation of it.
     assert!(
-        ring_view.new_threshold.is_none(),
+        ring_view
+            .new_threshold
+            .is_none_or(|threshold| threshold == ring_view.threshold),
         "auto-reshare must not change the threshold"
     );
 
@@ -223,26 +231,10 @@ async fn test_report_kick_promotes_backup_node() {
     );
     println!("node3 demerit points: {demerits}");
 
-    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
-    {
-        let client = common::blockchain::VeraClient::new(environment.chain_config())
-            .await
-            .expect("unsigned chain client for raw ring read");
-        let ring = client
-            .orbis_read_ring(&ring_id.0)
-            .await
-            .expect("read ring")
-            .expect("ring should exist");
-        let reporting = ring.reporting.expect("ring reporting config");
-        assert!(
-            !reporting
-                .backup_node_keys
-                .contains(&NODE_KEY_BACKUP.to_string()),
-            "promoted backup key should be consumed from backup_node_keys"
-        );
-    }
-    #[cfg(all(feature = "integration-test", feature = "native"))]
-    unimplemented!(
-        "native: backup_node_keys consumption check not ported (raw Ring read is Cosmos-only)"
+    assert!(
+        !ring_view
+            .backup_node_keys
+            .contains(&NODE_KEY_BACKUP.to_string()),
+        "promoted backup key should be consumed from backup_node_keys"
     );
 }

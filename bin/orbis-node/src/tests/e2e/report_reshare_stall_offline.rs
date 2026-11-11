@@ -109,13 +109,7 @@ async fn test_reshare_stall_offline_triggers_on_chain_report() {
         .update_membership(&ring_id, new_peer_node_keys.clone(), new_threshold)
         .await;
 
-    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
-    let node3_peer_id = test_support::CosmosNetwork::transform_p2p_address(
-        &environment.nodes()[2].p2p_address,
-        test_support::CosmosNetwork::service_name_for_node(3),
-    );
-    #[cfg(all(feature = "integration-test", feature = "native"))]
-    let node3_peer_id = environment.nodes()[2].p2p_address.clone();
+    let node3_peer_id = environment.reporting_peer_address(2);
 
     // Stop node3 so the co-signer reachability probe finds it unreachable
     // and accepts the report. node3's on-chain NodeInfo (peer id) persists,

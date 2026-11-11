@@ -8,20 +8,22 @@
 
 use crate::admin::{
     cosmos::create_ring_governance_with_ring, BackendAdmin, DocumentId, PolicyId, RingId, RingSpec,
-    RingView,
+    RingStateFacts, RingView,
 };
 use crate::fixture::{
-    AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeRef, NodeRole,
-    PolicyHandle, ProvisionedFixture, ReportingFixture, RingFixture, RingHandle, ScenarioFixture,
-    TestEnvironment,
+    AuthorizationTestDriver, BulletinTestDriver, DefraTestDriver, FixtureId, NetworkTestDriver,
+    NodeRef, NodeRole, PolicyHandle, ProvisionedFixture, ReportingFixture, RingFixture, RingHandle,
+    ScenarioFixture, TestEnvironment,
 };
 use crate::network::{select_publish_port, CosmosNetwork, NodeInfo};
 use crate::node_readiness::wait_for_nodes_ready;
-use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation};
+use bulletin::r#trait::{
+    Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, KeyDerivation,
+};
 use bulletin::vera::VeraBulletin;
 use common::blockchain::{
-    orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
-    TEST_ACCOUNT_PUBKEY_HEX,
+    orbis::{generate_document_id, WhitelistTarget},
+    ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
 };
 use proto::info_service::{info_service_client::InfoServiceClient, GetNodeInfoRequest};
 use std::collections::HashMap;
@@ -540,32 +542,6 @@ impl CosmosTestEnvironment {
         self.network.chain_config()
     }
 
-    /// Host-reachable Defra URL, when `ScenarioFixture::defra` was set.
-    /// `None` otherwise. Not part of any shared trait, but `NativeTestEnvironment`
-    /// has its own mirrored method of the same name.
-    pub fn defra_url(&self) -> Option<&str> {
-        self.network.defra_url()
-    }
-
-    /// The Compose-bridge-network address a ring's `pre_share_endpoints`
-    /// must use so both sibling node containers and this process can reach
-    /// it — see `CosmosNetwork::defra_container_url`'s own doc comment for
-    /// why the Compose service name alone doesn't work here. `None` unless
-    /// `ScenarioFixture::defra` was set. Not part of any shared trait, but
-    /// `NativeTestEnvironment` has its own mirrored method of the same name.
-    pub fn defra_container_url(&self) -> Option<String> {
-        self.network.defra_container_url()
-    }
-
-    /// This environment's own Docker network, for joining a one-off sidecar
-    /// container to it directly (`test_support::run_sidecar_container`) —
-    /// see `defra_pre_scenario.rs`'s own module doc comment. Not part of any
-    /// shared trait, but `NativeTestEnvironment` has its own mirrored method
-    /// of the same name.
-    pub fn sidecar_network_name(&self) -> String {
-        self.network.network_name()
-    }
-
     /// Whitelists a *non-member* running node for `ring`, so it can later be
     /// announced as a pure-new reshare target. `provision` already
     /// publishes every running node's route unconditionally, regardless of
@@ -608,6 +584,27 @@ impl NetworkTestDriver for CosmosTestEnvironment {
 
     async fn restart_nodes(&self) -> Vec<String> {
         self.network.restart_nodes()
+    }
+
+    fn reporting_peer_address(&self, node_index: usize) -> String {
+        CosmosNetwork::transform_p2p_address(
+            &self.nodes()[node_index].p2p_address,
+            CosmosNetwork::service_name_for_node(node_index + 1),
+        )
+    }
+}
+
+impl DefraTestDriver for CosmosTestEnvironment {
+    fn defra_url(&self) -> Option<&str> {
+        self.network.defra_url()
+    }
+
+    fn defra_container_url(&self) -> Option<String> {
+        self.network.defra_container_url()
+    }
+
+    fn sidecar_network_name(&self) -> String {
+        self.network.network_name()
     }
 }
 
@@ -681,6 +678,30 @@ impl BulletinTestDriver for CosmosTestEnvironment {
         self.network.admin().read_ring(ring).await
     }
 
+    /// Same direct `VeraBulletin::read` pattern `read_document` already
+    /// uses — the raw `RingPayload` this reads is exactly what a real
+    /// responder hashes when verifying evidence against the ring's current
+    /// state, so `ring_state_sha256` here is guaranteed to match.
+    async fn read_ring_state_facts(&self, ring: &RingId) -> RingStateFacts {
+        let payload_bytes = VeraBulletin::new(self.network.chain_config_builder())
+            .await
+            .expect("bulletin read client")
+            .read(ring.0.clone(), BulletinKind::Ring)
+            .await
+            .expect("read ring payload")
+            .payload;
+        let payload: bulletin::r#trait::RingPayload =
+            serde_json::from_slice(&payload_bytes).expect("parse RingPayload");
+        RingStateFacts {
+            ring_pk: payload.ring_pk.clone(),
+            peer_node_keys: payload.peer_node_keys.clone(),
+            threshold: payload.threshold,
+            new_peer_node_keys: payload.new_peer_node_keys.clone(),
+            new_threshold: payload.new_threshold,
+            state_sha256: bulletin::reporting::ring_state_sha256(&payload),
+        }
+    }
+
     async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingView {
         tokio::time::timeout(timeout, async {
             loop {
@@ -750,6 +771,50 @@ impl BulletinTestDriver for CosmosTestEnvironment {
             .expect("post shared Sign key derivation")
     }
 
+    async fn register_document(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String {
+        let payload = serde_json::to_vec(&DocumentPayload {
+            ring_id: ring.0.clone(),
+            document: document.to_string(),
+            proof: proof.to_string(),
+            policy_id: policy.0.clone(),
+            resource: resource.to_string(),
+            permission: permission.to_string(),
+            tier: None,
+            timestamp: None,
+            pet_tag: None,
+            pet_tag_proof: None,
+        })
+        .expect("serialize shared PRE document");
+        self.signed_bulletin()
+            .await
+            .post(BulletinWriteKind::Document, payload)
+            .await
+            .expect("post shared PRE document")
+    }
+
+    fn predict_document_id(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String {
+        generate_document_id(
+            &ring.0, document, proof, &policy.0, resource, permission, None, None, None, None,
+        )
+        .expect("predict shared PRE document id")
+    }
+
     async fn authorize_reshare_candidate(&self, ring: &RingId, node_index: usize) {
         self.whitelist_node_for_ring(ring, node_index).await;
     }
@@ -799,6 +864,25 @@ impl BulletinTestDriver for CosmosTestEnvironment {
         assert!(
             result.code == 0,
             "cancel stuck Cosmos reshare failed: {}",
+            result.log
+        );
+    }
+
+    async fn schedule_ring_upgrade(&self, ring: &RingId, next_version: u64, activation_time: u64) {
+        let client = VeraClient::with_signer(
+            self.network.chain_config(),
+            TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
+                .expect("test account signer"),
+        )
+        .await
+        .expect("signed chain client for ring upgrade scheduling");
+        let result = client
+            .orbis_schedule_ring_upgrade_by_acp(&ring.0, next_version, activation_time)
+            .await
+            .expect("schedule Cosmos ring upgrade");
+        assert!(
+            result.code == 0,
+            "schedule Cosmos ring upgrade failed: {}",
             result.log
         );
     }

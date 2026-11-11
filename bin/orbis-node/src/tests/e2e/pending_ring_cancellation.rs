@@ -1,25 +1,20 @@
 //! Shared DKG-ring lifecycle test: a pending ring that never finalizes
-//! should eventually be cleaned up without any actor action.
+//! should eventually be cleaned up without any test-driver action.
 //!
-//! Tendermint/Cosmos's chain enforces this with a real timeout — that's the
-//! correct, authoritative behavior and what this test asserts. Commonware/
-//! native has no such capability yet (abort-only design: only an explicit
-//! operator-initiated `RingCommand::Cancel` exists) — ignored there for now
-//! rather than weakening the assertion; see the `#[cfg_attr]` below.
+//! Not a chain-enforced timeout on either backend — it's the same
+//! node-driven mechanism on both: each node's own PSS ticker
+//! (`bin/orbis-node/src/pss/v0/mod.rs`) notices a ring has been pending
+//! longer than its `pss_interval` with no local share bundle, and posts
+//! `BulletinWriteKind::CancelPendingRing` through the generic `Bulletin`
+//! trait — unconditional on backend. Cosmos maps that to its
+//! `CancelPendingRing` chain message; native maps it to
+//! `RingParticipantCommand::Cancel` (`crates/bulletin/src/native/backend.rs`).
+//! Fully backend-neutral — no `#[cfg]` split in this file.
 //!
 //! Run with:
 //!   cargo test -p orbis-node --features integration-test \
 //!     test_stale_pending_dkg_is_cancelled -- --nocapture
 
-// `crate::` means two different things depending on which backend's entry
-// point `#[path]`-included this file: Cosmos includes it from inside
-// `orbis-node`'s own `#[cfg(test)]` tree (so `crate::` reaches it directly),
-// native includes it from the same compile-time-selected library test tree
-// (which only sees `orbis-node`'s public API, hence `ring_state` is `pub
-// mod` in `lib.rs` and reached here via the crate's own external name).
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-use crate::ring_state::RingIndexEntry;
-#[cfg(all(feature = "integration-test", feature = "native"))]
 use crate::ring_state::RingIndexEntry;
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
@@ -35,12 +30,6 @@ use super::TestEnvironmentImpl;
 
 #[tokio::test]
 #[serial_test::serial]
-#[cfg_attr(
-    all(feature = "integration-test", feature = "native"),
-    ignore = "commonware/native has no automatic pending-ring timeout \
-              (abort-only design — only explicit RingCommand::Cancel \
-              exists); fix when native grows this capability"
-)]
 async fn test_stale_pending_dkg_is_cancelled() {
     // Minimal placeholder policy — unused by Cosmos (its ring materializer
     // always substitutes its own content-addressed governance policy
@@ -51,6 +40,22 @@ async fn test_stale_pending_dkg_is_cancelled() {
     const PLACEHOLDER_POLICY_YAML: &str = r#"
 name: pending ring cancellation placeholder policy
 resources:
+- name: ring_policy
+  relations:
+  - name: creator
+    types:
+    - actor
+  permissions:
+  - name: create_ring
+    expr: creator
+- name: ring
+  relations:
+  - name: operator
+    types:
+    - actor
+  permissions:
+  - name: update_ring
+    expr: operator
 - name: document
   permissions:
   - name: read
@@ -100,10 +105,18 @@ resources:
         .map(|node| node.grpc_endpoint.clone())
         .collect();
 
+    // Backdated well past a day: native's ring creation always clamps
+    // `pss_interval` to a 24h floor (its validator rejects short intervals
+    // outright, unlike Cosmos's genesis-seeded rings — see
+    // `native_environment.rs::build_ring_config`), so the PSS ticker's
+    // "pending longer than pss_interval" check needs `indexed_at_secs` far
+    // enough in the past to already be overdue on either backend,
+    // regardless of what interval the fixture itself requested.
     let indexed_at_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time")
-        .as_secs();
+        .as_secs()
+        .saturating_sub(2 * 86_400);
     let ring_index = vec![RingIndexEntry {
         ring_pk_str: format!("pending:{}", ring_id.0),
         bulletin_post_id: ring_id.0.clone(),

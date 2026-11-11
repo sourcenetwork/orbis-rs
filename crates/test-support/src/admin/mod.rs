@@ -66,12 +66,39 @@ pub struct RingView {
     /// until this clears.
     pub new_peer_node_keys: Vec<String>,
     pub new_threshold: Option<u32>,
+    /// The ring's current reporting-config backup pool — a promoted key is
+    /// consumed from this list, so a test can confirm promotion happened
+    /// without a backend-specific raw read.
+    pub backup_node_keys: Vec<String>,
 }
 
 impl RingView {
     pub fn pending_reshare(&self) -> bool {
         !self.new_peer_node_keys.is_empty() || self.new_threshold.is_some()
     }
+}
+
+/// What a test needs to build evidence *about* a ring's exact current
+/// state — e.g. forging a signed statement that must hash to the same
+/// `ring_state_sha256` a real responder would independently compute when
+/// verifying it. Deliberately narrower than exposing `bulletin::r#trait::
+/// RingPayload` itself across this trait: that type isn't reachable from
+/// this crate under a plain `native` build (no `bulletin` dependency at
+/// all there), so each backend's own environment (which *does* have
+/// `bulletin` reachable, just via a different feature) computes
+/// `state_sha256` internally and only this already-hashed, backend-neutral
+/// summary crosses the trait boundary.
+#[derive(Clone, Debug)]
+pub struct RingStateFacts {
+    pub ring_pk: String,
+    pub peer_node_keys: Vec<String>,
+    pub threshold: u32,
+    pub new_peer_node_keys: Option<Vec<String>>,
+    pub new_threshold: Option<u32>,
+    /// `bulletin::reporting::ring_state_sha256` of the ring's current
+    /// `RingPayload`, computed by each backend's own implementation against
+    /// its own authoritative ring-payload reconstruction.
+    pub state_sha256: String,
 }
 
 #[async_trait::async_trait]

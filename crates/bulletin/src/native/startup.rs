@@ -9,13 +9,29 @@ use common::startup::{PrepareContext, StartupProgress};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 #[cfg(test)]
 use local_storage::redb::RedbStorage;
-use std::{fs, path::Path, sync::Arc};
+use std::{fs, marker::PhantomData, path::Path, sync::Arc};
 use vera_client::VeraClient;
 use zeroize::Zeroizing;
 
-pub struct NativeBulletinFactory;
+/// Selects whether a brand-new node accepts a deterministic initial signing
+/// key (integration tests) or always generates one randomly (production).
+/// Mirrors `vera::startup::VeraStartupPolicy`'s own role for the Cosmos
+/// backend exactly — see that trait's doc comment for the rationale.
+pub trait NativeStartupPolicy: Send + 'static {
+    fn initial_signing_key() -> Option<String>;
+}
 
-impl BulletinFactory for NativeBulletinFactory {
+pub struct ProductionNativeStartup;
+
+impl NativeStartupPolicy for ProductionNativeStartup {
+    fn initial_signing_key() -> Option<String> {
+        None
+    }
+}
+
+pub struct NativeBulletinFactory<P = ProductionNativeStartup>(PhantomData<P>);
+
+impl<P: NativeStartupPolicy> BulletinFactory for NativeBulletinFactory<P> {
     const NAME: &'static str = "bulletin/native";
     type Config = NativeBulletinConfig;
     type ValidatedConfig = NativeConfig;
@@ -30,7 +46,13 @@ impl BulletinFactory for NativeBulletinFactory {
         config: Self::ValidatedConfig,
         context: PrepareContext<'_>,
     ) -> Result<Self::Prepared, BulletinStartupError> {
-        PreparedNativeBulletin::prepare(config, context.storage, context.runtime_base_path)
+        let initial_key = P::initial_signing_key();
+        PreparedNativeBulletin::prepare(
+            config,
+            context.storage,
+            context.runtime_base_path,
+            initial_key.as_deref(),
+        )
     }
 }
 
@@ -45,8 +67,9 @@ impl PreparedNativeBulletin {
         config: NativeConfig,
         storage: &(impl LocalStorage + ?Sized),
         base: &Path,
+        initial_key: Option<&str>,
     ) -> Result<Self, BulletinStartupError> {
-        let identity = initialize_identity(storage, base)?;
+        let identity = initialize_identity(storage, base, initial_key)?;
         let writer = NativeVeraClient::open(
             VeraClient::new(&config.endpoint),
             config.trusted,
@@ -90,19 +113,28 @@ impl PreparedBulletin for PreparedNativeBulletin {
     }
 }
 
+/// `initial_key` is used only when storage has no existing identity — same
+/// contract as `startup::cosmos::prepare_signer`'s own `initial_key`
+/// parameter. A malformed `initial_key` is a hard error (nothing persisted),
+/// not a silent fallback to a random key, so a misconfigured integration
+/// test fails loudly rather than running against a key it didn't ask for.
 pub fn initialize_identity(
     storage: &(impl LocalStorage + ?Sized),
     base: &Path,
+    initial_key: Option<&str>,
 ) -> Result<NodeIdentity, BulletinStartupError> {
     let stored = storage.get_encrypted(LocalStorageKeys::NodeSigningKey)?;
     let authority = match stored.as_ref() {
         Some(bytes) => decode_node_signing_key(bytes)?,
-        None => loop {
-            let mut bytes = Zeroizing::new([0u8; 32]);
-            getrandom::getrandom(bytes.as_mut())?;
-            if let Ok(key) = vera_client::Secp256k1SigningKey::from_slice(bytes.as_ref()) {
-                break key;
-            }
+        None => match initial_key.map(str::trim).filter(|key| !key.is_empty()) {
+            Some(key) => decode_node_signing_key(key.as_bytes())?,
+            None => loop {
+                let mut bytes = Zeroizing::new([0u8; 32]);
+                getrandom::getrandom(bytes.as_mut())?;
+                if let Ok(key) = vera_client::Secp256k1SigningKey::from_slice(bytes.as_ref()) {
+                    break key;
+                }
+            },
         },
     };
     let key_bytes = Zeroizing::new(authority.to_bytes());
@@ -147,9 +179,9 @@ mod tests {
             dir.path().join("keys.redb").to_string_lossy().into(),
         )
         .unwrap();
-        let generated = initialize_identity(&storage, dir.path()).unwrap();
+        let generated = initialize_identity(&storage, dir.path(), None).unwrap();
         assert_eq!(
-            initialize_identity(&storage, dir.path()).unwrap(),
+            initialize_identity(&storage, dir.path(), None).unwrap(),
             generated
         );
         let expected = hex::encode(
@@ -166,7 +198,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            initialize_identity(&storage, dir.path()).unwrap().node_key,
+            initialize_identity(&storage, dir.path(), None)
+                .unwrap()
+                .node_key,
             expected
         );
         assert_eq!(
@@ -188,7 +222,7 @@ mod tests {
                     Zeroizing::new(invalid.clone()),
                 )
                 .unwrap();
-            assert!(initialize_identity(&storage, dir.path()).is_err());
+            assert!(initialize_identity(&storage, dir.path(), None).is_err());
             assert_eq!(
                 storage
                     .get_encrypted(LocalStorageKeys::NodeSigningKey)
@@ -198,5 +232,55 @@ mod tests {
                 invalid
             );
         }
+    }
+
+    #[test]
+    fn native_identity_uses_initial_key_only_when_storage_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RedbStorage::new(
+            "test".into(),
+            dir.path().join("keys.redb").to_string_lossy().into(),
+        )
+        .unwrap();
+        let initial_key_hex = hex::encode([31; 32]);
+        let expected = hex::encode(
+            k256::ecdsa::SigningKey::from_slice(&[31; 32])
+                .unwrap()
+                .verifying_key()
+                .to_sec1_bytes(),
+        );
+
+        let identity = initialize_identity(&storage, dir.path(), Some(&initial_key_hex)).unwrap();
+        assert_eq!(identity.node_key, expected);
+        assert_eq!(
+            storage
+                .get_encrypted(LocalStorageKeys::NodeSigningKey)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            initial_key_hex.as_bytes()
+        );
+
+        // Storage is no longer empty -- a different `initial_key` on a later
+        // call must not override the now-persisted identity.
+        let other_key_hex = hex::encode([32; 32]);
+        let unchanged = initialize_identity(&storage, dir.path(), Some(&other_key_hex)).unwrap();
+        assert_eq!(unchanged.node_key, expected);
+    }
+
+    #[test]
+    fn native_identity_rejects_a_malformed_initial_key_without_persisting_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RedbStorage::new(
+            "test".into(),
+            dir.path().join("keys.redb").to_string_lossy().into(),
+        )
+        .unwrap();
+
+        assert!(initialize_identity(&storage, dir.path(), Some("not-a-signing-key")).is_err());
+        assert!(storage
+            .get_encrypted(LocalStorageKeys::NodeSigningKey)
+            .unwrap()
+            .is_none());
     }
 }

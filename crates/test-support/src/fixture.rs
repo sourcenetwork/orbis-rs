@@ -16,7 +16,7 @@
 //! — this type family exists to stop describing that same state as raw JSON
 //! once per test, not to invent new scenario shapes.
 
-use crate::admin::{DocumentId, PolicyId, RingId, RingSpec, RingView};
+use crate::admin::{DocumentId, PolicyId, RingId, RingSpec, RingStateFacts, RingView};
 use crate::network::NodeInfo;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -277,6 +277,34 @@ pub trait NetworkTestDriver {
     fn persisted_kdf_params(&self, _index: usize) -> Option<PersistedKdfParams> {
         None
     }
+
+    /// The "peer_id@host:port" string a report should target for
+    /// `nodes()[node_index]`. Cosmos's own dialable address uses an
+    /// iroh-internal port not reachable by container name from another
+    /// container, so it must be rewritten to the Compose service's own
+    /// name/port; native's `p2p_address` is already directly usable as-is.
+    fn reporting_peer_address(&self, node_index: usize) -> String;
+}
+
+/// Defra-backed PRE scenario access — see `defra_pre_scenario.rs`'s own
+/// module doc comment for why this exists outside the usual
+/// `ScenarioFixture`-driven path: `ScenarioFixture::defra` only controls
+/// whether a Defra container comes up at all, not how a test reaches it
+/// afterward.
+pub trait DefraTestDriver {
+    /// Host-reachable Defra URL, when `ScenarioFixture::defra` was set.
+    /// `None` otherwise.
+    fn defra_url(&self) -> Option<&str>;
+
+    /// The Compose-bridge-network address a ring's `pre_share_endpoints`
+    /// must use so both sibling node containers and this process can
+    /// reach it. `None` unless `ScenarioFixture::defra` was set.
+    fn defra_container_url(&self) -> Option<String>;
+
+    /// This environment's own Docker network, for joining a one-off
+    /// sidecar container to it directly
+    /// (`test_support::run_sidecar_container`).
+    fn sidecar_network_name(&self) -> String;
 }
 
 /// ACP policy/relationship administration — the independently-selectable
@@ -321,6 +349,13 @@ pub trait BulletinTestDriver {
 
     async fn read_ring(&self, ring: &RingId) -> Option<RingView>;
 
+    /// The ring's current state, pre-hashed into `state_sha256` — see
+    /// [`RingStateFacts`]'s own doc comment for why the hash crosses this
+    /// trait boundary instead of a raw `RingPayload`. For building evidence
+    /// (e.g. a forged DKG-commitment statement) that must match a real
+    /// responder's own independently-computed `ring_state_sha256`.
+    async fn read_ring_state_facts(&self, ring: &RingId) -> RingStateFacts;
+
     /// Returns the full view (not just [`RingKeys`]) once `ring_pk` is set —
     /// callers that only need the main key still get it via `.ring_pk`, but
     /// `requires_pet`/`pet_pk`/`confirmations` no longer need a second read.
@@ -334,6 +369,41 @@ pub trait BulletinTestDriver {
     ) -> DocumentId;
 
     async fn read_document(&self, id: &DocumentId) -> Vec<u8>;
+
+    /// Register an ACP-governed PRE document and return its id. Unlike
+    /// `store_document` (arbitrary raw bytes, policy attached separately
+    /// via `register_object`), native's own document model bakes
+    /// `policy`/`resource`/`permission` directly into the object's
+    /// content-addressed id — mirrors `register_key_derivation`'s shape
+    /// for exactly that reason. `document`/`proof` are the same
+    /// JSON-serialized `Secret`/`EncryptionProof` strings `cli_tool`'s own
+    /// `prepare_secret` produces.
+    async fn register_document(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String;
+
+    /// Compute the id a document would get from `register_document` with
+    /// these exact fields, without actually registering it. Pure/sync on
+    /// both backends — Cosmos's content-addressed id and native's
+    /// `ThresholdObject::id()` are both deterministic functions of these
+    /// fields alone, no chain round-trip needed. Used for the "inline
+    /// document, never stored" sub-case, where a report must still carry
+    /// the id the document *would* have.
+    fn predict_document_id(
+        &self,
+        ring: &RingId,
+        document: &str,
+        proof: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String;
 
     /// Register a key-derivation object and return its id. Deriving the
     /// *public key* for it is pure curve math, identical on both backends —
@@ -385,10 +455,18 @@ pub trait BulletinTestDriver {
     }
 
     /// Cancel an announced-but-stuck reshare, reverting `ring` to its
-    /// pre-reshare committee/threshold. Cosmos-only: native's chain module
-    /// has no equivalent `RingUpdate` variant (only `StartReshare`), so
-    /// implementations may `unimplemented!()`.
+    /// pre-reshare committee/threshold. Real on both backends (native's
+    /// `RingUpdate::CancelReshare`, Cosmos's `CancelRingReshareByAcp`).
     async fn cancel_reshare(&self, ring: &RingId);
+
+    /// Schedule a protocol-version upgrade on an already-finalized
+    /// (DKG'd) ring. Real on both backends with identical constraints —
+    /// Cosmos's `ScheduleRingUpgradeByAcp` and native's `RingUpdate::
+    /// ScheduleUpgrade` both require the ring to already be active and
+    /// both enforce the same 600-second minimum lead between "now" and
+    /// `activation_time`, so there's no backend-specific timing model to
+    /// hide here.
+    async fn schedule_ring_upgrade(&self, ring: &RingId, next_version: u64, activation_time: u64);
 
     /// Current demerit points recorded against `node_key` on `ring`, or 0
     /// if none. Real on both backends. Deliberately ignores reset-interval

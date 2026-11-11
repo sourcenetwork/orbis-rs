@@ -39,6 +39,16 @@ cosmos-identity = ["common/cosmos", "dep:local-storage", "dep:zeroize", "dep:get
 # selected. It intentionally pulls in no backend: a native test build must
 # remain free of Cosmos dependencies.
 integration-test = ["common/funding"]
+# Native's own equivalent of `integration-test`, kept separate rather than
+# reused: `integration-test` is unconditionally wired to `orbis-node`'s own
+# `integration-test` feature, which also activates `cli-tool` there -- and
+# `cli-tool` hardcodes `bulletin`'s `vera` feature regardless of server
+# backend (it's a pure gRPC client), pulling in Cosmos dependencies a native
+# build must stay free of. `unsafe-testing` is already native's own
+# Dockerfile-level "this is a testing build" flag (see
+# `docker/Dockerfile`'s native branch) and, like `integration-test` itself,
+# pulls in no backend.
+unsafe-testing = []
 native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
 # Selects `DummyBulletin` as the production `BulletinImpl` (mutually
 # exclusive with `vera`, enforced below). Implies `dummy-type` since that's

@@ -73,9 +73,10 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     // node4 is a running node but deliberately not an initial ring member —
     // `provision`'s own ring materialization only whitelists/updates the
     // peer id of `ring.members`, so a pure-new reshare target needs this
-    // done explicitly before it can be announced.
-    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
-    environment.whitelist_node_for_ring(&ring_id, 3).await;
+    // done explicitly before it can be announced. No-op on native, where
+    // every running node is already authorized for every ring's policy
+    // regardless of initial membership.
+    environment.authorize_reshare_candidate(&ring_id, 3).await;
 
     println!("Starting DKG for ring {}...", ring_id.0);
     let (keys, _local_state) = pre_scenario::run_dkg(&environment, &ring_id).await;

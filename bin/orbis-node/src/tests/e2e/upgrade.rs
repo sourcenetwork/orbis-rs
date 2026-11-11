@@ -1,39 +1,59 @@
 //! Shared integration test: protocol version upgrade enforcement.
 //!
-//! Genesis-seeds a ring at current_version=0 with a scheduled upgrade to
-//! version 1 (activation_time = provisioning-start + ACTIVATION_LEAD_SECS).
-//! Verifies:
+//! Runs a real DKG to finalize the ring, then schedules a v0→v1 upgrade via
+//! `BulletinTestDriver::schedule_ring_upgrade` (activation_time = now +
+//! ACTIVATION_LEAD_SECS). Verifies:
 //!   Phase 1 — before activation: v0 operations are NOT version-gated (gate doesn't fire early)
 //!   Phase 2 — after activation:  v0 operations ARE version-gated (all three refuse the ring)
 //!
-//! Tendermint/Cosmos genesis-seeds this directly — the correct,
-//! authoritative behavior this test asserts. Commonware/native has no
-//! genesis-injection facility at all yet (deferred cross-repo work — see
-//! the harness-unification plan), and even its live equivalent
-//! (`RingUpdate::ScheduleUpgrade`) wouldn't give parity: it requires the
-//! ring to already be `RingState::Active` and enforces a 600-second
-//! minimum lead time, a fundamentally different timing model from "already
-//! mid-upgrade-schedule before any node boots." Ignored there for now
-//! rather than reshaping the test around native's constraints; see the
-//! `#[cfg_attr]` below.
+//! Fully backend-neutral — no `#[cfg]` split in this file. Cosmos's
+//! `ScheduleRingUpgradeByAcp` and native's `RingUpdate::ScheduleUpgrade`
+//! turned out to have identical constraints (ring must already be
+//! finalized, both enforce the same 600-second minimum lead) — see
+//! `schedule_ring_upgrade`'s doc comment. Unlike the original Cosmos-only
+//! version of this test, the upgrade is scheduled live (after DKG) rather
+//! than genesis-seeded before boot, so `ACTIVATION_LEAD_SECS` must clear
+//! both backends' 600s floor — a real (if minor) cost of staying
+//! backend-neutral, accepted in exchange for not needing a native
+//! genesis-injection facility at all.
 //!
 //! Run with:
 //!   cargo test --features integration-test -- test_v0_services_rejected_after_ring_upgrade --nocapture
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::{pre_scenario, TestEnvironmentImpl};
+use crypto::r#trait::{EncryptionProof, Secret};
 use test_support::fixture::{
-    DocumentFixture, FixtureId, KeyDerivationFixture, NetworkTestDriver, NodeFixture, NodeRef,
-    NodeRole, RingFixture, ScenarioFixture, TestEnvironment, UpgradeFixture,
+    AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture,
+    NodeRef, NodeRole, RingFixture, ScenarioFixture, TestEnvironment,
 };
 use tokio::time::{sleep, Duration};
 
-use super::TestEnvironmentImpl;
-
-// Lead between genesis write and activation. This covers Docker image build/startup under
-// full-suite contention; Phase 1 only requires the node's gRPC services, not funding readiness.
-const ACTIVATION_LEAD_SECS: u64 = 180;
+// Both backends' live schedule-upgrade path enforces a 600s minimum lead
+// between "now" (as the chain sees it) and `activation_time`; the extra 20s
+// covers tx-inclusion lag between capturing `now` here and the chain
+// actually validating the schedule request.
+const ACTIVATION_LEAD_SECS: u64 = 620;
 const MIN_PRE_ACTIVATION_SLACK_SECS: u64 = 10;
+
+const UPGRADE_TEST_POLICY_YAML: &str = r#"
+name: upgrade-test-policy
+resources:
+  - name: document
+    relations:
+      - name: creator
+        types:
+          - actor
+      - name: reader
+        types:
+          - actor
+    permissions:
+      - name: read
+        expr: reader
+      - name: write
+        expr: creator
+"#;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -93,39 +113,12 @@ fn assert_server_version_rejection(operation: &str, error: &anyhow::Error) {
 
 #[tokio::test]
 #[serial_test::serial]
-#[cfg_attr(
-    all(feature = "integration-test", feature = "native"),
-    ignore = "commonware/native has no genesis-injection facility yet \
-              (deferred cross-repo work), and its live ScheduleUpgrade \
-              equivalent requires an already-Active ring plus a \
-              600s-minimum lead — a different timing model from this \
-              test's already-mid-upgrade-before-boot design; fix when \
-              native grows one of these capabilities"
-)]
 async fn test_v0_services_rejected_after_ring_upgrade() {
     let ring = FixtureId::new("ring");
-    let document = FixtureId::new("document");
-    let derivation = FixtureId::new("derivation");
-    // Dangling placeholder, deliberately not backed by a `PolicyFixture` —
-    // same reasoning as the raw test's own non-existent "upgrade-test-policy"
-    // string: genesis-seeded documents/key-derivations here are never
-    // actually decrypted or ACP-checked, only routed, so nothing ever
-    // validates this value against a real policy.
-    let policy = FixtureId::new("policy");
-
-    // Captured immediately before `provision`, which captures its own
-    // "now" a few instructions later when building genesis — close enough
-    // (milliseconds) next to a 180s lead/5s buffer that both sides agree on
-    // the same `activation_time` for all practical purposes. See
-    // `CosmosTestEnvironment::provision`'s matching capture.
-    let provision_started_at = unix_now();
-    let activation_time = provision_started_at + ACTIVATION_LEAD_SECS;
-    println!("activation_time={activation_time} (in {ACTIVATION_LEAD_SECS}s from now)");
-
     let fixture = ScenarioFixture {
         // The Compose topology only supports 3 or 4 nodes
-        // (`CosmosNetwork::with_node_count`) — the ring itself still only
-        // ever references one of them.
+        // (`CosmosNetwork::with_node_count`) — the ring itself only ever
+        // references two of them (DKG requires at least two participants).
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),
@@ -134,45 +127,81 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
             .collect(),
         rings: vec![RingFixture {
             id: ring.clone(),
-            members: vec![NodeRef::Running(0)],
-            threshold: 1,
+            members: vec![NodeRef::Running(0), NodeRef::Running(1)],
+            threshold: 2,
             pss_interval: Duration::from_secs(86_400),
             requires_pet: false,
             policy: FixtureId::new("ring-policy"),
             reporting: Default::default(),
-            upgrade: Some(UpgradeFixture {
-                current_version: 0,
-                next_version: 1,
-                activation_offset: Duration::from_secs(ACTIVATION_LEAD_SECS),
-            }),
-        }],
-        documents: vec![DocumentFixture {
-            id: document.clone(),
-            ring: ring.clone(),
-            policy: policy.clone(),
-            resource: "document".to_string(),
-            permission: "read".to_string(),
-            payload: b"upgrade-test-ciphertext".to_vec(),
-        }],
-        key_derivations: vec![KeyDerivationFixture {
-            id: derivation.clone(),
-            ring: ring.clone(),
-            policy: policy.clone(),
-            derivation: "upgrade-test-derivation".to_string(),
-            resource: "document".to_string(),
-            permission: "read".to_string(),
+            upgrade: None,
         }],
         ..Default::default()
     };
 
     let environment = TestEnvironmentImpl::provision(fixture).await;
-    let ring_id = environment.fixture().rings[&ring].id.0.clone();
-    let document_id = document.0.clone();
-    let derivation_id = derivation.0.clone();
+    let ring_id = environment.fixture().rings[&ring].id.clone();
     let endpoint = environment.nodes()[0].grpc_endpoint.clone();
     cli_tool::query_node_info(endpoint.clone())
         .await
-        .expect("node 1 gRPC services must be available before Phase 1");
+        .expect("node 1 gRPC services must be available before DKG");
+
+    println!("Starting DKG for ring {}...", ring_id.0);
+    let (keys, _local_state) = pre_scenario::run_dkg(&environment, &ring_id).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &keys.main[..40.min(keys.main.len())]
+    );
+
+    // A real but otherwise irrelevant policy: these records are only ever
+    // routed to the right ring by the version gate, never actually
+    // decrypted or ACP-checked, so nothing here ever validates this policy
+    // beyond its existence. Unlike the original genesis-placeholder version
+    // of this test, native's live `register_document`/`register_key_derivation`
+    // validate `policy_id`'s *format* (a real content-addressed id) even
+    // though nothing ever checks it against this policy's actual content,
+    // so a dangling free-form string id doesn't work here as it did there.
+    let policy_id = environment.create_policy(UPGRADE_TEST_POLICY_YAML).await;
+    let document_str = String::from_utf8(
+        serde_json::to_vec(&Secret {
+            enc_cmt: vec![5u8; 32],
+            encrypted_data: b"upgrade-test-ciphertext".to_vec(),
+            nonce: vec![6u8; 12],
+        })
+        .expect("serialize upgrade-test secret"),
+    )
+    .expect("secret JSON is valid utf8");
+    let proof_str: String = EncryptionProof {
+        challenge: vec![1, 2, 3],
+        response: vec![4, 5, 6],
+    }
+    .try_into()
+    .expect("serialize upgrade-test proof");
+    let document_id = environment
+        .register_document(
+            &ring_id,
+            &document_str,
+            &proof_str,
+            &policy_id,
+            "document",
+            "read",
+        )
+        .await;
+    let derivation_id = environment
+        .register_key_derivation(
+            &ring_id,
+            "upgrade-test-derivation",
+            &policy_id,
+            "document",
+            "read",
+        )
+        .await;
+
+    let provision_started_at = unix_now();
+    let activation_time = provision_started_at + ACTIVATION_LEAD_SECS;
+    println!("activation_time={activation_time} (in {ACTIVATION_LEAD_SECS}s from now)");
+    environment
+        .schedule_ring_upgrade(&ring_id, 1, activation_time)
+        .await;
 
     // ─── Phase 1: pre-activation — version gate must NOT fire ────────────────
     let phase_1_slack = assert_before_activation("Phase 1", activation_time);
@@ -182,7 +211,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     );
 
     let _ = assert_before_activation("DKG", activation_time);
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.clone()).await;
+    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.0.clone()).await;
     assert_pre_activation_response("DKG", &dkg_result);
     println!(
         "DKG before activation: {}",
@@ -253,7 +282,7 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     // ─── Phase 3: post-activation — all v0 operations must be refused ─────────
     println!("Phase 3: confirming all v0 operations are refused after upgrade...");
 
-    let dkg_err = cli_tool::do_dkg(endpoint.clone(), ring_id.clone())
+    let dkg_err = cli_tool::do_dkg(endpoint.clone(), ring_id.0.clone())
         .await
         .expect_err("v0 DKG must refuse a v1 ring after activation");
     assert_server_version_rejection("DKG", &dkg_err);
