@@ -127,10 +127,10 @@ fn native_paired_ring_and_confirmation_match_v2_vectors() {
         reporting: Default::default(),
         pre_share_endpoints: Vec::new(),
     };
-    let ring_id = config.id().unwrap();
+    let ring_id = config.id([7; 32], "did:key:fixture").unwrap();
     assert_eq!(
         ring_id,
-        "e5bfa730726c87e864244ca00ca8989d2eb3e9270359df1fd43b3d3d4c87a9fb"
+        "bf6fe376aa866abbcc782aad3ce66c7e20d6319579067b8ee016f9ff6ac24ff3"
     );
     let request = RingParticipantRequest {
         deployment_root: [7; 32],
@@ -145,6 +145,6 @@ fn native_paired_ring_and_confirmation_match_v2_vectors() {
     };
     assert_eq!(
         hex::encode(request.signing_digest().unwrap()),
-        "d46c645aeaa4fe3bea26bebb91253d40417e38c7330cd4dffabd70b8bdebf7ea"
+        "94ff96e28a51017de101b8a8d61f05646c85357c40b66962957e1452b6fa3d43"
     );
 }

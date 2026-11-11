@@ -8,15 +8,11 @@
 //! container, so the test asserts the announced pending committee, not the
 //! finalized one.
 //!
-//! Fully backend-neutral — no `#[cfg]` split in this file. `RingView` now
-//! carries `backup_node_keys` portably (both `read_ring` implementations
-//! populate it from their own backend's `reporting` config), so confirming
-//! the promoted key was consumed needs no raw, backend-specific `Ring` read.
-//! `NodeRole::Backup` has live registration support on native
-//! (`NativeTestEnvironment::provision`'s `fixture_node`/`NodeCommand::Register`
-//! path); fixture-driven `node_demerits` is genesis-seeded there too, by
-//! predicting the ring's (and its governing policy's) id before the chain
-//! boots — see that function's own doc comments for the mechanism.
+//! `RingView` carries `backup_node_keys` portably (both `read_ring`
+//! implementations populate it from their own backend's `reporting` config),
+//! so confirming the promoted key was consumed needs no raw, backend-specific
+//! `Ring` read. Vera 0.1.1 cannot seed `node_demerits` in genesis, so the
+//! native run is ignored below.
 
 use super::report_scenario::{pre_with_retry, store_secret_with_retry, STANDARD_RING_POLICY_YAML};
 use super::{pre_scenario, TestEnvironmentImpl};
@@ -34,6 +30,10 @@ const NODE_KEY_BACKUP: &str = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758
 
 #[tokio::test]
 #[serial_test::serial]
+#[cfg_attr(
+    all(feature = "integration-test", feature = "native"),
+    ignore = "Vera 0.1.1 cannot seed node_demerits in genesis"
+)]
 async fn test_report_kick_promotes_backup_node() {
     println!("Starting backup-node promotion integration test...");
 

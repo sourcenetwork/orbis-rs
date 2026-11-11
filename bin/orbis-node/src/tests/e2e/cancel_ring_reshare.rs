@@ -5,12 +5,9 @@
 //! it, and confirms the ring reverts to its original committee/threshold
 //! with the original committee still able to Sign.
 //!
-//! Fully backend-neutral — no `#[cfg]` split in this file. Tendermint/Cosmos
-//! has a real `CancelRingReshareByAcp` chain message; Commonware/native now
-//! has the equivalent `vera-modules::vera::rings::types::RingUpdate::
-//! CancelReshare` variant, wired through `BulletinTestDriver::cancel_reshare`.
-//! Native's fixture materializer already supports a never-running
-//! `NodeRole::Offline` node (live `NodeCommand::Register`, not genesis).
+//! Tendermint/Cosmos has a real `CancelRingReshareByAcp` chain message.
+//! Vera 0.1.1's `RingUpdate` has no cancel variant, so the native run is
+//! ignored below.
 //!
 //! Run with:
 //!   cargo test -p orbis-node --features integration-test -- test_cancel_stuck_reshare_reverts_ring_and_preserves_signing --nocapture
@@ -36,6 +33,10 @@ const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a1
 
 #[tokio::test]
 #[serial_test::serial]
+#[cfg_attr(
+    all(feature = "integration-test", feature = "native"),
+    ignore = "Vera 0.1.1's RingUpdate has no cancel variant"
+)]
 async fn test_cancel_stuck_reshare_reverts_ring_and_preserves_signing() {
     println!("Starting cancel-stuck-reshare integration test...");
 

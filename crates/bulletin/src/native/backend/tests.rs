@@ -255,7 +255,7 @@ fn ring_fixture(writer: &NativeVeraClient, requires_pet: bool, state: RingState)
         pre_share_endpoints: Vec::new(),
     };
     let record = RingRecord {
-        id: config.id().unwrap(),
+        id: config.id(writer.deployment_root, &creator).unwrap(),
         deployment_root: writer.deployment_root,
         creator,
         config,

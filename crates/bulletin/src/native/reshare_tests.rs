@@ -48,7 +48,7 @@ fn reshare_fixture(public_key: String) -> (tempfile::TempDir, NativeVeraClient, 
         pre_share_endpoints: Vec::new(),
     };
     let mut record = RingRecord {
-        id: config.id().unwrap(),
+        id: config.id([7; 32], &creator).unwrap(),
         deployment_root: [7; 32],
         creator,
         config,

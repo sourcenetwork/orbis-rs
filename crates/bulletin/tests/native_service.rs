@@ -219,7 +219,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         reporting: ReportingConfig::default(),
         pre_share_endpoints: Vec::new(),
     };
-    let ring_id = config.id().unwrap();
+    let ring_id = config.id(root.0, &actor).unwrap();
     submit(
         &client,
         &worker,
@@ -346,7 +346,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         .unwrap();
     assert_eq!(restored, derivation);
     config.nonce = [2; 32];
-    let pending_id = config.id().unwrap();
+    let pending_id = config.id(root.0, &actor).unwrap();
     let creation = submit(
         &client,
         &worker,
@@ -527,7 +527,7 @@ async fn native_report_and_reshare_recover_certified_completion() {
         reporting: ReportingConfig::default(),
         pre_share_endpoints: Vec::new(),
     };
-    let ring_id = config.id().unwrap();
+    let ring_id = config.id(root.0, &actor).unwrap();
     let token = create_scoped_bearer_token(
         &authority,
         worker.did(),

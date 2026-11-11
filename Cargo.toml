@@ -37,14 +37,14 @@ authors = ["Orbis Contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a65ab3f7a9573b610ed42718a84a43ea4e135908" }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a65ab3f7a9573b610ed42718a84a43ea4e135908" }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a65ab3f7a9573b610ed42718a84a43ea4e135908" }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a65ab3f7a9573b610ed42718a84a43ea4e135908" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a65ab3f7a9573b610ed42718a84a43ea4e135908" }
-vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a65ab3f7a9573b610ed42718a84a43ea4e135908" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a65ab3f7a9573b610ed42718a84a43ea4e135908" }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a65ab3f7a9573b610ed42718a84a43ea4e135908" }
+vera-acp = "0.1.1"
+vera-client = "0.1.1"
+vera-crypto = "0.1.1"
+vera-domain = "0.1.1"
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", tag = "v0.1.1" }
+vera-identity = "0.1.1"
+vera-modules = "0.1.1"
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", tag = "v0.1.1" }
 # Common dependencies across workspace
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -89,3 +89,14 @@ http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 tempfile = "3"
+
+# Resolve the Vera git crates' internal dependencies to the published 0.1.1 packages.
+[patch."https://github.com/sourcenetwork/vera.rs"]
+vera-acp = "0.1.1"
+vera-client = "0.1.1"
+vera-crypto = "0.1.1"
+vera-domain = "0.1.1"
+vera-identity = "0.1.1"
+vera-modules = "0.1.1"
+vera-permission = "0.1.1"
+vera-zanzibar = "0.1.1"
