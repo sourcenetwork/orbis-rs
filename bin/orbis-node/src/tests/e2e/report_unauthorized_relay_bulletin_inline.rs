@@ -280,6 +280,23 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     .await;
     println!("Sub-case 1 (bulletin) evidence submitted.");
 
+    // Wait for sub-case 1's report to fully land before starting sub-case 2.
+    // Both reports independently re-verify their own `unauthorized_request`
+    // access check against a historical anchor; running them concurrently
+    // lets each one's own on-chain report submission land inside the
+    // other's anchor-capture-to-verify window and intermittently invalidate
+    // it (observed in CI). Sequencing them, like `report_unauthorized_relay.rs`
+    // already does for its own two cases, removes that timing dependency
+    // without changing what this test actually covers.
+    super::report_scenario::wait_for_demerits(
+        &environment,
+        &ring_id,
+        &node1_key,
+        1,
+        Duration::from_secs(180),
+    )
+    .await;
+
     // ── Sub-case 2: document supplied inline, never posted to the bulletin ───────
     println!("Sub-case 2: inline document (never posted to the bulletin)...");
     let inline_secret = Secret {
