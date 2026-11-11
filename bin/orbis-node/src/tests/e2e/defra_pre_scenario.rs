@@ -7,11 +7,8 @@
 //! than a per-backend escape hatch: `CosmosAdmin::register_ring` and
 //! `NativeTestEnvironment::register_ring` each hide their own backend's
 //! ring-policy registration/node-authorization mechanics behind the same
-//! method signature. `environment.defra_url()`/`defra_container_url()`
-//! remain backend-specific escape hatches (not part of any shared trait —
-//! see each one's own doc comment), since `ScenarioFixture::defra` and
-//! Defra access are the only pieces this feature still needs outside the
-//! trait.
+//! method signature. `environment.defra_url()`/`defra_container_url()`/
+//! `sidecar_network_name()` go through the shared `DefraTestDriver` trait.
 //!
 //! DKG uses the already-shared `pre_scenario::run_dkg` helper. The PRE
 //! retrieval step, though, needs a sidecar: a reader fetching from Defra
@@ -51,8 +48,8 @@
 use super::{pre_scenario, TestEnvironmentImpl};
 use test_support::admin::RingSpec;
 use test_support::fixture::{
-    AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture,
-    NodeRole, ScenarioFixture, TestEnvironment,
+    AuthorizationTestDriver, BulletinTestDriver, DefraTestDriver, FixtureId, NetworkTestDriver,
+    NodeFixture, NodeRole, ScenarioFixture, TestEnvironment,
 };
 
 const THRESHOLD: u32 = 2;

@@ -1,4 +1,13 @@
 //! Shared policy-authorized derived-key signing conformance scenario.
+//!
+//! The `#[cfg(all(feature = "native", feature = "bls12-381"))]` blocks
+//! throughout aren't a backend-specific way of doing the same check —
+//! they verify Defra's own remote-signing integration
+//! (`defra_orbis::OrbisClient` dialing the ring as a remote signer, via
+//! `defra_documents`/`defra_peers`), a real capability that doesn't exist
+//! for Cosmos or jubjub/FROST builds yet, not something this scenario
+//! could run identically there. Every other assertion in this file runs
+//! unconditionally on both backends.
 
 use super::{pre_scenario, TestEnvironmentImpl};
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, ThresholdSigner};

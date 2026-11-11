@@ -21,8 +21,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use test_support::admin::{DocumentId, PolicyId, RingId, RingSpec, RingStateFacts, RingView};
 use test_support::fixture::{
-    AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeRef, NodeRole,
-    PolicyHandle, ProvisionedFixture, RingHandle, ScenarioFixture, TestEnvironment,
+    AuthorizationTestDriver, BulletinTestDriver, DefraTestDriver, FixtureId, NetworkTestDriver,
+    NodeRef, NodeRole, PolicyHandle, ProvisionedFixture, RingHandle, ScenarioFixture,
+    TestEnvironment,
 };
 use test_support::node_readiness::wait_for_nodes_ready;
 use test_support::{NativeNetworkAdapter, NativeTestNetwork, NodeInfo};
@@ -106,29 +107,21 @@ impl NativeTestEnvironment {
     fn policy_bytes(policy: &PolicyId) -> B256 {
         B256::from_slice(&hex::decode(&policy.0).expect("policy id is hex-encoded"))
     }
+}
 
-    /// Host-reachable Defra URL, when `ScenarioFixture::defra` was set.
-    /// `None` otherwise. Mirrors `CosmosTestEnvironment::defra_url`.
-    pub fn defra_url(&self) -> Option<&str> {
+impl DefraTestDriver for NativeTestEnvironment {
+    fn defra_url(&self) -> Option<&str> {
         self.network.defra_url()
     }
 
-    /// The address a ring's `pre_share_endpoints` must use so both sibling
-    /// node containers and this process can reach it. Unlike Cosmos's
-    /// equivalent, this doesn't need a bridge-network gateway-IP lookup —
-    /// native's own project network pre-assigns every address statically
-    /// (see `NativeTestNetwork::defra_container_url`). `None` unless
-    /// `ScenarioFixture::defra` was set. Mirrors
-    /// `CosmosTestEnvironment::defra_container_url`.
-    pub fn defra_container_url(&self) -> Option<String> {
+    /// Unlike Cosmos's equivalent, this doesn't need a bridge-network
+    /// gateway-IP lookup — native's own project network pre-assigns every
+    /// address statically (see `NativeTestNetwork::defra_container_url`).
+    fn defra_container_url(&self) -> Option<String> {
         self.network.defra_container_url()
     }
 
-    /// This environment's own Docker network, for joining a one-off sidecar
-    /// container to it directly (`test_support::run_sidecar_container`) —
-    /// see `defra_pre_scenario.rs`'s own module doc comment. Mirrors
-    /// `CosmosTestEnvironment::sidecar_network_name`.
-    pub fn sidecar_network_name(&self) -> String {
+    fn sidecar_network_name(&self) -> String {
         self.network.cluster().network_name().to_string()
     }
 }
@@ -754,6 +747,10 @@ impl NetworkTestDriver for NativeTestEnvironment {
             p_cost: stored.p_cost,
             version: stored.version,
         })
+    }
+
+    fn reporting_peer_address(&self, node_index: usize) -> String {
+        self.nodes()[node_index].p2p_address.clone()
     }
 }
 

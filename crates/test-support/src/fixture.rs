@@ -277,6 +277,34 @@ pub trait NetworkTestDriver {
     fn persisted_kdf_params(&self, _index: usize) -> Option<PersistedKdfParams> {
         None
     }
+
+    /// The "peer_id@host:port" string a report should target for
+    /// `nodes()[node_index]`. Cosmos's own dialable address uses an
+    /// iroh-internal port not reachable by container name from another
+    /// container, so it must be rewritten to the Compose service's own
+    /// name/port; native's `p2p_address` is already directly usable as-is.
+    fn reporting_peer_address(&self, node_index: usize) -> String;
+}
+
+/// Defra-backed PRE scenario access — see `defra_pre_scenario.rs`'s own
+/// module doc comment for why this exists outside the usual
+/// `ScenarioFixture`-driven path: `ScenarioFixture::defra` only controls
+/// whether a Defra container comes up at all, not how a test reaches it
+/// afterward.
+pub trait DefraTestDriver {
+    /// Host-reachable Defra URL, when `ScenarioFixture::defra` was set.
+    /// `None` otherwise.
+    fn defra_url(&self) -> Option<&str>;
+
+    /// The Compose-bridge-network address a ring's `pre_share_endpoints`
+    /// must use so both sibling node containers and this process can
+    /// reach it. `None` unless `ScenarioFixture::defra` was set.
+    fn defra_container_url(&self) -> Option<String>;
+
+    /// This environment's own Docker network, for joining a one-off
+    /// sidecar container to it directly
+    /// (`test_support::run_sidecar_container`).
+    fn sidecar_network_name(&self) -> String;
 }
 
 /// ACP policy/relationship administration — the independently-selectable

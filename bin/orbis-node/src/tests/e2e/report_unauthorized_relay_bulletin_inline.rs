@@ -207,13 +207,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         .create_policy(UNAUTHORIZED_RELAY_TEST_POLICY_YAML)
         .await;
 
-    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
-    let node3_peer_id = test_support::CosmosNetwork::transform_p2p_address(
-        &environment.nodes()[2].p2p_address,
-        test_support::CosmosNetwork::service_name_for_node(3),
-    );
-    #[cfg(all(feature = "integration-test", feature = "native"))]
-    let node3_peer_id = environment.nodes()[2].p2p_address.clone();
+    let node3_peer_id = environment.reporting_peer_address(2);
 
     // ── Sub-case 1: document posted to the bulletin (today's existing path) ──────
     println!("Sub-case 1: bulletin-sourced document...");

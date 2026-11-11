@@ -12,15 +12,9 @@
 //! The injection RPC (`UnsafeTestingService::submit_pss_stall_offline_report`)
 //! and the underlying report pipeline are backend-neutral production code
 //! (`bin/orbis-node/src/unsafe_testing/service.rs`/`reporting/v0/registry`),
-//! so this runs as one real test on both backends. The one backend-specific
-//! piece is computing node3's on-chain-registered P2P peer id: Cosmos
-//! self-reports an address that needs rewriting to its Compose service name
-//! (`CosmosNetwork::transform_p2p_address`, same as `provision()`'s own
-//! ring materialization already does internally before registering it on
-//! chain); native's `NativeTestEnvironment::provision` registers nodes'
-//! self-reported `p2p_address` directly, with no rewriting at all
-//! (confirmed by reading its `SetPeer` authorization step) — so native uses
-//! it as-is.
+//! so this runs as one real test on both backends — including computing
+//! node3's on-chain-registered P2P peer id, via
+//! `NetworkTestDriver::reporting_peer_address`.
 
 use super::report_scenario::{wait_for_demerits, STANDARD_RING_POLICY_YAML};
 use super::{pre_scenario, TestEnvironmentImpl};
@@ -82,13 +76,7 @@ async fn test_refresh_stall_offline_triggers_on_chain_report() {
         &keys.main[..40.min(keys.main.len())]
     );
 
-    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
-    let node3_peer_id = test_support::CosmosNetwork::transform_p2p_address(
-        &environment.nodes()[2].p2p_address,
-        test_support::CosmosNetwork::service_name_for_node(3),
-    );
-    #[cfg(all(feature = "integration-test", feature = "native"))]
-    let node3_peer_id = environment.nodes()[2].p2p_address.clone();
+    let node3_peer_id = environment.reporting_peer_address(2);
 
     // Stop node3 so the co-signer reachability probe finds it unreachable
     // and accepts the report. node3's on-chain NodeInfo (peer id) persists,

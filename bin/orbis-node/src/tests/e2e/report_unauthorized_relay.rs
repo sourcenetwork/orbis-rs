@@ -2,9 +2,9 @@
 //! PRE/Sign on an actor with no ACP relationship fires `unauthorized_request`
 //! reports against the forging relayer.
 //!
-//! Fully backend-neutral — no `#[cfg]` split in this file except a small,
-//! established one for `p2p_address` resolution (same precedent as
-//! `report_reshare_stall_offline.rs`). `NODE1_SIGNING_KEY_HEX`/
+//! Fully backend-neutral — no `#[cfg]` split in this file. `p2p_address`
+//! resolution goes through `NetworkTestDriver::reporting_peer_address`.
+//! `NODE1_SIGNING_KEY_HEX`/
 //! `NODE2_SIGNING_KEY_HEX` are node1/node2's real signing keys on *both*
 //! backends now (see `crates/bulletin/src/native/integration_startup.rs`),
 //! so forging evidence "as" them needs no backend-specific key resolution.
@@ -263,13 +263,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         &pre_jwt_signer.did_uri,
     );
 
-    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
-    let node3_peer_id = test_support::CosmosNetwork::transform_p2p_address(
-        &environment.nodes()[2].p2p_address,
-        test_support::CosmosNetwork::service_name_for_node(3),
-    );
-    #[cfg(all(feature = "integration-test", feature = "native"))]
-    let node3_peer_id = environment.nodes()[2].p2p_address.clone();
+    let node3_peer_id = environment.reporting_peer_address(2);
 
     println!("Submitting PRE unauthorized relay evidence against node1 through node3...");
     submit_unauthorized_relay_evidence(
@@ -327,13 +321,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         &sign_jwt_signer.did_uri,
     );
 
-    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
-    let node1_peer_id = test_support::CosmosNetwork::transform_p2p_address(
-        &environment.nodes()[0].p2p_address,
-        test_support::CosmosNetwork::service_name_for_node(1),
-    );
-    #[cfg(all(feature = "integration-test", feature = "native"))]
-    let node1_peer_id = environment.nodes()[0].p2p_address.clone();
+    let node1_peer_id = environment.reporting_peer_address(0);
 
     println!("Submitting Sign unauthorized relay evidence against node2 through node1...");
     submit_unauthorized_relay_evidence(

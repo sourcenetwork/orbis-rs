@@ -29,6 +29,9 @@ mod concurrent_invalid_dkg_share_report;
 mod concurrent_pre_requests;
 mod concurrent_sign_requests;
 mod concurrent_simultaneous_dkg;
+// Support code for `sign_scenario.rs`'s embedded Defra remote-signing
+// checks (real capability gap, not a test-authoring difference — see that
+// file's own doc comment). Not test files themselves: no `#[test]` fns.
 #[cfg(all(feature = "native", feature = "bls12-381"))]
 mod defra_documents;
 #[cfg(all(feature = "native", feature = "bls12-381"))]
@@ -100,15 +103,10 @@ mod native_lifecycle;
 #[cfg(all(feature = "native", not(feature = "cosmos")))]
 use native_environment::NativeTestEnvironment as TestEnvironmentImpl;
 
-// Real `CosmosNetwork` + a real Defra container, outside the shared
-// scenario/fixture contract: `BackendAdmin::register_ring`/`RingSpec` has no
-// `pre_share_endpoints` concept (native doesn't support it in this PR), so
-// this drives ring creation directly via `cli_tool::create_ring` instead.
-// Unconditional (not `#[cfg(feature = "cosmos")]`): the module stays visible
-// in a native build too, as an `#[ignore]`d stub naming exactly what's
-// missing, rather than silently disappearing — so adding native's
-// `pre_share_endpoints` support later has an obvious test to un-ignore
-// instead of a gap nobody's reminded to fill.
+// Real Defra container over a real ring's `pre_share_endpoints`. Part of
+// the shared contract on both backends: `BulletinTestDriver::register_ring`/
+// `RingSpec::pre_share_endpoints` hides each backend's own ring-creation
+// mechanics behind one method signature.
 mod defra_pre_scenario;
 
 // In-process FaultNetwork qualifications. Isolated from the shared scenario
