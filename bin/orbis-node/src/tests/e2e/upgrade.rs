@@ -100,8 +100,8 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     let ring = FixtureId::new("ring");
     let fixture = ScenarioFixture {
         // The Compose topology only supports 3 or 4 nodes
-        // (`CosmosNetwork::with_node_count`) — the ring itself still only
-        // ever references one of them.
+        // (`CosmosNetwork::with_node_count`) — the ring itself only ever
+        // references two of them (DKG requires at least two participants).
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),
@@ -110,8 +110,8 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
             .collect(),
         rings: vec![RingFixture {
             id: ring.clone(),
-            members: vec![NodeRef::Running(0)],
-            threshold: 1,
+            members: vec![NodeRef::Running(0), NodeRef::Running(1)],
+            threshold: 2,
             pss_interval: Duration::from_secs(86_400),
             requires_pet: false,
             policy: FixtureId::new("ring-policy"),

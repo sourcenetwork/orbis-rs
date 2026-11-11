@@ -219,7 +219,7 @@ async fn test_report_kick_promotes_backup_node() {
     assert!(
         ring_view
             .new_threshold
-            .map_or(true, |threshold| threshold == ring_view.threshold),
+            .is_none_or(|threshold| threshold == ring_view.threshold),
         "auto-reshare must not change the threshold"
     );
 
