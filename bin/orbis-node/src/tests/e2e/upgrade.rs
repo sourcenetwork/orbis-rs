@@ -24,10 +24,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{pre_scenario, TestEnvironmentImpl};
 use crypto::r#trait::{EncryptionProof, Secret};
-use test_support::admin::PolicyId;
 use test_support::fixture::{
-    BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture, NodeRef, NodeRole, RingFixture,
-    ScenarioFixture, TestEnvironment,
+    AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture,
+    NodeRef, NodeRole, RingFixture, ScenarioFixture, TestEnvironment,
 };
 use tokio::time::{sleep, Duration};
 
@@ -37,6 +36,24 @@ use tokio::time::{sleep, Duration};
 // actually validating the schedule request.
 const ACTIVATION_LEAD_SECS: u64 = 620;
 const MIN_PRE_ACTIVATION_SLACK_SECS: u64 = 10;
+
+const UPGRADE_TEST_POLICY_YAML: &str = r#"
+name: upgrade-test-policy
+resources:
+  - name: document
+    relations:
+      - name: creator
+        types:
+          - actor
+      - name: reader
+        types:
+          - actor
+    permissions:
+      - name: read
+        expr: reader
+      - name: write
+        expr: creator
+"#;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -135,12 +152,15 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
         &keys.main[..40.min(keys.main.len())]
     );
 
-    // A dangling, never-created policy id — same reasoning as the original
-    // genesis-placeholder version of this test: these records are only
-    // ever routed to the right ring by the version gate, never actually
-    // decrypted or ACP-checked, so nothing here ever validates this value
-    // against a real policy.
-    let policy_id = PolicyId("upgrade-test-policy".to_string());
+    // A real but otherwise irrelevant policy: these records are only ever
+    // routed to the right ring by the version gate, never actually
+    // decrypted or ACP-checked, so nothing here ever validates this policy
+    // beyond its existence. Unlike the original genesis-placeholder version
+    // of this test, native's live `register_document`/`register_key_derivation`
+    // validate `policy_id`'s *format* (a real content-addressed id) even
+    // though nothing ever checks it against this policy's actual content,
+    // so a dangling free-form string id doesn't work here as it did there.
+    let policy_id = environment.create_policy(UPGRADE_TEST_POLICY_YAML).await;
     let document_str = String::from_utf8(
         serde_json::to_vec(&Secret {
             enc_cmt: vec![5u8; 32],

@@ -105,10 +105,18 @@ resources:
         .map(|node| node.grpc_endpoint.clone())
         .collect();
 
+    // Backdated well past a day: native's ring creation always clamps
+    // `pss_interval` to a 24h floor (its validator rejects short intervals
+    // outright, unlike Cosmos's genesis-seeded rings — see
+    // `native_environment.rs::build_ring_config`), so the PSS ticker's
+    // "pending longer than pss_interval" check needs `indexed_at_secs` far
+    // enough in the past to already be overdue on either backend,
+    // regardless of what interval the fixture itself requested.
     let indexed_at_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time")
-        .as_secs();
+        .as_secs()
+        .saturating_sub(2 * 86_400);
     let ring_index = vec![RingIndexEntry {
         ring_pk_str: format!("pending:{}", ring_id.0),
         bulletin_post_id: ring_id.0.clone(),

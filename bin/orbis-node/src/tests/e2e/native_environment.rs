@@ -943,7 +943,7 @@ impl BulletinTestDriver for NativeTestEnvironment {
                 .pending_reshare
                 .as_ref()
                 .map(|target| target.threshold),
-            backup_node_keys: record.config.reporting.backup_node_keys.clone(),
+            backup_node_keys: settings.reporting.backup_node_keys.clone(),
         })
     }
 
