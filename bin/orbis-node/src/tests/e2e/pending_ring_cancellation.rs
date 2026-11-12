@@ -9,7 +9,8 @@
 //! trait — unconditional on backend. Cosmos maps that to its
 //! `CancelPendingRing` chain message; native maps it to
 //! `RingParticipantCommand::Cancel` (`crates/bulletin/src/native/backend.rs`).
-//! Fully backend-neutral — no `#[cfg]` split in this file.
+//! Vera 0.1.1 lets only a ring's creator cancel it while pending, so a
+//! member's cancellation is rejected and the native run is ignored below.
 //!
 //! Run with:
 //!   cargo test -p orbis-node --features integration-test \
@@ -30,6 +31,10 @@ use super::TestEnvironmentImpl;
 
 #[tokio::test]
 #[serial_test::serial]
+#[cfg_attr(
+    all(feature = "integration-test", feature = "native"),
+    ignore = "Vera 0.1.1 lets only the creator cancel a pending ring"
+)]
 async fn test_stale_pending_dkg_is_cancelled() {
     // Minimal placeholder policy — unused by Cosmos (its ring materializer
     // always substitutes its own content-addressed governance policy
