@@ -33,7 +33,7 @@ dependencies = [
 [[package]]
 name = "acp-light-client"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/backbone.git?rev=17c05bb1f63a41b1d3c636e6744a594aab213304#17c05bb1f63a41b1d3c636e6744a594aab213304"
+source = "git+https://github.com/sourcenetwork/backbone.git?rev=e8fc9b75fbadba355d08120c527f27ca9429ed57#e8fc9b75fbadba355d08120c527f27ca9429ed57"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
