@@ -538,7 +538,7 @@ pub fn ring_payload_from_record(record: &RingRecord) -> crate::error::Result<Rin
             backup_node_keys: settings.reporting.backup_node_keys,
             kick_threshold: settings.reporting.kick_threshold,
         },
-        pre_share_endpoints: record.config.pre_share_endpoints.clone(),
+        pre_share_endpoints: settings.pre_share_endpoints.clone(),
     })
 }
 
