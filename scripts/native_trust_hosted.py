@@ -15,8 +15,8 @@ import tarfile
 import tempfile
 import time
 
-VERA = '523de40514848e9f0349f3bf7d5a0e9d161402c9'
-VERA_SDK = '523de40514848e9f0349f3bf7d5a0e9d161402c9'
+VERA = '490d9a5a2bc4ed27a04588ae156993aaa90f9ec5'
+VERA_SDK = '490d9a5a2bc4ed27a04588ae156993aaa90f9ec5'
 DEFRA = 'b758f89a532d8d8add94911e0c580bfcf8804cff'
 SELECTOR = 'tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
