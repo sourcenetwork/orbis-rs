@@ -209,6 +209,7 @@ fn validation_context(
         routes: &network::V0,
         now,
         mode: ReportValidationMode::ReporterObservation,
+        checked_at_evidence: None,
         inline_document: None,
         pet_blind_context: None,
         pet_blind_certificate: None,
@@ -493,22 +494,69 @@ async fn relay_request_statement_shape_accepts_valid_and_rejects_malformed() {
     crate::helpers::test_helpers::cleanup_db(&db_path);
 }
 
+/// A report whose `ReportSigningContext`/observation never carried the captured ACP evidence
+/// (e.g. a malformed or truncated relay) is rejected before any chain work, rather than reaching
+/// `Authz::verify_evidence` with nothing to verify.
 #[tokio::test]
-async fn relayed_request_refutation_rejects_anchor_time_drift() {
-    let db_name = "registry_relay_request_anchor_time_drift";
+async fn relayed_request_refutation_rejects_missing_checked_at_evidence() {
+    let db_name = "registry_relay_request_missing_checked_at_evidence";
+    let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+    crate::helpers::test_helpers::cleanup_db(&db_path);
+    let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+    let ring = ring_fixture(2);
+    let statement = relay_request_statement(&ring, app_state.bulletin.chain_id(), 10);
+    let context = validation_context(&app_state, 10);
+
+    let error = require_relayed_request_unauthorized(&context, &statement)
+        .await
+        .unwrap_err();
+
+    crate::helpers::test_helpers::cleanup_db(&db_path);
+    assert!(error
+        .to_string()
+        .contains("missing its captured ACP evidence"));
+}
+
+#[tokio::test]
+async fn relayed_request_refutation_rejects_evidence_capture_time_drift() {
+    let db_name = "registry_relay_request_evidence_capture_time_drift";
     let db_path = crate::helpers::test_helpers::test_db_path(db_name);
     crate::helpers::test_helpers::cleanup_db(&db_path);
     let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
     let ring = ring_fixture(2);
     let statement = relay_request_statement(&ring, app_state.bulletin.chain_id(), 1000);
-    let context = validation_context(&app_state, statement.signed_at);
+    let bulletin = std::sync::Arc::new(DummyBulletin::default());
+    let document = DocumentPayload {
+        ring_id: "ring".to_string(),
+        document: "{}".to_string(),
+        proof: String::new(),
+        policy_id: "policy".to_string(),
+        resource: "document".to_string(),
+        permission: "read".to_string(),
+        tier: None,
+        timestamp: Some(1000),
+        pet_tag: None,
+        pet_tag_proof: None,
+    };
+    bulletin.set_post(
+        "relay-object".to_string(),
+        BulletinPost {
+            id: "relay-object".to_string(),
+            payload: document.try_into().unwrap(),
+        },
+    );
+    let context = ReportValidationContext {
+        bulletin,
+        checked_at_evidence: Some(Vec::new()),
+        ..validation_context(&app_state, statement.signed_at)
+    };
 
-    let error = require_relayed_request_unauthorized(&context, &statement, "0")
+    let error = require_relayed_request_unauthorized(&context, &statement)
         .await
         .unwrap_err();
 
     crate::helpers::test_helpers::cleanup_db(&db_path);
-    assert!(error.to_string().contains("anchor time"));
+    assert!(error.to_string().contains("capture time"));
 }
 
 #[tokio::test]
@@ -558,6 +606,7 @@ async fn relayed_request_refutation_rejects_authorized_request() {
     let base_context = validation_context(&app_state, 10);
     let context = ReportValidationContext {
         bulletin,
+        checked_at_evidence: Some(Vec::new()),
         ..base_context
     };
 
@@ -569,7 +618,7 @@ async fn relayed_request_refutation_rejects_authorized_request() {
         statement.origin_protocol = origin_protocol.to_string();
         statement.object_id = object_id.to_string();
 
-        let error = require_relayed_request_unauthorized(&context, &statement, "0")
+        let error = require_relayed_request_unauthorized(&context, &statement)
             .await
             .unwrap_err();
         assert!(
@@ -617,6 +666,7 @@ async fn relayed_request_refutation_accepts_matching_inline_document() {
     let context = ReportValidationContext {
         bulletin,
         inline_document: Some(evidence.clone()),
+        checked_at_evidence: Some(Vec::new()),
         ..base_context
     };
 
@@ -641,7 +691,7 @@ async fn relayed_request_refutation_accepts_matching_inline_document() {
     // DummyAuthZ always authorizes, so this must still hit the "authorized" refutation —
     // proving the request reached the real ACP check rather than failing earlier on a
     // (nonexistent) bulletin read.
-    let error = require_relayed_request_unauthorized(&context, &statement, "0")
+    let error = require_relayed_request_unauthorized(&context, &statement)
         .await
         .unwrap_err();
     assert!(
@@ -666,6 +716,7 @@ async fn relayed_request_refutation_rejects_mismatched_inline_document() {
     let context = ReportValidationContext {
         bulletin,
         inline_document: Some(matching_document_evidence()),
+        checked_at_evidence: Some(Vec::new()),
         ..base_context
     };
 
@@ -675,7 +726,7 @@ async fn relayed_request_refutation_rejects_mismatched_inline_document() {
     statement.object_id = "claimed-object-id".to_string();
     statement.document_inline = true;
 
-    let error = require_relayed_request_unauthorized(&context, &statement, "0")
+    let error = require_relayed_request_unauthorized(&context, &statement)
         .await
         .unwrap_err();
     assert!(
@@ -699,6 +750,7 @@ async fn relayed_request_refutation_rejects_missing_inline_document_evidence() {
     let base_context = validation_context(&app_state, 10);
     let context = ReportValidationContext {
         bulletin,
+        checked_at_evidence: Some(Vec::new()),
         ..base_context
     };
 
@@ -707,7 +759,7 @@ async fn relayed_request_refutation_rejects_missing_inline_document_evidence() {
     statement.timestamp = Some(10);
     statement.document_inline = true;
 
-    let error = require_relayed_request_unauthorized(&context, &statement, "0")
+    let error = require_relayed_request_unauthorized(&context, &statement)
         .await
         .unwrap_err();
     assert!(
@@ -964,6 +1016,7 @@ async fn dkg_share_shape_rejects_wrong_origin() {
             routes: &network::V0,
             now: envelope.observed_at,
             mode: ReportValidationMode::ReporterObservation,
+            checked_at_evidence: None,
             inline_document: None,
             pet_blind_context: None,
             pet_blind_certificate: None,
@@ -1055,6 +1108,7 @@ async fn validate_equivocation_commitment_shape_accepts_bound_and_rejects_bad_or
         routes: &network::V0,
         now: envelope.observed_at,
         mode: ReportValidationMode::ReporterObservation,
+        checked_at_evidence: None,
         inline_document: None,
         pet_blind_context: None,
         pet_blind_certificate: None,
@@ -1165,6 +1219,7 @@ async fn validate_refresh_commitment_shape_accepts_and_rejects_wrong_origin() {
         routes: &network::V0,
         now: envelope.observed_at,
         mode: ReportValidationMode::ReporterObservation,
+        checked_at_evidence: None,
         inline_document: None,
         pet_blind_context: None,
         pet_blind_certificate: None,

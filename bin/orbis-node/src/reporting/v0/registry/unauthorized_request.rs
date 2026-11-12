@@ -47,6 +47,7 @@ impl ReportHandler for UnauthorizedRequestHandler {
             signing_options: self.signing_options(&envelope),
             envelope,
             ring_config,
+            checked_at_evidence: Some(observation.checked_at_evidence),
             inline_document: observation.inline_document,
             pet_blind_context: None,
             pet_blind_certificate: None,
@@ -122,7 +123,7 @@ impl ReportHandler for UnauthorizedRequestHandler {
             ReportingError::Unauthorized(format!("invalid relay request signature: {}", error))
         })?;
 
-        require_relayed_request_unauthorized(context, statement, &payload.checked_at_anchor).await
+        require_relayed_request_unauthorized(context, statement).await
     }
 }
 
@@ -235,29 +236,21 @@ pub(super) fn validate_relay_request_statement_shape(
     Ok(())
 }
 
-/// The refutation for an `unauthorized_request` report: re-run the ACP check for the relayed request
-/// as of the acceptor's captured `checked_at_anchor` (an opaque `Authz` point-in-history token). If
-/// the actor **is** authorized at that anchor the relayer forwarded a legitimate request → reject
-/// the report; only an unauthorized verdict confirms it. `anchor_time(anchor) ≈ signed_at` binds the
-/// anchor to the relay moment, so it reflects the policy state when the relayer checked — protecting
-/// an honest relayer from a revocation that lands right after it forwards, with no assumption about
-/// what the anchor encodes.
+/// The refutation for an `unauthorized_request` report: verify the ACP evidence the acceptor
+/// captured (`Authz::capture_evidence`) for the relayed request, purely offline. If the actor
+/// **was** authorized per that evidence, the relayer forwarded a legitimate request → reject the
+/// report; only an unauthorized verdict confirms it. The evidence's own authenticated capture
+/// time must be ≈ `signed_at`, so it reflects the policy state when the relayer checked —
+/// protecting an honest relayer from a revocation that lands right after it forwards.
 pub(super) async fn require_relayed_request_unauthorized(
     context: &ReportValidationContext,
     statement: &RelayRequestStatement,
-    checked_at_anchor: &str,
 ) -> Result<()> {
-    let anchor_time = context
-        .authz
-        .anchor_time(checked_at_anchor)
-        .await
-        .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-    if anchor_time.abs_diff(statement.signed_at) > RELAY_CHECK_MAX_DRIFT_SECS {
-        return Err(ReportingError::InvalidReport(format!(
-            "relay request anchor time {} drifts from signed_at {} by more than {}s",
-            anchor_time, statement.signed_at, RELAY_CHECK_MAX_DRIFT_SECS
-        )));
-    }
+    let checked_at_evidence = context.checked_at_evidence.as_deref().ok_or_else(|| {
+        ReportingError::InvalidReport(
+            "unauthorized_request report is missing its captured ACP evidence".to_string(),
+        )
+    })?;
 
     let valid_window = match (statement.valid_window_start, statement.valid_window_end) {
         (Some(start), Some(end)) => Some(ValidWindow { start, end }),
@@ -346,14 +339,20 @@ pub(super) async fn require_relayed_request_unauthorized(
     let request_bytes = access_request
         .to_bytes()
         .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-    let authorized = context
+    let verified = context
         .authz
-        .check_at(request_bytes, &statement.actor_id, checked_at_anchor)
+        .verify_evidence(checked_at_evidence, request_bytes, &statement.actor_id)
         .await
         .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-    if authorized {
+    if verified.captured_at.abs_diff(statement.signed_at) > RELAY_CHECK_MAX_DRIFT_SECS {
+        return Err(ReportingError::InvalidReport(format!(
+            "relay request evidence capture time {} drifts from signed_at {} by more than {}s",
+            verified.captured_at, statement.signed_at, RELAY_CHECK_MAX_DRIFT_SECS
+        )));
+    }
+    if verified.allowed {
         return Err(ReportingError::Unauthorized(
-            "relayed request was authorized at the captured anchor".to_string(),
+            "relayed request was authorized at the captured evidence".to_string(),
         ));
     }
     Ok(())

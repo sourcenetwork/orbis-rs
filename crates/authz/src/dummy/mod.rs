@@ -1,4 +1,7 @@
-use crate::{error::Result, r#trait::Authz};
+use crate::{
+    error::Result,
+    r#trait::{Authz, VerifiedEvidence},
+};
 use async_trait::async_trait;
 
 pub struct DummyAuthZ;
@@ -9,16 +12,20 @@ impl Authz for DummyAuthZ {
         Ok(true)
     }
 
-    async fn check_at(&self, _permission: Vec<u8>, _subject: &str, _anchor: &str) -> Result<bool> {
-        Ok(true)
+    async fn capture_evidence(&self, _permission: Vec<u8>, _subject: &str) -> Result<Vec<u8>> {
+        Ok(Vec::new())
     }
 
-    async fn current_anchor(&self) -> Result<String> {
-        Ok("0".to_string())
-    }
-
-    async fn anchor_time(&self, _anchor: &str) -> Result<u64> {
-        Ok(0)
+    async fn verify_evidence(
+        &self,
+        _evidence: &[u8],
+        _permission: Vec<u8>,
+        _subject: &str,
+    ) -> Result<VerifiedEvidence> {
+        Ok(VerifiedEvidence {
+            captured_at: 0,
+            allowed: true,
+        })
     }
 }
 
@@ -44,15 +51,19 @@ impl Authz for DenyingAuthZ {
         Ok(false)
     }
 
-    async fn check_at(&self, _permission: Vec<u8>, _subject: &str, _anchor: &str) -> Result<bool> {
-        Ok(false)
+    async fn capture_evidence(&self, _permission: Vec<u8>, _subject: &str) -> Result<Vec<u8>> {
+        Ok(Vec::new())
     }
 
-    async fn current_anchor(&self) -> Result<String> {
-        Ok("0".to_string())
-    }
-
-    async fn anchor_time(&self, _anchor: &str) -> Result<u64> {
-        Ok(0)
+    async fn verify_evidence(
+        &self,
+        _evidence: &[u8],
+        _permission: Vec<u8>,
+        _subject: &str,
+    ) -> Result<VerifiedEvidence> {
+        Ok(VerifiedEvidence {
+            captured_at: 0,
+            allowed: false,
+        })
     }
 }

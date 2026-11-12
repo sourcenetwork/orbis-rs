@@ -1565,14 +1565,19 @@ async fn test_sign_policy_check_policy_access_enforces_authz_denial() {
         async fn check(&self, _: Vec<u8>, _: &str) -> authz::error::Result<bool> {
             Ok(false)
         }
-        async fn check_at(&self, _: Vec<u8>, _: &str, _: &str) -> authz::error::Result<bool> {
-            Ok(false)
+        async fn capture_evidence(&self, _: Vec<u8>, _: &str) -> authz::error::Result<Vec<u8>> {
+            Ok(Vec::new())
         }
-        async fn current_anchor(&self) -> authz::error::Result<String> {
-            Ok("0".to_string())
-        }
-        async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
-            Ok(0)
+        async fn verify_evidence(
+            &self,
+            _: &[u8],
+            _: Vec<u8>,
+            _: &str,
+        ) -> authz::error::Result<authz::r#trait::VerifiedEvidence> {
+            Ok(authz::r#trait::VerifiedEvidence {
+                captured_at: 0,
+                allowed: false,
+            })
         }
     }
 
@@ -1614,19 +1619,19 @@ async fn test_sign_policy_check_policy_access_at_uses_supplied_timestamp() {
             assert_eq!(req.timestamp, Some(self.expected_timestamp));
             Ok(true)
         }
-        async fn check_at(
+        async fn capture_evidence(&self, _: Vec<u8>, _: &str) -> authz::error::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        async fn verify_evidence(
             &self,
+            _: &[u8],
             permission: Vec<u8>,
             subject: &str,
-            _: &str,
-        ) -> authz::error::Result<bool> {
-            self.check(permission, subject).await
-        }
-        async fn current_anchor(&self) -> authz::error::Result<String> {
-            Ok("1".to_string())
-        }
-        async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
-            Ok(self.expected_timestamp)
+        ) -> authz::error::Result<authz::r#trait::VerifiedEvidence> {
+            Ok(authz::r#trait::VerifiedEvidence {
+                captured_at: self.expected_timestamp,
+                allowed: self.check(permission, subject).await?,
+            })
         }
     }
 
@@ -1678,19 +1683,19 @@ async fn test_sign_policy_check_policy_access_expired_valid_window() {
             }
             Ok(true)
         }
-        async fn check_at(
+        async fn capture_evidence(&self, _: Vec<u8>, _: &str) -> authz::error::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        async fn verify_evidence(
             &self,
+            _: &[u8],
             permission: Vec<u8>,
             subject: &str,
-            _: &str,
-        ) -> authz::error::Result<bool> {
-            self.check(permission, subject).await
-        }
-        async fn current_anchor(&self) -> authz::error::Result<String> {
-            Ok("0".to_string())
-        }
-        async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
-            Ok(0)
+        ) -> authz::error::Result<authz::r#trait::VerifiedEvidence> {
+            Ok(authz::r#trait::VerifiedEvidence {
+                captured_at: 0,
+                allowed: self.check(permission, subject).await?,
+            })
         }
     }
 

@@ -18,6 +18,7 @@ use crate::reporting::v0::{
 };
 use crate::ring_state::RingShareBundle;
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
+use authz::request::AccessCheckRequest;
 use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
@@ -117,6 +118,7 @@ where
         binding: RelayRequestBinding,
         current_time: u64,
         document_evidence: Option<ReportedDocumentEvidence>,
+        checked_at_permission: Vec<u8>,
     ) {
         let Some(statement) = ctx.relay_statement.as_ref() else {
             return;
@@ -130,6 +132,7 @@ where
                     ctx.relay_signature.clone(),
                     current_time,
                     document_evidence,
+                    checked_at_permission,
                 )
                 .await;
             }
@@ -243,6 +246,20 @@ where
             from_node_id,
             document_inline: document_evidence.is_some(),
         };
+        // Same `AccessCheckRequest` shape `check_policy_access` below builds and checks
+        // internally — rebuilt here so a relay report (either failure branch below) can
+        // capture ACP evidence for the exact permission/subject this responder just checked.
+        let checked_at_permission = AccessCheckRequest::new(
+            document_payload.policy_id.clone(),
+            document_payload.resource.clone(),
+            ctx.object_id.clone(),
+            document_payload.permission.clone(),
+            document_payload.tier.clone(),
+            document_payload.timestamp,
+            ctx.valid_window.clone(),
+        )
+        .to_bytes()
+        .map_err(|e| PreError::AuthZ(format!("Error formatting access request: {}", e)))?;
 
         if let Err(error) = check_policy_access(
             &*self.app_state.authz,
@@ -262,6 +279,7 @@ where
                     relay_binding.clone(),
                     current_time,
                     document_evidence.clone(),
+                    checked_at_permission.clone(),
                 )
                 .await;
             }
@@ -321,6 +339,7 @@ where
                         relay_binding.clone(),
                         current_time,
                         document_evidence.clone(),
+                        checked_at_permission.clone(),
                     )
                     .await;
                 }

@@ -146,19 +146,6 @@ async fn submit_unauthorized_relay_evidence(
 
 #[tokio::test]
 #[serial_test::serial]
-#[cfg_attr(
-    all(feature = "integration-test", feature = "native"),
-    ignore = "native's check_at (anchored permission proof) compares the \
-              anchor's module root against the combined acp+bulletin+vera+ \
-              nonces root right now, not a true historical snapshot -- any \
-              transaction from any node (including this report's own \
-              signing fan-out) between anchor-capture and validate() can \
-              invalidate it, so this is intermittent on native, not a test \
-              bug. See project_vera_rs_anchored_permission_proof_gap memory \
-              note; re-enable once that's fixed (either a real historical \
-              query on native, or switching the anchor to a captured, \
-              offline-verifiable evidence bundle)"
-)]
 async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_chain_report() {
     println!("Starting PRE unauthorized-relay bulletin-vs-inline reporting integration test...");
 

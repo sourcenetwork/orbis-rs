@@ -2,7 +2,7 @@
 
 use crate::{
     error::{AuthZError, Result},
-    r#trait::Authz,
+    r#trait::{Authz, VerifiedEvidence},
 };
 use async_trait::async_trait;
 use common::blockchain::{
@@ -27,27 +27,38 @@ impl Authz for VeraAuth {
         self.verify_at(permission, subject, None).await
     }
 
-    /// For Vera the opaque anchor is a decimal block height.
-    async fn check_at(&self, permission: Vec<u8>, subject: &str, anchor: &str) -> Result<bool> {
-        let height = parse_anchor_height(anchor)?;
-        self.verify_at(permission, subject, Some(height)).await
-    }
-
-    async fn current_anchor(&self) -> Result<String> {
+    /// The evidence bundle is a decimal block height, same as the old opaque anchor. Cosmos's
+    /// historical ABCI query already works reliably at a specific height, so this stays a
+    /// cheap pointer rather than adopting native's self-contained bundle.
+    async fn capture_evidence(&self, _permission: Vec<u8>, _subject: &str) -> Result<Vec<u8>> {
         let height = self
             .chain_client
             .get_latest_height()
             .await
             .map_err(|e| AuthZError::ChainError(e.to_string()))?;
-        Ok(height.to_string())
+        Ok(height.to_string().into_bytes())
     }
 
-    async fn anchor_time(&self, anchor: &str) -> Result<u64> {
+    async fn verify_evidence(
+        &self,
+        evidence: &[u8],
+        permission: Vec<u8>,
+        subject: &str,
+    ) -> Result<VerifiedEvidence> {
+        let anchor = std::str::from_utf8(evidence).map_err(|e| {
+            AuthZError::InvalidRequest(format!("evidence is not a valid anchor string: {e}"))
+        })?;
         let height = parse_anchor_height(anchor)?;
-        self.chain_client
+        let captured_at = self
+            .chain_client
             .get_block_time(height)
             .await
-            .map_err(|e| AuthZError::ChainError(e.to_string()))
+            .map_err(|e| AuthZError::ChainError(e.to_string()))?;
+        let allowed = self.verify_at(permission, subject, Some(height)).await?;
+        Ok(VerifiedEvidence {
+            captured_at,
+            allowed,
+        })
     }
 }
 

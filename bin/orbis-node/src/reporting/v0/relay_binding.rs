@@ -17,17 +17,19 @@ use std::sync::Arc;
 
 /// Build and queue an `unauthorized_request` report attributing the node that relayed a Sign/PRE
 /// request whose ACP re-check failed on this node. `statement` + `relay_signature` are the relayer's
-/// signed record of the request; `checked_at_anchor` is an opaque Authz anchor token whose format
-/// may vary by backend (not necessarily a block height). `inline_document` is this responder's own
-/// view of the request's document — `Some` only for a PRE request the relayer marked
-/// `document_inline` — carried out-of-band to co-signers, never into the on-chain envelope.
+/// signed record of the request; `checked_at_evidence` is the opaque, offline-verifiable bundle
+/// `Authz::capture_evidence` produced for the exact permission/subject that was checked — it rides
+/// out-of-band to co-signers via `ReportSigningContext`, same as `inline_document`, never into the
+/// on-chain envelope (format may vary by backend, not necessarily a Merkle proof bundle).
+/// `inline_document` is this responder's own view of the request's document — `Some` only for a
+/// PRE request the relayer marked `document_inline`.
 #[allow(clippy::too_many_arguments)]
 pub async fn queue_unauthorized_request_report<D, S>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     statement: crate::reporting::v0::types::RelayRequestStatement,
     relay_signature: Vec<u8>,
-    checked_at_anchor: String,
+    checked_at_evidence: Vec<u8>,
     inline_document: Option<ReportedDocumentEvidence>,
 ) -> Result<()>
 where
@@ -66,8 +68,8 @@ where
         payload: UnauthorizedRequestPayload {
             statement,
             relay_signature,
-            checked_at_anchor,
         },
+        checked_at_evidence,
         inline_document,
     };
     queue_report::<D, S>(
@@ -289,13 +291,16 @@ fn relay_binding_mismatch(
 
 /// Attribute the relaying node when a relayed request fails a responder's ACP re-check.
 ///
-/// Best-effort: verifies the relay statement is fresh and signed by the named relayer, captures the
-/// current ACP anchor, and queues an `unauthorized_request` report. Any failure here is logged and
-/// swallowed — the caller rejects the request regardless of whether a report is produced. Shared by
-/// the PRE and Sign responders. `inline_document` is this responder's own view of the request's
-/// document, `Some` only when the relayed PRE request carried its document inline
-/// (`statement.document_inline`); it rides out-of-band to co-signers, never into the on-chain
-/// envelope. Always `None` for Sign.
+/// Best-effort: verifies the relay statement is fresh and signed by the named relayer, captures
+/// evidence of the ACP decision, and queues an `unauthorized_request` report. Any failure here is
+/// logged and swallowed — the caller rejects the request regardless of whether a report is
+/// produced. Shared by the PRE and Sign responders. `checked_at_permission` is the exact
+/// `AccessCheckRequest` bytes this responder's own ACP re-check just used (the caller already
+/// built it for that check) — `Authz::capture_evidence` captures a bundle proving the decision for
+/// this specific permission/subject, so a later refutation can verify it offline. `inline_document`
+/// is this responder's own view of the request's document, `Some` only when the relayed PRE request
+/// carried its document inline (`statement.document_inline`); it rides out-of-band to co-signers,
+/// never into the on-chain envelope. Always `None` for Sign.
 pub async fn report_unauthorized_relay<D, S>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -303,6 +308,7 @@ pub async fn report_unauthorized_relay<D, S>(
     relay_signature: Vec<u8>,
     now: u64,
     inline_document: Option<ReportedDocumentEvidence>,
+    checked_at_permission: Vec<u8>,
 ) where
     D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
     S: ThresholdSigner<
@@ -373,14 +379,19 @@ pub async fn report_unauthorized_relay<D, S>(
         return;
     }
 
-    // Capture the ACP anchor at ~the relay moment (real now — cannot point at a favorable past).
-    let checked_at_anchor = match app_state.authz.current_anchor().await {
-        Ok(anchor) => anchor,
+    // Capture evidence of the ACP decision at ~the relay moment (real now — cannot point at a
+    // favorable past), for the exact permission/subject this responder's own re-check just used.
+    let checked_at_evidence = match app_state
+        .authz
+        .capture_evidence(checked_at_permission, &statement.actor_id)
+        .await
+    {
+        Ok(evidence) => evidence,
         Err(error) => {
             tracing::warn!(
                 request_id = %statement.request_id,
                 %error,
-                "Skipping unauthorized_request report: failed to capture ACP anchor"
+                "Skipping unauthorized_request report: failed to capture ACP evidence"
             );
             return;
         }
@@ -391,7 +402,7 @@ pub async fn report_unauthorized_relay<D, S>(
         routes,
         statement,
         relay_signature,
-        checked_at_anchor,
+        checked_at_evidence,
         inline_document,
     )
     .await
