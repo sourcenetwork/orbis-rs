@@ -1975,7 +1975,7 @@ dependencies = [
  "hex",
  "k256 0.14.0",
  "local-storage",
- "orbis-reporting 0.0.2",
+ "orbis-reporting 0.0.3",
  "serde",
  "serde_json",
  "serial_test",
@@ -7423,7 +7423,7 @@ dependencies = [
  "local-storage",
  "network",
  "orbis",
- "orbis-reporting 0.0.2",
+ "orbis-reporting 0.0.3",
  "p2p",
  "pre-share",
  "project-root",
@@ -7478,6 +7478,8 @@ dependencies = [
 [[package]]
 name = "orbis-reporting"
 version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9493ea2c91d02f7f3cf32c765082dda1980a5489c4ff989b78d23acc7be6e43a"
 dependencies = [
  "hex",
  "serde",
@@ -7487,9 +7489,7 @@ dependencies = [
 
 [[package]]
 name = "orbis-reporting"
-version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9493ea2c91d02f7f3cf32c765082dda1980a5489c4ff989b78d23acc7be6e43a"
+version = "0.0.3"
 dependencies = [
  "hex",
  "serde",
@@ -8116,7 +8116,7 @@ dependencies = [
  "crypto 0.0.1",
  "hex",
  "k256 0.14.0",
- "orbis-reporting 0.0.2",
+ "orbis-reporting 0.0.3",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -11887,7 +11887,7 @@ dependencies = [
  "futures",
  "hex",
  "imbl",
- "orbis-reporting 0.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "orbis-reporting 0.0.2",
  "prost 0.14.4",
  "serde",
  "serde_json",
