@@ -41,10 +41,10 @@ vera-acp = "0.1.1"
 vera-client = "0.1.1"
 vera-crypto = "0.1.1"
 vera-domain = "0.1.1"
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", tag = "v0.1.1" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "490d9a5a2bc4ed27a04588ae156993aaa90f9ec5" }
 vera-identity = "0.1.1"
 vera-modules = "0.1.1"
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", tag = "v0.1.1" }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "490d9a5a2bc4ed27a04588ae156993aaa90f9ec5" }
 # Common dependencies across workspace
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
