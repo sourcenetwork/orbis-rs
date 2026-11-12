@@ -1,7 +1,7 @@
 use alloy_primitives::B256;
 use authz::{native::NativeAuth, r#trait::Authz, request::AccessCheckRequest};
 use std::time::Duration;
-use vera_client::{BlsSigner, VeraClient};
+use vera_client::{BlsSigner, PermissionResponse, VeraClient};
 use vera_domain::ConsensusPublicKey;
 use vera_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 
@@ -28,14 +28,17 @@ async fn assert_current_permission(
 ) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let anchor = auth.current_anchor().await.unwrap();
-            let height: u64 = anchor.split(':').nth(1).unwrap().parse().unwrap();
-            if height >= minimum {
+            let evidence = auth
+                .capture_evidence(request.to_vec(), subject)
+                .await
+                .unwrap();
+            let response: PermissionResponse = serde_json::from_slice(&evidence).unwrap();
+            if response.revision.height >= minimum {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        // The certified anchor advances NativeAuth's minimum before its permission read.
+        // The certified evidence advances NativeAuth's minimum before its permission read.
         assert_eq!(
             auth.check(request.to_vec(), subject).await.unwrap(),
             expected
@@ -47,7 +50,7 @@ async fn assert_current_permission(
 
 #[tokio::test]
 #[ignore = "requires a built verad supplied through VERAD_BINARY"]
-async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
+async fn native_authorization_tracks_revocation_and_binds_recovered_evidence() {
     let deployment = 9071;
     let trusted = *KeySet::builder()
         .seed(deployment)
@@ -118,29 +121,41 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
     .unwrap();
     let subject = "did:key:reader";
     assert_current_permission(&auth, &request, subject, registered_height, false).await;
-    let denied_anchor = auth.current_anchor().await.unwrap();
-    assert!(auth.anchor_time(&denied_anchor).await.unwrap() > 0);
-    assert!(!auth
-        .check_at(request.clone(), subject, &denied_anchor)
+    let denied_evidence = auth
+        .capture_evidence(request.clone(), subject)
         .await
-        .unwrap());
+        .unwrap();
+    let denied_verified = auth
+        .verify_evidence(&denied_evidence, request.clone(), subject)
+        .await
+        .unwrap();
+    assert!(denied_verified.captured_at > 0);
+    assert!(!denied_verified.allowed);
     let grant = writer
         .native_set_relationship(&signer, policy_bytes, "document", "doc", "reader", subject)
         .await
         .unwrap();
     let grant_height = receipt(&reader, grant.transaction_hash, &trusted).await;
     assert_current_permission(&auth, &request, subject, grant_height, true).await;
-    assert_historical_result(
-        auth.check_at(request.clone(), subject, &denied_anchor)
-            .await,
-        false,
+    // Evidence captured before the grant still, correctly, proves "denied" -- offline,
+    // with no further chain query, immune to everything that happens on chain below.
+    assert!(
+        !auth
+            .verify_evidence(&denied_evidence, request.clone(), subject)
+            .await
+            .unwrap()
+            .allowed
     );
-    let allowed_anchor = auth.current_anchor().await.unwrap();
-    let allowed_time = auth.anchor_time(&allowed_anchor).await.unwrap();
-    assert!(auth
-        .check_at(request.clone(), subject, &allowed_anchor)
+    let allowed_evidence = auth
+        .capture_evidence(request.clone(), subject)
         .await
-        .unwrap());
+        .unwrap();
+    let allowed_verified = auth
+        .verify_evidence(&allowed_evidence, request.clone(), subject)
+        .await
+        .unwrap();
+    let allowed_time = allowed_verified.captured_at;
+    assert!(allowed_verified.allowed);
     let archived = writer
         .native_archive_object(&signer, policy_bytes, "doc", "document")
         .await
@@ -172,35 +187,32 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
         .unwrap();
     let revoked_height = receipt(&reader, revoked.transaction_hash, &trusted).await;
     assert_current_permission(&auth, &request, subject, revoked_height, false).await;
-    assert_historical_result(
-        auth.check_at(request.clone(), subject, &allowed_anchor)
-            .await,
-        true,
+    // Despite the archive/unarchive/regrant/revoke churn above -- exactly the kind of
+    // unrelated chain activity that broke the old anchor-pointer design via the combined
+    // module root -- evidence captured before any of it still, deterministically, proves
+    // "allowed". This is the property the redesign exists to guarantee.
+    assert!(
+        auth.verify_evidence(&allowed_evidence, request.clone(), subject)
+            .await
+            .unwrap()
+            .allowed
     );
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
-    assert_eq!(
-        auth.anchor_time(&allowed_anchor).await.unwrap(),
-        allowed_time
-    );
+    let allowed_verified_after_restart = auth
+        .verify_evidence(&allowed_evidence, request.clone(), subject)
+        .await
+        .unwrap();
+    assert_eq!(allowed_verified_after_restart.captured_at, allowed_time);
+    assert!(allowed_verified_after_restart.allowed);
     assert!(!auth.check(request.clone(), subject).await.unwrap());
-    let foreign = allowed_anchor.replacen(&hex::encode(root), &"99".repeat(32), 1);
-    assert!(auth.check_at(request, subject, &foreign).await.is_err());
-}
 
-fn assert_historical_result(result: authz::error::Result<bool>, expected: bool) {
-    match result {
-        Ok(allowed) => assert_eq!(allowed, expected, "historical permissions changed"),
-        // The current store cannot prove a historical root after a policy mutation.
-        Err(authz::error::AuthZError::Native(authz::native::Error::VerifyAnchoredAccess(
-            vera_client::ClientError::Rpc { code, message },
-        ))) => {
-            assert_eq!(code, -32002);
-            assert_eq!(
-                message,
-                "invalid permission evidence: selected module root changed"
-            );
-        }
-        Err(error) => panic!("unexpected historical authorization error: {error}"),
-    }
+    // Tampered evidence fails the embedded consensus signature check.
+    let mut tampered: PermissionResponse = serde_json::from_slice(&allowed_evidence).unwrap();
+    tampered.revision.height += 1;
+    let tampered_bytes = serde_json::to_vec(&tampered).unwrap();
+    assert!(auth
+        .verify_evidence(&tampered_bytes, request, subject)
+        .await
+        .is_err());
 }

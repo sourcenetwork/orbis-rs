@@ -83,6 +83,7 @@ async fn report_context(
         routes: &::network::V0,
         now: 1_700_000_010,
         mode: ReportValidationMode::ReporterObservation,
+        checked_at_evidence: None,
         inline_document: None,
         pet_blind_context: None,
         pet_blind_certificate: Some(certificate.clone()),

@@ -28,6 +28,7 @@ use crate::sign::v0::messages::{
 };
 use crate::sign::v0::response_state::NonceStoreOutcome;
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
+use authz::request::AccessCheckRequest;
 use bulletin::r#trait::{BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
@@ -312,6 +313,27 @@ where
                             };
                             match validate_relay_request_binding(statement, binding) {
                                 Ok(()) => {
+                                    // Same `AccessCheckRequest` shape `check_policy_access` above
+                                    // builds and checks internally — rebuilt here so the relay
+                                    // report can capture ACP evidence for the exact
+                                    // permission/subject this responder just checked.
+                                    let timestamp = valid_window.as_ref().map(|_| current_time);
+                                    let checked_at_permission = AccessCheckRequest::new(
+                                        key_derivation.policy_id.clone(),
+                                        key_derivation.resource.clone(),
+                                        derivation_id.clone(),
+                                        key_derivation.permission.clone(),
+                                        None,
+                                        timestamp,
+                                        valid_window.clone(),
+                                    )
+                                    .to_bytes()
+                                    .map_err(|e| {
+                                        SignError::AuthZ(format!(
+                                            "Error formatting access request: {}",
+                                            e
+                                        ))
+                                    })?;
                                     report_unauthorized_relay::<D, S>(
                                         self.app_state.clone(),
                                         self.routes,
@@ -319,6 +341,7 @@ where
                                         ctx.relay_signature.clone(),
                                         current_time,
                                         None,
+                                        checked_at_permission,
                                     )
                                     .await;
                                 }
@@ -619,6 +642,24 @@ where
                     };
                     match validate_relay_request_binding(statement, binding) {
                         Ok(()) => {
+                            // Same `AccessCheckRequest` shape `check_policy_access` above builds
+                            // and checks internally — rebuilt here so the relay report can
+                            // capture ACP evidence for the exact permission/subject this
+                            // responder just checked.
+                            let timestamp = valid_window.as_ref().map(|_| current_time);
+                            let checked_at_permission = AccessCheckRequest::new(
+                                key_derivation.policy_id.clone(),
+                                key_derivation.resource.clone(),
+                                derivation_id.clone(),
+                                key_derivation.permission.clone(),
+                                None,
+                                timestamp,
+                                valid_window.clone(),
+                            )
+                            .to_bytes()
+                            .map_err(|e| {
+                                SignError::AuthZ(format!("Error formatting access request: {}", e))
+                            })?;
                             report_unauthorized_relay::<D, S>(
                                 self.app_state.clone(),
                                 self.routes,
@@ -626,6 +667,7 @@ where
                                 ctx.relay_signature.clone(),
                                 current_time,
                                 None,
+                                checked_at_permission,
                             )
                             .await;
                         }

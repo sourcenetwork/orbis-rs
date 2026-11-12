@@ -46,6 +46,7 @@ impl ReportHandler for NodeOfflineHandler {
             signing_options: self.signing_options(&envelope),
             envelope,
             ring_config,
+            checked_at_evidence: None,
             inline_document: None,
             pet_blind_context: None,
             pet_blind_certificate: None,

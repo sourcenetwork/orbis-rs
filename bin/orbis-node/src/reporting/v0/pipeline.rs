@@ -169,6 +169,7 @@ where
                 routes,
                 now,
                 mode: ReportValidationMode::ReporterObservation,
+                checked_at_evidence: prepared.checked_at_evidence.clone(),
                 inline_document: prepared.inline_document.clone(),
                 pet_blind_context: prepared.pet_blind_context.clone(),
                 pet_blind_certificate: prepared.pet_blind_certificate.clone(),
@@ -207,6 +208,7 @@ where
             message,
             SignContext::Report(Box::new(ReportSigningContext {
                 envelope: prepared.envelope.clone(),
+                checked_at_evidence: prepared.checked_at_evidence.clone(),
                 inline_document: prepared.inline_document.clone(),
                 pet_blind_context: prepared.pet_blind_context.clone(),
                 pet_blind_certificate: prepared.pet_blind_certificate.clone(),
@@ -264,6 +266,7 @@ where
                 mode: ReportValidationMode::IndependentSigner {
                     perform_health_probe,
                 },
+                checked_at_evidence: context.checked_at_evidence.clone(),
                 inline_document: context.inline_document.clone(),
                 pet_blind_context: context.pet_blind_context.clone(),
                 pet_blind_certificate: context.pet_blind_certificate.clone(),

@@ -165,6 +165,7 @@ mod tests {
     fn report_sign_context_has_no_reporting_scope() {
         let ctx = SignContext::Report(Box::new(ReportSigningContext {
             envelope: stub_envelope(),
+            checked_at_evidence: None,
             inline_document: None,
             pet_blind_context: None,
             pet_blind_certificate: None,

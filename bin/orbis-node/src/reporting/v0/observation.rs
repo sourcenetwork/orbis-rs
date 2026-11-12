@@ -50,6 +50,11 @@ pub struct UnauthorizedRequestObservation {
     pub accused_peer_id: String,
     pub observed_at: u64,
     pub payload: UnauthorizedRequestPayload,
+    /// The offline-verifiable ACP evidence bundle `Authz::capture_evidence` produced for the
+    /// exact permission/subject this responder's re-check used. In-memory only — it rides to
+    /// co-signers via `ReportSigningContext`, never the threshold-signed envelope, same reasoning
+    /// as `inline_document` below (format/size varies by backend, not worth persisting on chain).
+    pub checked_at_evidence: Vec<u8>,
     /// This responder's own view of the request's inline document, when the relayed PRE request
     /// carried its document inline (`payload.statement.document_inline`). In-memory only — it
     /// rides to co-signers via `ReportSigningContext`, never the threshold-signed envelope.

@@ -1,16 +1,19 @@
 //! Certified authorization with exact revision anchors and bounded freshness.
 
-use crate::{error::Result as AuthzResult, r#trait::Authz, request::AccessCheckRequest};
+use crate::{
+    error::Result as AuthzResult, r#trait::Authz, r#trait::VerifiedEvidence,
+    request::AccessCheckRequest,
+};
 use async_trait::async_trait;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use vera_client::{
-    AccessRequest, Actor, ModuleId, Object, Operation, VeraClient, PERMISSION_LIMITS,
-    RECORD_PROOF_BYTES,
+    AccessRequest, Actor, ClientError, Object, Operation, PermissionResponse, VeraClient,
+    PERMISSION_LIMITS,
 };
-use vera_domain::{ConsensusPublicKey, LightBlock};
+use vera_domain::ConsensusPublicKey;
 
 pub mod error;
 #[cfg(feature = "startup")]
@@ -20,7 +23,6 @@ pub use error::Error;
 pub struct NativeAuth {
     client: VeraClient,
     trusted: ConsensusPublicKey,
-    root: String,
     minimum: AtomicU64,
     maximum_age: u64,
 }
@@ -59,7 +61,6 @@ impl NativeAuth {
         Ok(Self {
             client,
             trusted,
-            root,
             minimum: AtomicU64::new(1),
             maximum_age,
         })
@@ -73,36 +74,6 @@ impl NativeAuth {
         self.minimum.fetch_max(height, Ordering::AcqRel);
         Ok(())
     }
-
-    fn anchor(&self, revision: &LightBlock) -> String {
-        format!(
-            "{}:{}:{}",
-            self.root,
-            revision.height,
-            revision
-                .block_hash
-                .strip_prefix("0x")
-                .unwrap_or(&revision.block_hash)
-        )
-    }
-
-    async fn revision(&self, anchor: &str) -> Result<LightBlock, Error> {
-        let (height, hash) = parse_anchor(&self.root, anchor)?;
-        let revision = self
-            .client
-            .read_finalized_revision(height, &self.trusted)
-            .await
-            .map_err(Error::ReadRevision)?;
-        if revision
-            .block_hash
-            .strip_prefix("0x")
-            .unwrap_or(&revision.block_hash)
-            != hash
-        {
-            return Err(Error::AnchorMismatch);
-        }
-        Ok(revision)
-    }
 }
 
 fn check_freshness(timestamp: u64, now: u64, maximum_age: u64) -> Result<(), Error> {
@@ -110,31 +81,6 @@ fn check_freshness(timestamp: u64, now: u64, maximum_age: u64) -> Result<(), Err
         return Err(Error::StaleEvidence);
     }
     Ok(())
-}
-
-fn parse_anchor<'a>(root: &str, anchor: &'a str) -> Result<(u64, &'a str), Error> {
-    if anchor.len() > 160 {
-        return Err(Error::AnchorTooLarge);
-    }
-    let mut fields = anchor.split(':');
-    let (Some(deployment), Some(height), Some(hash)) =
-        (fields.next(), fields.next(), fields.next())
-    else {
-        return Err(Error::InvalidAnchor);
-    };
-    let number: u64 = height.parse().map_err(Error::AnchorHeight)?;
-    if deployment != root
-        || number == 0
-        || number.to_string() != height
-        || fields.next().is_some()
-        || hash.len() != 64
-        || !hash
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(Error::InvalidAnchor);
-    }
-    Ok((number, hash))
 }
 
 fn request(bytes: &[u8], subject: &str) -> Result<Option<(String, AccessRequest)>, Error> {
@@ -192,50 +138,62 @@ impl Authz for NativeAuth {
         self.observe(requested_minimum, revision.height, revision.timestamp)?;
         Ok(allowed)
     }
-    async fn check_at(
-        &self,
-        permission: Vec<u8>,
-        subject: &str,
-        anchor: &str,
-    ) -> AuthzResult<bool> {
+
+    async fn capture_evidence(&self, permission: Vec<u8>, subject: &str) -> AuthzResult<Vec<u8>> {
         let Some((policy, request)) = request(&permission, subject)? else {
-            return Ok(false);
+            return Err(Error::RequestOutsideWindow.into());
         };
-        let revision = self.revision(anchor).await?;
-        Ok(self
-            .client
-            .verify_access_at(
-                &policy,
-                &request,
-                &revision,
-                &self.trusted,
-                PERMISSION_LIMITS,
-            )
-            .await
-            .map_err(Error::VerifyAnchoredAccess)?)
-    }
-    async fn current_anchor(&self) -> AuthzResult<String> {
         let requested_minimum = self.minimum.load(Ordering::Acquire);
         let response = self
             .client
-            .read_current_record(
-                ModuleId::Vera,
-                b"orbis/authz/anchor/v1",
+            .current_permission_response(&policy, &request, requested_minimum, PERMISSION_LIMITS)
+            .await
+            .map_err(Error::CaptureEvidence)?;
+        // Verify locally right away, same as `check` does via `verify_current_access` --
+        // a bad RPC response fails fast here rather than being deferred to validate time.
+        response
+            .verify(
+                &policy,
+                &request,
                 requested_minimum,
                 &self.trusted,
-                RECORD_PROOF_BYTES,
+                PERMISSION_LIMITS,
             )
-            .await
-            .map_err(Error::ReadCurrentAnchor)?;
+            .map_err(ClientError::from)
+            .map_err(Error::VerifyEvidence)?;
         self.observe(
             requested_minimum,
             response.revision.height,
             response.revision.timestamp,
         )?;
-        Ok(self.anchor(&response.revision))
+        Ok(serde_json::to_vec(&response).map_err(Error::EvidenceEncode)?)
     }
-    async fn anchor_time(&self, anchor: &str) -> AuthzResult<u64> {
-        Ok(self.revision(anchor).await?.timestamp)
+
+    async fn verify_evidence(
+        &self,
+        evidence: &[u8],
+        permission: Vec<u8>,
+        subject: &str,
+    ) -> AuthzResult<VerifiedEvidence> {
+        if evidence.len() > 64 << 10 {
+            return Err(Error::EvidenceTooLarge.into());
+        }
+        let Some((policy, request)) = request(&permission, subject)? else {
+            return Ok(VerifiedEvidence {
+                captured_at: 0,
+                allowed: false,
+            });
+        };
+        let response: PermissionResponse =
+            serde_json::from_slice(evidence).map_err(Error::EvidenceDecode)?;
+        let allowed = response
+            .verify(&policy, &request, 0, &self.trusted, PERMISSION_LIMITS)
+            .map_err(ClientError::from)
+            .map_err(Error::VerifyEvidence)?;
+        Ok(VerifiedEvidence {
+            captured_at: response.revision.timestamp,
+            allowed,
+        })
     }
 }
 
@@ -283,7 +241,6 @@ mod tests {
         let auth = NativeAuth {
             client: VeraClient::new("http://127.0.0.1:1"),
             trusted: *keys.epoch_info().output.public().public(),
-            root: "11".repeat(32),
             minimum: AtomicU64::new(5),
             maximum_age: 30,
         };
@@ -299,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn native_authorization_rejects_ambiguous_windows_and_revision_anchors() {
+    fn native_authorization_rejects_ambiguous_windows() {
         let mut permission = AccessCheckRequest::new(
             "11".repeat(32),
             "document".into(),
@@ -322,20 +279,6 @@ mod tests {
         assert!(request(&permission.to_bytes().unwrap(), "did:key:reader")
             .unwrap()
             .is_some());
-        let root = "11".repeat(32);
-        let hash = "22".repeat(32);
-        assert_eq!(
-            parse_anchor(&root, &format!("{root}:42:{hash}")).unwrap(),
-            (42, hash.as_str())
-        );
-        for anchor in [
-            format!("{root}:0:{hash}"),
-            format!("{root}:042:{hash}"),
-            format!("{root}:42:{hash}:x"),
-            format!("{hash}:42:{hash}"),
-        ] {
-            assert!(parse_anchor(&root, &anchor).is_err());
-        }
         assert!(check_freshness(70, 100, 30).is_ok());
         assert!(check_freshness(69, 100, 30).is_err());
         assert!(check_freshness(115, 100, 30).is_ok());

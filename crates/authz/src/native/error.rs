@@ -1,6 +1,5 @@
 //! Errors from certified native authorization and its request boundaries.
 
-use std::{num::ParseIntError, time::SystemTimeError};
 use vera_client::ClientError;
 
 #[derive(Debug, thiserror::Error)]
@@ -12,21 +11,11 @@ pub enum Error {
     #[error("consensus proof does not bind the configured deployment")]
     DeploymentMismatch,
     #[error("system clock is before the Unix epoch: {0}")]
-    Clock(#[source] SystemTimeError),
+    Clock(#[source] std::time::SystemTimeError),
     #[error("authorization revision regressed")]
     RevisionRegressed,
-    #[error("failed to read an anchored revision: {0}")]
-    ReadRevision(#[source] ClientError),
-    #[error("anchor does not match certified revision")]
-    AnchorMismatch,
     #[error("authorization evidence is stale or from the future")]
     StaleEvidence,
-    #[error("oversized revision anchor")]
-    AnchorTooLarge,
-    #[error("invalid revision anchor")]
-    InvalidAnchor,
-    #[error("invalid revision anchor height: {0}")]
-    AnchorHeight(#[source] ParseIntError),
     #[error("authorization request exceeds byte limit")]
     RequestTooLarge,
     #[error("failed to decode the authorization request: {0}")]
@@ -35,14 +24,22 @@ pub enum Error {
     InvalidWindow,
     #[error("timestamp and validity window must be provided together")]
     IncompleteWindow,
+    #[error("request timestamp is outside its validity window")]
+    RequestOutsideWindow,
     #[error("invalid authorization subject: {0}")]
     Subject(#[source] vera_identity::Error),
     #[error("failed to verify current access: {0}")]
     VerifyCurrentAccess(#[source] ClientError),
-    #[error("failed to verify anchored access: {0}")]
-    VerifyAnchoredAccess(#[source] ClientError),
-    #[error("failed to read the current authorization anchor: {0}")]
-    ReadCurrentAnchor(#[source] ClientError),
+    #[error("failed to capture current evidence: {0}")]
+    CaptureEvidence(#[source] ClientError),
+    #[error("failed to verify captured evidence: {0}")]
+    VerifyEvidence(#[source] ClientError),
+    #[error("captured evidence exceeds byte limit")]
+    EvidenceTooLarge,
+    #[error("failed to decode captured evidence: {0}")]
+    EvidenceDecode(#[source] serde_json::Error),
+    #[error("failed to encode captured evidence: {0}")]
+    EvidenceEncode(#[source] serde_json::Error),
 }
 
 #[cfg(test)]
@@ -65,14 +62,10 @@ mod tests {
             .unwrap();
         assert!(matches!(client, ClientError::ClientCapacityExhausted));
 
-        let source = "not-a-height".parse::<u64>().unwrap_err();
-        let error = Error::AnchorHeight(source);
-        assert!(error.source().unwrap().is::<ParseIntError>());
-
         let source = UNIX_EPOCH
             .duration_since(UNIX_EPOCH + Duration::from_secs(1))
             .unwrap_err();
         let error = Error::Clock(source);
-        assert!(error.source().unwrap().is::<SystemTimeError>());
+        assert!(error.source().unwrap().is::<std::time::SystemTimeError>());
     }
 }

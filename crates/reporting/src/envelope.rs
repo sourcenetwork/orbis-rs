@@ -132,6 +132,13 @@ impl ReportEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportSigningContext {
     pub envelope: ReportEnvelope,
+    /// Out-of-band ACP evidence for an `unauthorized_request` report — the bundle
+    /// `Authz::capture_evidence` produced at relay-observation time, which a co-signer verifies
+    /// via `Authz::verify_evidence`. Carried here rather than in the threshold-signed, on-chain
+    /// envelope so a self-contained proof bundle (potentially much larger than the old opaque
+    /// anchor string) is never persisted on chain. `None` for every other report type.
+    #[serde(default)]
+    pub checked_at_evidence: Option<Vec<u8>>,
     /// Out-of-band evidence for a report whose PRE request carried its document inline (the
     /// statement's `document_inline` is set). Carried here rather than in the threshold-signed,
     /// on-chain envelope so the document ciphertext is never persisted on chain — co-signers use

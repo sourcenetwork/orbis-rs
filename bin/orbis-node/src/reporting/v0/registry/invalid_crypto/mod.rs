@@ -69,6 +69,7 @@ impl ReportHandler for InvalidCryptoResponseHandler {
             signing_options: self.signing_options(&envelope),
             envelope,
             ring_config,
+            checked_at_evidence: None,
             inline_document: observation.inline_document,
             pet_blind_context: observation.pet_blind_context,
             pet_blind_certificate: observation.pet_blind_certificate,

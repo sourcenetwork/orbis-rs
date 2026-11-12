@@ -132,15 +132,17 @@ impl RelayRequestStatement {
     }
 }
 
-/// The full `unauthorized_request` report payload: the relayer's signed statement, its signature
-/// over `statement.canonical_bytes()`, and the **opaque anchor** the acceptor captured when it saw
-/// the failure (`Authz::current_anchor()` — a block height, timestamp, … depending on backend). The
-/// refutation re-runs ACP at this anchor and bounds `Authz::anchor_time(anchor) ≈ statement.signed_at`.
+/// The full `unauthorized_request` report payload: the relayer's signed statement and its
+/// signature over `statement.canonical_bytes()`. The acceptor's captured ACP evidence
+/// (`Authz::capture_evidence`) travels out-of-band in `ReportSigningContext`, not here — it's a
+/// self-contained, offline-verifiable bundle that can be sized well beyond what's worth persisting
+/// on chain, same reasoning as `ReportedDocumentEvidence`. The refutation verifies that bundle via
+/// `Authz::verify_evidence`, which also returns the bundle's own authenticated capture time, bound
+/// to `statement.signed_at`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnauthorizedRequestPayload {
     pub statement: RelayRequestStatement,
     pub relay_signature: Vec<u8>,
-    pub checked_at_anchor: String,
 }
 
 impl UnauthorizedRequestPayload {
@@ -148,7 +150,6 @@ impl UnauthorizedRequestPayload {
         let mut out = Vec::new();
         write_bytes(&mut out, &self.statement.canonical_bytes());
         write_bytes(&mut out, &self.relay_signature);
-        write_string(&mut out, &self.checked_at_anchor);
         out
     }
 
@@ -156,12 +157,10 @@ impl UnauthorizedRequestPayload {
         let mut decoder = Decoder::new(bytes);
         let statement_bytes = decoder.read_bytes("statement")?;
         let relay_signature = decoder.read_bytes("relay_signature")?;
-        let checked_at_anchor = decoder.read_string("checked_at_anchor")?;
         decoder.finish()?;
         Ok(Self {
             statement: RelayRequestStatement::from_canonical_bytes(&statement_bytes)?,
             relay_signature,
-            checked_at_anchor,
         })
     }
 }

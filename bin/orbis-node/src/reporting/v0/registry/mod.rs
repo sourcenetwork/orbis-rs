@@ -78,12 +78,18 @@ pub struct ReportValidationContext {
     pub network: Arc<dyn Network>,
     pub peer_connection_pool: Arc<PeerConnectionPool>,
     pub bulletin: Arc<dyn Bulletin + Send + Sync>,
-    /// Used by the `unauthorized_request` refutation to re-run the ACP check at the anchored height.
+    /// Used by the `unauthorized_request` refutation to verify the captured ACP evidence bundle.
     pub authz: Arc<dyn Authz + Send + Sync>,
     pub local_storage: LocalStorageImpl,
     pub routes: &'static network::ProtocolRoutes,
     pub now: u64,
     pub mode: ReportValidationMode,
+    /// Out-of-band ACP evidence for an `unauthorized_request` report, captured by
+    /// `Authz::capture_evidence` at relay-observation time — supplied by the reporter's own
+    /// observation, or by `ReportSigningContext` when validating as an independent co-signer.
+    /// `require_relayed_request_unauthorized` verifies it via `Authz::verify_evidence`. `None` for
+    /// every other report type.
+    pub checked_at_evidence: Option<Vec<u8>>,
     /// Out-of-band inline-document evidence for a PRE report whose statement has `document_inline`
     /// set — supplied by the reporter's own observation, or by `ReportSigningContext` when
     /// validating as an independent co-signer. The PRE refutations
@@ -110,6 +116,9 @@ pub struct PreparedReport {
     pub envelope: ReportEnvelope,
     pub ring_config: RingConfig,
     pub signing_options: SigningOptions,
+    /// Out-of-band ACP evidence to carry into `ReportSigningContext` (and this reporter's own
+    /// local validation). `None` for every report except `unauthorized_request`.
+    pub checked_at_evidence: Option<Vec<u8>>,
     /// Out-of-band inline-document evidence to carry into `ReportSigningContext` (and this
     /// reporter's own local validation). `None` for every report except a PRE one whose request
     /// carried its document inline.

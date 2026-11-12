@@ -80,7 +80,6 @@ fn unauthorized_request_payload_round_trips() {
     let payload = UnauthorizedRequestPayload {
         statement: relay_request_statement(),
         relay_signature: vec![7; 64],
-        checked_at_anchor: "42000".to_string(),
     };
     assert_eq!(
         UnauthorizedRequestPayload::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
