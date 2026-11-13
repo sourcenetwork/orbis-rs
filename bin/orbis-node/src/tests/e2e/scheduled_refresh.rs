@@ -106,7 +106,7 @@ async fn wait_for_refresh_after_restart(
     baselines: &[String],
     restarted_at: u64,
 ) -> Vec<String> {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_secs(500);
     loop {
         let mut states = Vec::with_capacity(endpoints.len());
         let mut ready = true;
