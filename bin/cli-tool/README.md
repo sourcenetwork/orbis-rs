@@ -5,7 +5,8 @@
 `vera-admin` manages native participant nodes and threshold rings.
 
 Build the operator tool with `cargo build -p cli-tool --features native --bin vera-admin`.
-It accepts the same `--vera-config` trust file as `orbis-node`. Its worker identity
+Its trust file is the same shape as the `bulletin` section of orbis-node's
+`--services-config`. Its worker identity
 and pending request live in a separate operator directory; the worker key uses the
 existing encrypted local store. Supply its password through `--password-file` or
 `ORBIS_PASSWORD_FILE`.

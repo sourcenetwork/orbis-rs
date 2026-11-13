@@ -22,7 +22,8 @@ use zeroize::Zeroizing;
 #[derive(Parser)]
 #[command(about = "Native Vera node and ring administration with certified results")]
 struct Args {
-    /// Deployment trust file, also accepted by orbis-node --vera-config.
+    /// Deployment trust file — the same shape as the `bulletin` section of
+    /// orbis-node's `--services-config`.
     #[arg(long)]
     vera_config: PathBuf,
     /// Private operator directory, separate from running node storage.
