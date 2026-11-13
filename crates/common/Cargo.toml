@@ -68,8 +68,6 @@ native = [
     "dep:local-storage",
     "dep:zeroize",
 ]
-bls12-381 = []
-jubjub = []
 # StartupProgress/PrepareContext shared by the `authz`/`bulletin` factory traits.
 startup = ["dep:local-storage"]
 # Explicit devnet funding capability. This is orthogonal to the transport:
