@@ -100,35 +100,68 @@ pub(super) fn localhost_url(port: u16) -> String {
 #[cfg(any(feature = "cosmos", feature = "native"))]
 pub(super) fn report_compose_failure(compose_file: &str, project_name: &str) {
     eprintln!("Docker Compose diagnostics for project {project_name}:");
-    let _ = compose_command(compose_file, project_name)
-        .args(["ps", "--all"])
-        .status();
+    let _ = diagnostic_output(
+        "docker compose ps",
+        compose_command(compose_file, project_name).args(["ps", "--all"]),
+    );
 
-    if let Ok(output) = compose_command(compose_file, project_name)
-        .args(["ps", "--all", "--quiet"])
-        .output()
-    {
+    if let Some(output) = diagnostic_output(
+        "docker compose ps --quiet",
+        compose_command(compose_file, project_name).args(["ps", "--all", "--quiet"]),
+    ) {
         let container_ids: Vec<&str> = std::str::from_utf8(&output.stdout)
             .unwrap_or_default()
             .lines()
             .filter(|line| !line.is_empty())
             .collect();
-        if !container_ids.is_empty() {
-            let _ = Command::new("docker")
-                .args([
-                    "inspect",
-                    "--format",
-                    "{{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}} oom={{.State.OOMKilled}}",
-                ])
-                .args(container_ids)
-                .status();
+        if container_ids.is_empty() {
+            eprintln!("No containers found for project {project_name}");
+        } else {
+            let _ = diagnostic_output(
+                "docker inspect",
+                Command::new("docker")
+                    .args([
+                        "inspect",
+                        "--format",
+                        "{{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} restart={{.RestartCount}} oom={{.State.OOMKilled}}",
+                    ])
+                    .args(container_ids),
+            );
         }
     }
 
     eprintln!("Recent container logs:");
-    let _ = compose_command(compose_file, project_name)
-        .args(["logs", "--no-color", "--tail", "200"])
-        .status();
+    let _ = diagnostic_output(
+        "docker compose logs",
+        compose_command(compose_file, project_name).args(["logs", "--no-color", "--tail", "200"]),
+    );
+}
+
+/// Re-emit child output on the test thread so libtest captures it alongside
+/// the failure. A failed diagnostic must remain visible without hiding the
+/// original panic or preventing the remaining diagnostics and cleanup.
+#[cfg(any(feature = "cosmos", feature = "native"))]
+fn diagnostic_output(label: &str, command: &mut Command) -> Option<std::process::Output> {
+    match command.output() {
+        Ok(output) => {
+            if !output.stdout.is_empty() {
+                eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+            }
+            if !output.stderr.is_empty() {
+                eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+            if output.status.success() {
+                Some(output)
+            } else {
+                eprintln!("{label} exited with {}", output.status);
+                None
+            }
+        }
+        Err(error) => {
+            eprintln!("Failed to run {label}: {error}");
+            None
+        }
+    }
 }
 
 #[cfg(any(feature = "cosmos", feature = "native"))]
