@@ -5,13 +5,6 @@ Orbis and Vera. The crate provides deterministic encodings and digests for
 reports and protocol evidence, including DKG, signing, proxy re-encryption,
 and private equality tests.
 
-Add it to a Rust project with:
-
-```toml
-[dependencies]
-orbis-reporting = "0.0.3"
-```
-
 `ReportEnvelope::canonical_bytes` produces the representation used for signing.
 `ReportEnvelope::validate_shape` checks the envelope's fields and validity
 window. Shape validation does not authenticate a report or verify its evidence;
