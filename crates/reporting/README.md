@@ -9,7 +9,7 @@ Add it to a Rust project with:
 
 ```toml
 [dependencies]
-orbis-reporting = "0.0.2"
+orbis-reporting = "0.0.3"
 ```
 
 `ReportEnvelope::canonical_bytes` produces the representation used for signing.
