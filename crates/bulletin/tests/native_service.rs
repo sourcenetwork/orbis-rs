@@ -1,7 +1,7 @@
 use alloy_primitives::{Bytes, B256};
 use alloy_sol_types::SolCall;
 use bulletin::{
-    native::{NativeBulletin, NativeVeraClient},
+    native::{NativeBulletin, NativeVeraClient, NativeVeraClientExt},
     r#trait::{
         Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, KeyDerivation, NodeInfo,
         RingCancellationPayload, RingFinalizationPayload, RingPayload,

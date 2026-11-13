@@ -32,6 +32,7 @@ local-storage = { path = "../local-storage", optional = true, default-features =
 # Blockchain / native (Commonware / vera.rs)
 vera-client = { workspace = true, optional = true }
 vera-domain = { workspace = true, optional = true }
+vera-crypto = { workspace = true, optional = true }
 url = { version = "2.5", optional = true }
 alloy-primitives = { version = "1", optional = true }
 commonware-codec = { version = "=2026.10.0", optional = true }
@@ -62,6 +63,7 @@ cosmos = [
 native = [
     "dep:vera-client",
     "dep:vera-domain",
+    "dep:vera-crypto",
     "dep:url",
     "dep:alloy-primitives",
     "dep:commonware-codec",

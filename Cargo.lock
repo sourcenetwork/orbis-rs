@@ -2361,6 +2361,7 @@ dependencies = [
  "tonic",
  "url",
  "vera-client",
+ "vera-crypto 0.1.2",
  "vera-domain 0.1.2",
  "vera-harness",
  "zeroize",

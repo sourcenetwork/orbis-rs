@@ -1,4 +1,9 @@
 //! Native threshold metadata with durable submission and certified reads.
+//!
+//! The raw client (`NativeVeraClient`), its journal, and generic
+//! transaction/read mechanics live in `common::blockchain::native` — shared
+//! with `authz::native`. [`NativeVeraClientExt`] layers the bulletin-trait-
+//! type conversions on top, since those wire shapes are bulletin-specific.
 
 mod backend;
 #[cfg(all(feature = "unsafe-testing", feature = "select-native"))]
@@ -10,34 +15,25 @@ mod reshare_tests;
 #[cfg(feature = "startup")]
 pub mod startup;
 pub use backend::NativeBulletin;
-pub use common::blockchain::native::{NativeChainConfig, NativeConfig};
+pub use common::blockchain::native::{
+    decode_node_signing_key, NativeChainConfig, NativeConfig, NativeVeraClient,
+};
 
-use std::path::Path;
-
-use alloy_primitives::{Bytes, B256};
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-#[cfg(test)]
-use local_storage::redb::RedbStorage;
-use vera_client::Secp256k1SigningKey as SigningKey;
+use alloy_primitives::B256;
 use vera_client::{
-    nodes::{encode_node_request, sign_node_request, NodeRead, NodeRequest},
     threshold_objects::{
         encode_threshold_object, EncryptedDocument, KeyDerivation, ThresholdObject,
     },
-    ClientError, ExecutionReceipt, NativeWorker, VeraClient, VERA_ADDRESS,
+    ClientError, VeraClient,
 };
-use vera_domain::{ConsensusPublicKey, NativeTx};
-use zeroize::Zeroizing;
+use vera_domain::ConsensusPublicKey;
 
 use crate::r#trait::{
     BulletinPost, BulletinReportSubmission, DemeritConfig, DocumentPayload, NodeInfo,
     ReportingConfig, RingFinalizationStatus, RingPayload, UpgradeInfo,
 };
 pub use vera_client::nodes::{NodeCommand, NodeTarget};
-use vera_client::rings::{
-    encode_ring_command, encode_ring_participant_request, encode_ring_report, encode_ring_reshare,
-    sign_ring_participant_request, RingRead, RingRecord, RingState,
-};
+use vera_client::rings::{encode_ring_report, RingRecord, RingState};
 pub use vera_client::rings::{
     ReshareTarget, RingCommand, RingConfig, RingParticipantCommand, RingParticipantRequest,
     RingPublicKeys, RingReshareRequest, RingSettings, RingUpdate, ScheduledUpgrade,
@@ -45,69 +41,92 @@ pub use vera_client::rings::{
 };
 pub use vera_client::threshold_objects::ObjectKind;
 
-/// Native service client backed by an encrypted worker key and durable submission journal.
-/// Prepare, submit and confirm are separate so an uncertain response never allocates a new request.
-pub struct NativeVeraClient {
-    client: VeraClient,
-    trusted: ConsensusPublicKey,
-    deployment_root: [u8; 32],
-    authority: SigningKey,
-    worker: NativeWorker,
+/// Test-only imports, grouped here instead of as individually `#[cfg(test)]`-
+/// attributed `use` lines above — needed at this module's level (not just by
+/// `tests` below) because `backend`, `pet_tests`, and `reshare_tests` reach
+/// them through their own `use super::*;`.
+#[cfg(test)]
+mod test_imports {
+    pub(super) use alloy_primitives::Bytes;
+    pub(super) use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+    pub(super) use local_storage::redb::RedbStorage;
+    pub(super) use vera_client::rings::{
+        encode_ring_participant_request, sign_ring_participant_request,
+    };
+    pub(super) use vera_client::Secp256k1SigningKey as SigningKey;
+    pub(super) use zeroize::Zeroizing;
 }
+#[cfg(test)]
+use test_imports::*;
 
-/// Decode the hex signing key stored by node startup.
-pub fn decode_node_signing_key(bytes: &[u8]) -> Result<SigningKey, ClientError> {
-    let encoded = std::str::from_utf8(bytes)
-        .map_err(|_| ClientError::Signing("invalid node signing key encoding".into()))?;
-    if encoded.len() != 64 {
-        return Err(ClientError::Signing(
-            "invalid node signing key length".into(),
-        ));
-    }
-    let decoded = Zeroizing::new(
-        hex::decode(encoded)
-            .map_err(|_| ClientError::Signing("invalid node signing key encoding".into()))?,
-    );
-    SigningKey::from_slice(&decoded).map_err(|e| ClientError::Signing(e.to_string()))
-}
-
-impl NativeVeraClient {
-    /// Open the journal using Orbis's existing encrypted store and node signing identity.
-    /// The caller provisions the deployment root and consensus key independently of the endpoint.
-    pub fn open(
-        client: VeraClient,
-        trusted: ConsensusPublicKey,
-        deployment_root: [u8; 32],
-        deployment_id: u64,
-        directory: &Path,
-        storage: &(impl LocalStorage + ?Sized),
-    ) -> Result<Self, ClientError> {
-        let bytes = storage
-            .get_encrypted(LocalStorageKeys::NodeSigningKey)
-            .map_err(|e| ClientError::Signing(e.to_string()))?
-            .ok_or_else(|| ClientError::Signing("node signing key is missing".into()))?;
-        let authority = decode_node_signing_key(&bytes)?;
-        let worker = common::blockchain::native::open_native_worker(
-            storage,
-            directory,
-            deployment_root,
-            deployment_id,
-        )?;
-        Ok(Self {
-            client,
-            trusted,
-            deployment_root,
-            authority,
-            worker,
-        })
-    }
-
-    pub fn node_key(&self) -> String {
-        hex::encode(self.authority.verifying_key().to_sec1_bytes())
-    }
-
+/// Bulletin-trait-type conversions layered over the generic native client —
+/// these exist because bulletin's own types (`NodeInfo`, `DocumentPayload`,
+/// `KeyDerivation`, `BulletinReportSubmission`, `BulletinPost`) differ from
+/// `vera_client`'s wire shapes. The underlying journal/transaction mechanics
+/// live in `common::blockchain::native::NativeVeraClient`; a plain extension
+/// trait (rather than a wrapper type) keeps every existing call site's
+/// method-call syntax unchanged.
+#[async_trait::async_trait]
+pub trait NativeVeraClientExt {
     /// Persist a registration before submitting anything. Allow lists are canonicalized as sets.
-    pub fn prepare_node_registration(
+    fn prepare_node_registration(
+        &mut self,
+        info: NodeInfo,
+        expires_at: u64,
+    ) -> Result<B256, ClientError>;
+
+    /// Persist an encrypted document under the actor's scoped delegation.
+    fn prepare_document(
+        &mut self,
+        document: DocumentPayload,
+        token: &str,
+    ) -> Result<B256, ClientError>;
+
+    /// Persist a signing derivation and its policy binding under scoped delegation.
+    fn prepare_key_derivation(
+        &mut self,
+        derivation: crate::r#trait::KeyDerivation,
+        token: &str,
+    ) -> Result<B256, ClientError>;
+
+    /// Persist an aggregate-signed report without changing the signed envelope.
+    fn prepare_ring_report(
+        &mut self,
+        submission: BulletinReportSubmission,
+    ) -> Result<B256, ClientError>;
+
+    /// Adapt a certified document or derivation to the payload consumed by Orbis protocols.
+    async fn read_object(
+        &self,
+        kind: ObjectKind,
+        id: &str,
+        minimum_revision: u64,
+    ) -> crate::error::Result<BulletinPost>;
+
+    /// Adapt a certified ring to the existing Orbis DKG payload.
+    async fn read_ring_info(
+        &self,
+        id: &str,
+        minimum_revision: u64,
+    ) -> crate::error::Result<BulletinPost>;
+
+    async fn ring_finalization_status(
+        &self,
+        id: &str,
+        minimum_revision: u64,
+    ) -> crate::error::Result<RingFinalizationStatus>;
+
+    /// Adapt certified metadata to the payload consumed by Orbis peer routing.
+    async fn read_node_info(
+        &self,
+        node_key: &str,
+        minimum_revision: u64,
+    ) -> crate::error::Result<BulletinPost>;
+}
+
+#[async_trait::async_trait]
+impl NativeVeraClientExt for NativeVeraClient {
+    fn prepare_node_registration(
         &mut self,
         info: NodeInfo,
         expires_at: u64,
@@ -125,109 +144,7 @@ impl NativeVeraClient {
         self.prepare_node_command(self.node_key(), 0, NodeCommand::Register(info), expires_at)
     }
 
-    /// Persist a command signed by this store's authority. Obtain the node sequence from a certified read.
-    /// A pending command can only be prepared again with identical arguments, including expiry.
-    pub fn prepare_node_command(
-        &mut self,
-        node_key: String,
-        sequence: u64,
-        command: NodeCommand,
-        expires_at: u64,
-    ) -> Result<B256, ClientError> {
-        let signed = sign_node_request(
-            NodeRequest {
-                deployment_root: self.deployment_root,
-                deployment_id: self.worker.deployment_id(),
-                node_key,
-                sequence,
-                command,
-                expires_at,
-            },
-            &self.authority,
-        )?;
-        self.prepare_call(encode_node_request(&signed)?)
-    }
-
-    fn prepare_call(&mut self, calldata: Bytes) -> Result<B256, ClientError> {
-        let wire = self.worker.prepare(VERA_ADDRESS, calldata)?;
-        Ok(NativeTx::decode_wire(wire)
-            .map_err(|e| ClientError::Signing(e.to_string()))?
-            .tx_id()
-            .0)
-    }
-
-    /// Identity to which an actor delegates native service commands.
-    pub fn worker_did(&self) -> &str {
-        self.worker.did()
-    }
-
-    /// Persist an ACP-authorized ring command before submission.
-    pub fn prepare_ring_command(
-        &mut self,
-        command: &RingCommand,
-        token: &str,
-    ) -> Result<B256, ClientError> {
-        self.prepare_call(encode_ring_command(command, token)?)
-    }
-
-    /// Persist a fresh-DKG confirmation or cancellation signed by the node identity.
-    pub fn prepare_ring_participant_request(
-        &mut self,
-        ring_id: String,
-        command: RingParticipantCommand,
-        expires_at: u64,
-    ) -> Result<B256, ClientError> {
-        let signed = sign_ring_participant_request(
-            RingParticipantRequest {
-                deployment_root: self.deployment_root,
-                deployment_id: self.worker.deployment_id(),
-                ring_id,
-                node_key: self.node_key(),
-                command,
-                expires_at,
-            },
-            &self.authority,
-        )?;
-        self.prepare_call(encode_ring_participant_request(&signed)?)
-    }
-
-    /// Deployment namespace used by the existing Orbis reshare signing document.
-    pub fn deployment_label(&self) -> String {
-        vera_client::rings::ring_deployment_label(self.deployment_root, self.worker.deployment_id())
-    }
-
-    /// Verify authorization against the selected ring state before journaling it.
-    pub fn prepare_ring_reshare(
-        &mut self,
-        record: &RingRecord,
-        scheme: ThresholdScheme,
-        signature: &[u8],
-    ) -> Result<B256, ClientError> {
-        if record.deployment_root != self.deployment_root {
-            return Err(ClientError::Signing("reshare deployment mismatch".into()));
-        }
-        let message = record
-            .reshare_signing_bytes(self.worker.deployment_id())
-            .map_err(|e| ClientError::Signing(e.to_string()))?;
-        let RingState::Active { keys } = &record.state else {
-            return Err(ClientError::Signing("ring is not active".into()));
-        };
-        let public_key =
-            hex::decode(&keys.public_key).map_err(|e| ClientError::Signing(e.to_string()))?;
-        vera_crypto::threshold::verify(scheme, &public_key, &message, signature)
-            .map_err(|e| ClientError::Signing(e.to_string()))?;
-        self.prepare_call(encode_ring_reshare(&RingReshareRequest {
-            deployment_root: self.deployment_root,
-            deployment_id: self.worker.deployment_id(),
-            ring_id: record.id.clone(),
-            expected_sequence: record.sequence,
-            scheme,
-            signature: hex::encode(signature),
-        })?)
-    }
-
-    /// Persist an encrypted document under the actor's scoped delegation.
-    pub fn prepare_document(
+    fn prepare_document(
         &mut self,
         document: DocumentPayload,
         token: &str,
@@ -236,8 +153,7 @@ impl NativeVeraClient {
         self.prepare_call(encode_threshold_object(&object, token)?)
     }
 
-    /// Persist a signing derivation and its policy binding under scoped delegation.
-    pub fn prepare_key_derivation(
+    fn prepare_key_derivation(
         &mut self,
         derivation: crate::r#trait::KeyDerivation,
         token: &str,
@@ -252,8 +168,17 @@ impl NativeVeraClient {
         self.prepare_call(encode_threshold_object(&object, token)?)
     }
 
-    /// Adapt a certified document or derivation to the payload consumed by Orbis protocols.
-    pub async fn read_object(
+    fn prepare_ring_report(
+        &mut self,
+        submission: BulletinReportSubmission,
+    ) -> Result<B256, ClientError> {
+        if submission.chain_id != self.deployment_label() {
+            return Err(ClientError::Signing("report deployment mismatch".into()));
+        }
+        self.prepare_call(encode_ring_report(&native_report(submission))?)
+    }
+
+    async fn read_object(
         &self,
         kind: ObjectKind,
         id: &str,
@@ -275,29 +200,7 @@ impl NativeVeraClient {
         object_post(record)
     }
 
-    /// Persist an aggregate-signed report without changing the signed envelope.
-    pub fn prepare_ring_report(
-        &mut self,
-        submission: BulletinReportSubmission,
-    ) -> Result<B256, ClientError> {
-        if submission.chain_id != self.deployment_label() {
-            return Err(ClientError::Signing("report deployment mismatch".into()));
-        }
-        self.prepare_call(encode_ring_report(&native_report(submission))?)
-    }
-
-    pub async fn read_ring(
-        &self,
-        id: &str,
-        minimum_revision: u64,
-    ) -> Result<RingRead, ClientError> {
-        self.client
-            .read_threshold_ring(id, minimum_revision, &self.trusted)
-            .await
-    }
-
-    /// Adapt a certified ring to the existing Orbis DKG payload.
-    pub async fn read_ring_info(
+    async fn read_ring_info(
         &self,
         id: &str,
         minimum_revision: u64,
@@ -311,7 +214,7 @@ impl NativeVeraClient {
         )
     }
 
-    pub async fn ring_finalization_status(
+    async fn ring_finalization_status(
         &self,
         id: &str,
         minimum_revision: u64,
@@ -325,75 +228,7 @@ impl NativeVeraClient {
         ring_status(&record)
     }
 
-    /// Local submission identity, also available after reopening an interrupted request.
-    pub fn pending_id(&self) -> Result<Option<B256>, ClientError> {
-        self.worker
-            .pending()
-            .map(|wire| {
-                NativeTx::decode_wire(wire)
-                    .map(|tx| tx.tx_id().0)
-                    .map_err(|e| ClientError::Signing(e.to_string()))
-            })
-            .transpose()
-    }
-
-    fn pending_call(&self) -> Result<Option<Bytes>, ClientError> {
-        self.worker
-            .pending()
-            .map(|wire| {
-                let request =
-                    NativeTx::decode_wire(wire).map_err(|e| ClientError::Worker(e.to_string()))?;
-                if request.target != VERA_ADDRESS {
-                    return Err(ClientError::Worker(
-                        "unexpected native bulletin target".into(),
-                    ));
-                }
-                Ok(request.calldata)
-            })
-            .transpose()
-    }
-
-    /// Send the exact journaled bytes. Errors retain the request for receipt lookup or resubmission.
-    pub async fn submit_pending(&self) -> Result<B256, ClientError> {
-        let expected = self
-            .pending_id()?
-            .ok_or_else(|| ClientError::Worker("no pending request".into()))?;
-        let submitted = self
-            .client
-            .send_native_tx(self.worker.pending().expect("pending request"))
-            .await?;
-        if submitted != expected {
-            return Err(ClientError::InvalidResponse(
-                "node submission identifier mismatch",
-            ));
-        }
-        Ok(expected)
-    }
-
-    /// Release the worker only with a certified receipt; inspect its success before treating a command as applied.
-    pub async fn confirm_pending(&mut self) -> Result<Option<ExecutionReceipt>, ClientError> {
-        let Some(id) = self.pending_id()? else {
-            return Ok(None);
-        };
-        let Some(proof) = self.client.read_receipt(id, &self.trusted).await? else {
-            return Ok(None);
-        };
-        self.worker.acknowledge(&proof, &self.trusted).map(Some)
-    }
-
-    /// Read a node's next command sequence and metadata from certified state.
-    pub async fn read(
-        &self,
-        node_key: &str,
-        minimum_revision: u64,
-    ) -> Result<NodeRead, ClientError> {
-        self.client
-            .read_threshold_node(node_key, minimum_revision, &self.trusted)
-            .await
-    }
-
-    /// Adapt certified metadata to the payload consumed by Orbis peer routing.
-    pub async fn read_node_info(
+    async fn read_node_info(
         &self,
         node_key: &str,
         minimum_revision: u64,
