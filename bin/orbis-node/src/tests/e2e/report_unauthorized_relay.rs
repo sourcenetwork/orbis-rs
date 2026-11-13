@@ -6,7 +6,7 @@
 //! resolution goes through `NetworkTestDriver::reporting_peer_address`.
 //! `NODE1_SIGNING_KEY_HEX`/
 //! `NODE2_SIGNING_KEY_HEX` are node1/node2's real signing keys on *both*
-//! backends now (see `crates/bulletin/src/native/integration_startup.rs`),
+//! backends now (see `crates/bulletin/src/native/fixture_startup.rs`),
 //! so forging evidence "as" them needs no backend-specific key resolution.
 //! The ring's current state (needed to build the forged relay statement)
 //! comes from `BulletinTestDriver::read_ring_state_facts`, not a

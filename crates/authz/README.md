@@ -39,7 +39,9 @@ qualification requirement.
 Requests reject unknown and duplicate fields. Timestamp/window pairing and
 inclusion retain the existing consumer behavior; tier remains metadata and does
 not select a different policy evaluator. Native node startup selects this
-implementation with `--vera-config`.
+implementation at compile time (the `authz-native` build feature); the
+node's `--services-config` `authz` section supplies its endpoint, deployment
+root and consensus key.
 
 Native failures are defined in [`native::error`](src/native/error.rs). The shared
 `AuthZError` wraps that concrete error only when `native` is enabled, preserving

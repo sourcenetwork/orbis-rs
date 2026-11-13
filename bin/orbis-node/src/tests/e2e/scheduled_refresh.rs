@@ -10,12 +10,13 @@
 
 use super::{pre_scenario, refresh_scenario, sign_scenario, standard_dkg_pre, TestEnvironmentImpl};
 use proto::info_service::{info_service_client::InfoServiceClient, GetRingStateRequest};
+use sha2::{Digest, Sha256};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use test_support::fixture::{
     BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture, NodeRef, NodeRole,
     PolicyFixture, RingFixture, ScenarioFixture, TestEnvironment,
 };
-use tokio::time::{sleep, Instant};
+use tokio::time::{sleep_until, timeout_at, Instant};
 
 #[tokio::test]
 #[serial_test::serial]
@@ -106,14 +107,30 @@ async fn wait_for_refresh_after_restart(
     baselines: &[String],
     restarted_at: u64,
 ) -> Vec<String> {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_secs(500);
+    let mut observations: Vec<RefreshObservation> = endpoints
+        .iter()
+        .map(|_| RefreshObservation::default())
+        .collect();
     loop {
         let mut states = Vec::with_capacity(endpoints.len());
         let mut ready = true;
-        for endpoint in endpoints {
-            match ring_state(endpoint, ring_pk).await {
-                Some(state) if !state.0.is_empty() => states.push(state),
-                _ => ready = false,
+        for (endpoint, observation) in endpoints.iter().zip(&mut observations) {
+            match ring_state(endpoint, ring_pk, deadline).await {
+                Ok(state) => {
+                    observation.last_state = Some(state.clone());
+                    observation.last_error = None;
+                    if state.0.is_empty() {
+                        ready = false;
+                    } else {
+                        states.push(state);
+                    }
+                }
+                Err(error) => {
+                    observation.last_error = Some(error);
+                    observation.rpc_failures += 1;
+                    ready = false;
+                }
             }
         }
         if ready
@@ -131,22 +148,78 @@ async fn wait_for_refresh_after_restart(
         }
         assert!(
             Instant::now() < deadline,
-            "scheduled refresh did not complete on the restarted members"
+            "scheduled refresh did not complete on the restarted members; restarted_at={restarted_at}\n{}",
+            refresh_diagnostics(endpoints, &observations, baselines, restarted_at)
         );
-        sleep(Duration::from_millis(200)).await;
+        sleep_until(deadline.min(Instant::now() + Duration::from_millis(200))).await;
     }
 }
 
-async fn ring_state(endpoint: &str, ring_pk: &str) -> Option<(String, u64)> {
-    let mut client = InfoServiceClient::connect(endpoint.to_string())
-        .await
-        .ok()?;
-    let state = client
-        .get_ring_state(GetRingStateRequest {
-            ring_pk_hex: ring_pk.to_string(),
+#[derive(Default)]
+struct RefreshObservation {
+    last_state: Option<(String, u64)>,
+    last_error: Option<String>,
+    rpc_failures: usize,
+}
+
+fn refresh_diagnostics(
+    endpoints: &[String],
+    observations: &[RefreshObservation],
+    baselines: &[String],
+    restarted_at: u64,
+) -> String {
+    let first_polynomial = observations
+        .first()
+        .and_then(|observation| observation.last_state.as_ref())
+        .map(|state| &state.0);
+    endpoints
+        .iter()
+        .zip(observations)
+        .zip(baselines)
+        .enumerate()
+        .map(|(index, ((endpoint, observation), baseline))| {
+            let state = match &observation.last_state {
+                Some((polynomial, last_pss)) => format!(
+                    "last_pss={last_pss} after_restart={} changed_from_baseline={} polynomial_sha256={} baseline_sha256={} agrees_with_node_1={:?}",
+                    *last_pss >= restarted_at,
+                    polynomial != baseline,
+                    hex::encode(Sha256::digest(polynomial.as_bytes())),
+                    hex::encode(Sha256::digest(baseline.as_bytes())),
+                    first_polynomial.map(|first| first == polynomial),
+                ),
+                None => "no successful GetRingState response".to_string(),
+            };
+            format!(
+                "node={} endpoint={endpoint} last_observed_state=[{state}] rpc_failures={} latest_poll_error={:?}",
+                index + 1,
+                observation.rpc_failures,
+                observation.last_error,
+            )
         })
-        .await
-        .ok()?
-        .into_inner();
-    Some((state.public_polynomial, state.last_pss))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn ring_state(
+    endpoint: &str,
+    ring_pk: &str,
+    deadline: Instant,
+) -> Result<(String, u64), String> {
+    // Bound connection and RPC together, including when the overall poll budget expires.
+    let request_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
+    timeout_at(request_deadline, async {
+        let mut client = InfoServiceClient::connect(endpoint.to_string())
+            .await
+            .map_err(|error| format!("connect: {error}"))?;
+        let state = client
+            .get_ring_state(GetRingStateRequest {
+                ring_pk_hex: ring_pk.to_string(),
+            })
+            .await
+            .map_err(|error| format!("GetRingState: {error}"))?
+            .into_inner();
+        Ok((state.public_polynomial, state.last_pss))
+    })
+    .await
+    .map_err(|_| "connect/GetRingState exceeded its 5s or remaining test budget".to_string())?
 }

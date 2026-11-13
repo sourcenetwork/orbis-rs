@@ -28,6 +28,7 @@ use common::blockchain::{
 use proto::info_service::{info_service_client::InfoServiceClient, GetNodeInfoRequest};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
+use std::sync::RwLock;
 use std::time::Duration;
 
 /// Deterministic secp256k1 node identities injected via `ORBIS_SIGNING_KEY`
@@ -309,6 +310,7 @@ async fn wait_for_node_info_on_chain(client: &VeraClient, node_key: &str) {
 pub struct CosmosTestEnvironment {
     network: CosmosNetwork,
     fixture: ProvisionedFixture,
+    reporting_peer_addresses: RwLock<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -380,14 +382,8 @@ impl TestEnvironment for CosmosTestEnvironment {
             .into_iter()
             .map(str::to_string)
             .collect();
-        let mut nodes = wait_for_nodes_ready(&endpoints).await;
-        // Ready only means gRPC is up. iroh may advertise the STUN-mapped
-        // public port. Publishing that port as `nodeN:<stun-port>` makes
-        // other containers dial a port nothing is listening on.
-        for (index, node) in nodes.iter_mut().enumerate() {
-            node.p2p_address = publishable_p2p_address(&network, index, &node.grpc_endpoint).await;
-        }
-
+        let indexed_endpoints: Vec<_> = endpoints.into_iter().enumerate().collect();
+        let nodes = publish_ready_node_routes(&network, &indexed_endpoints, None).await;
         let controller_client = VeraClient::with_signer(
             network.chain_config(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, network.chain_config())
@@ -396,26 +392,13 @@ impl TestEnvironment for CosmosTestEnvironment {
         .await
         .expect("signed chain client for fixture setup");
 
-        // Publish routes for every running node, even when the fixture has
-        // no genesis rings. A ring created later through `register_ring`
-        // still needs these routes; startup may have registered a bare peer
-        // ID or a public address that sibling containers cannot dial.
-        for (index, node) in nodes.iter().enumerate() {
-            wait_for_node_info_on_chain(&controller_client, &node.node_key).await;
-            let peer_address = CosmosNetwork::transform_p2p_address(
-                &node.p2p_address,
-                CosmosNetwork::service_name_for_node(index + 1),
-            );
-            let peer_update = controller_client
-                .orbis_update_node_peer_id(&node.node_key, &peer_address)
-                .await
-                .expect("update NodeInfo peer ID");
-            assert_eq!(
-                peer_update.code, 0,
-                "update NodeInfo peer ID tx failed: {}",
-                peer_update.log
-            );
-        }
+        let reporting_peer_addresses = RwLock::new(
+            nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| container_peer_address(index, &node.p2p_address))
+                .collect(),
+        );
 
         let mut policies: HashMap<FixtureId, PolicyId> = HashMap::new();
         let mut rings: HashMap<FixtureId, RingHandle> = HashMap::new();
@@ -495,6 +478,7 @@ impl TestEnvironment for CosmosTestEnvironment {
 
         Self {
             network,
+            reporting_peer_addresses,
             fixture: ProvisionedFixture {
                 nodes,
                 rings,
@@ -521,6 +505,25 @@ impl TestEnvironment for CosmosTestEnvironment {
 }
 
 impl CosmosTestEnvironment {
+    /// UDP ports owned by the running node inside its container. Useful for
+    /// checking that a published route still reaches the process after restart.
+    pub fn node_udp_listen_ports(&self, index: usize) -> Vec<u16> {
+        self.network
+            .container_udp_listen_ports(CosmosNetwork::service_name_for_node(index + 1))
+    }
+
+    async fn restore_node_routes(&self, indexed_endpoints: &[(usize, String)]) {
+        let nodes =
+            publish_ready_node_routes(&self.network, indexed_endpoints, Some(self.nodes())).await;
+        let mut addresses = self
+            .reporting_peer_addresses
+            .write()
+            .expect("reporting peer addresses lock");
+        for ((index, _), node) in indexed_endpoints.iter().zip(nodes) {
+            addresses[*index] = container_peer_address(*index, &node.p2p_address);
+        }
+    }
+
     async fn signed_bulletin(&self) -> VeraBulletin {
         VeraBulletin::with_signer(
             self.network.chain_config_builder(),
@@ -578,19 +581,25 @@ impl NetworkTestDriver for CosmosTestEnvironment {
     }
 
     async fn start_node(&self, index: usize) -> String {
-        self.network
-            .start_service(CosmosNetwork::service_name_for_node(index + 1))
+        let endpoint = self
+            .network
+            .start_service(CosmosNetwork::service_name_for_node(index + 1));
+        self.restore_node_routes(&[(index, endpoint.clone())]).await;
+        endpoint
     }
 
     async fn restart_nodes(&self) -> Vec<String> {
-        self.network.restart_nodes()
+        let endpoints = self.network.restart_nodes();
+        let indexed_endpoints: Vec<_> = endpoints.iter().cloned().enumerate().collect();
+        self.restore_node_routes(&indexed_endpoints).await;
+        endpoints
     }
 
     fn reporting_peer_address(&self, node_index: usize) -> String {
-        CosmosNetwork::transform_p2p_address(
-            &self.nodes()[node_index].p2p_address,
-            CosmosNetwork::service_name_for_node(node_index + 1),
-        )
+        self.reporting_peer_addresses
+            .read()
+            .expect("reporting peer addresses lock")[node_index]
+            .clone()
     }
 }
 
@@ -893,6 +902,62 @@ impl BulletinTestDriver for CosmosTestEnvironment {
             .read_node_demerits(&ring.0, node_key)
             .await
     }
+}
+
+fn container_peer_address(index: usize, address: &str) -> String {
+    CosmosNetwork::transform_p2p_address(address, CosmosNetwork::service_name_for_node(index + 1))
+}
+
+/// Provisioning and every subsequent start need the same route publication:
+/// Iroh may choose a new UDP port, while startup only verifies the existing
+/// registered peer identity and leaves its controller-owned route unchanged.
+async fn publish_ready_node_routes(
+    network: &CosmosNetwork,
+    indexed_endpoints: &[(usize, String)],
+    original_nodes: Option<&[NodeInfo]>,
+) -> Vec<NodeInfo> {
+    let endpoints: Vec<_> = indexed_endpoints
+        .iter()
+        .map(|(_, endpoint)| endpoint.clone())
+        .collect();
+    let mut nodes = wait_for_nodes_ready(&endpoints).await;
+    // Integration startup can fund a node from the controller account. Load
+    // its sequence only after all those startup transactions have completed.
+    let controller_client = VeraClient::with_signer(
+        network.chain_config(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, network.chain_config())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("signed chain client for node routes");
+    for ((index, _), node) in indexed_endpoints.iter().zip(nodes.iter_mut()) {
+        if let Some(original_nodes) = original_nodes {
+            let original = &original_nodes[*index];
+            assert_eq!(
+                node.node_key, original.node_key,
+                "restarted node identity changed"
+            );
+            assert_eq!(
+                node.peer_id, original.peer_id,
+                "restarted peer identity changed"
+            );
+        }
+        // Ready means gRPC is up. STUN may advertise a mapped public port,
+        // so discover the actual socket before publishing a container route.
+        node.p2p_address = publishable_p2p_address(network, *index, &node.grpc_endpoint).await;
+        wait_for_node_info_on_chain(&controller_client, &node.node_key).await;
+        let peer_address = container_peer_address(*index, &node.p2p_address);
+        let update = controller_client
+            .orbis_update_node_peer_id(&node.node_key, &peer_address)
+            .await
+            .expect("update NodeInfo peer route");
+        assert_eq!(
+            update.code, 0,
+            "update NodeInfo peer route tx failed: {}",
+            update.log
+        );
+    }
+    nodes
 }
 
 /// Address other containers can dial. Prefer a private bind from GetNodeInfo.

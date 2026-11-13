@@ -29,6 +29,15 @@ futures = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 local-storage = { path = "../local-storage", optional = true, default-features = false }
 
+# Blockchain / native (Commonware / vera.rs)
+vera-client = { workspace = true, optional = true }
+vera-domain = { workspace = true, optional = true }
+vera-crypto = { workspace = true, optional = true }
+url = { version = "2.5", optional = true }
+alloy-primitives = { version = "1", optional = true }
+commonware-codec = { version = "=2026.10.0", optional = true }
+zeroize = { workspace = true, optional = true }
+
 [features]
 default = ["cosmos"]
 # Chain configuration, transaction signing, and Cosmos SDK / CometBFT transport.
@@ -48,17 +57,32 @@ cosmos = [
     "dep:futures",
     "dep:tokio-tungstenite",
 ]
-bls12-381 = []
-jubjub = []
+# Chain configuration, deployment-trust bootstrap, and the worker-key store
+# for the native (Commonware / vera.rs) backend, shared by `authz::native`
+# and `bulletin::native`.
+native = [
+    "dep:vera-client",
+    "dep:vera-domain",
+    "dep:vera-crypto",
+    "dep:url",
+    "dep:alloy-primitives",
+    "dep:commonware-codec",
+    "dep:local-storage",
+    "dep:zeroize",
+]
 # StartupProgress/PrepareContext shared by the `authz`/`bulletin` factory traits.
 startup = ["dep:local-storage"]
 # Explicit devnet funding capability. This is orthogonal to the transport:
 # enabling it never selects Cosmos by itself.
 funding = []
+# Test-only helpers that must be `pub` (not `#[cfg(test)]`) to be reachable
+# from a dependent crate's own test suite, e.g. `blockchain::native::test_key`.
+test-helpers = []
 
 [dev-dependencies]
 rcgen = "0.14"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+vera-harness = { workspace = true }
 
 [lints]
 workspace = true

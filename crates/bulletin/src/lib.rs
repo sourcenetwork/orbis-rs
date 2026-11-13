@@ -1,6 +1,6 @@
 pub mod error;
-#[cfg(all(feature = "integration-test", feature = "select-vera"))]
-mod integration_startup;
+#[cfg(all(feature = "fixture-startup", feature = "select-vera"))]
+mod fixture_startup;
 #[cfg(feature = "native")]
 pub mod native;
 #[cfg(feature = "startup")]
@@ -11,19 +11,12 @@ pub use r#trait::{BulletinKind, BulletinWriteKind};
 #[cfg(feature = "vera")]
 pub mod vera;
 
-// In-memory mock backend. Kept out of a plain production build (no `test`
-// cfg, no opt-in feature) — see `dummy-type` below for why this is separate
-// from the `dummy` feature that selects it as `BulletinImpl`.
+// In-memory mock backend. Kept out of a plain production build unless the
+// caller explicitly requests the type for an in-process harness.
 #[cfg(any(test, feature = "dummy-type"))]
 pub mod dummy;
 
-// Enforce mutual exclusivity - only one backend can be selected
-#[cfg(all(feature = "vera", feature = "dummy"))]
-compile_error!("Features 'vera' and 'dummy' are mutually exclusive. Use --no-default-features to disable the default backend.");
-
 // Export the selected implementation
-#[cfg(feature = "dummy")]
-pub use dummy::DummyBulletin as BulletinImpl;
 #[cfg(feature = "vera")]
 pub use vera::VeraBulletin as BulletinImpl;
 
@@ -45,19 +38,15 @@ compile_error!(
     "Features 'select-native' and 'select-vera' are mutually exclusive for BulletinFactoryImpl."
 );
 
-// Gated on `unsafe-testing`, not `integration-test` -- see
-// `unsafe-testing`'s own doc comment in `Cargo.toml` for why native can't
-// reuse `integration-test` here without leaking Cosmos dependencies.
-#[cfg(all(feature = "select-native", not(feature = "unsafe-testing")))]
+#[cfg(all(feature = "select-native", not(feature = "fixture-startup")))]
 pub type BulletinFactoryImpl = native::startup::NativeBulletinFactory;
-#[cfg(all(feature = "select-native", feature = "unsafe-testing"))]
-pub type BulletinFactoryImpl = native::startup::NativeBulletinFactory<
-    native::integration_startup::IntegrationTestNativeStartup,
->;
-#[cfg(all(feature = "select-vera", not(feature = "integration-test")))]
-pub type BulletinFactoryImpl = vera::startup::VeraBulletinFactory;
-#[cfg(all(feature = "select-vera", feature = "integration-test"))]
+#[cfg(all(feature = "select-native", feature = "fixture-startup"))]
 pub type BulletinFactoryImpl =
-    vera::startup::VeraBulletinFactory<integration_startup::IntegrationTestVeraStartup>;
+    native::startup::NativeBulletinFactory<native::fixture_startup::FixtureNativeStartup>;
+#[cfg(all(feature = "select-vera", not(feature = "fixture-startup")))]
+pub type BulletinFactoryImpl = vera::startup::VeraBulletinFactory;
+#[cfg(all(feature = "select-vera", feature = "fixture-startup"))]
+pub type BulletinFactoryImpl =
+    vera::startup::VeraBulletinFactory<fixture_startup::FixtureVeraStartup>;
 
 pub mod reporting;

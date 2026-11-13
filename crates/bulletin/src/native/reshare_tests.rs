@@ -117,22 +117,18 @@ fn reshare_preparation_rejects_mismatched_state_without_journaling() {
     assert_eq!(request.signature, hex::encode(signature));
 }
 
-#[cfg(feature = "jubjub")]
 #[test]
-fn native_jubjub_reshare_uses_the_orbis_scheme_and_signature() {
-    use crypto::jubjub::common::{Element, Fr, PubPoly};
-    use crypto::jubjub::sign::{FrostNonceCommitment, FrostSigningState};
-    use crypto::r#trait::{CryptoSerialize, DistKeyShare, PriShare, ThresholdSigner};
-
-    // Reuse the unchanged upstream f1c15b0 vector shared with the Orbis signer.
+fn native_verifier_accepts_the_published_orbis_jubjub_vector() {
+    // The shared E2E reshare scenario exercises Orbis's configured signer on
+    // both curves. Keep the cross-project wire-compatibility assertion here
+    // curve-independent by checking the published Orbis FROST vector directly,
+    // without making bulletin depend on a selected crypto implementation.
     let vector: serde_json::Value = serde_json::from_str(include_str!(
         "../../../crypto/src/jubjub/test_vectors/frost.json"
     ))
     .unwrap();
-    let scheme: ThresholdScheme = serde_json::from_value(serde_json::Value::String(
-        crypto::THRESHOLD_SIGNATURE_SCHEME.into(),
-    ))
-    .expect("native Vera must accept the signature scheme emitted by Orbis");
+    let scheme: ThresholdScheme = serde_json::from_value(vector["scheme"].clone())
+        .expect("published Orbis scheme must be accepted by native Vera");
     assert_eq!(serde_json::to_value(scheme).unwrap(), vector["scheme"]);
     let vector_public_key = hex::decode(vector["public_key"].as_str().unwrap()).unwrap();
     let vector_message = hex::decode(vector["message"].as_str().unwrap()).unwrap();
@@ -144,68 +140,4 @@ fn native_jubjub_reshare_uses_the_orbis_scheme_and_signature() {
         &vector_signature,
     )
     .expect("native Vera must verify the published Orbis Jubjub vector");
-
-    // Use the vector's public test secret to sign the native reshare document
-    // through Orbis's actual FROST implementation.
-    let secret = Fr::from(7u64);
-    let public_key = Element::generator() * secret;
-    assert_eq!(public_key.to_bytes().unwrap(), vector_public_key);
-    let (root, mut writer, record) = reshare_fixture(hex::encode(&vector_public_key));
-    let message = record.reshare_signing_bytes(9001).unwrap();
-    let signer = crypto::SignImpl::new();
-    let key_share = DistKeyShare {
-        pri_share: PriShare { i: 1, v: secret },
-    };
-    let pub_poly = PubPoly {
-        commits: vec![public_key],
-    };
-    // Fixed nonces are test-only; this pair signs exactly one message.
-    let signing_state = FrostSigningState {
-        hiding_nonce: Fr::from(13u64),
-        binding_nonce: Fr::from(17u64),
-        participant_index: 1,
-    };
-    let commitments = [(
-        1,
-        FrostNonceCommitment {
-            hiding: Element::generator() * signing_state.hiding_nonce,
-            binding: Element::generator() * signing_state.binding_nonce,
-        },
-    )];
-    let share = signer
-        .sign(
-            &key_share,
-            &message,
-            &pub_poly,
-            Some(&signing_state),
-            &commitments,
-            None,
-            None,
-        )
-        .unwrap();
-    let signature = signer
-        .recover(&[share], 1, 1, &public_key, &message, &commitments)
-        .unwrap()
-        .unwrap()
-        .to_bytes()
-        .unwrap();
-
-    let journal = root.path().join("worker/state.json");
-    let before = std::fs::read(&journal).unwrap();
-    assert!(writer
-        .prepare_ring_reshare(&record, scheme, &vector_signature)
-        .is_err());
-    assert_eq!(writer.pending_id().unwrap(), None);
-    assert_eq!(std::fs::read(&journal).unwrap(), before);
-
-    let id = writer
-        .prepare_ring_reshare(&record, scheme, &signature)
-        .expect("native reshare preparation must accept Orbis Jubjub signatures");
-    assert_eq!(writer.pending_id().unwrap(), Some(id));
-    let request = vera_client::rings::decode_ring_reshare(&writer.pending_call().unwrap().unwrap())
-        .unwrap()
-        .unwrap();
-    assert_eq!(request.scheme, scheme);
-    assert_eq!(request.expected_sequence, record.sequence);
-    assert_eq!(request.signature, hex::encode(signature));
 }

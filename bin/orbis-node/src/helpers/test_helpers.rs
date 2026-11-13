@@ -21,12 +21,14 @@ pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 // `create_ring_on_chain_with_pre_share_endpoints`, was removed once
 // `CosmosAdmin::register_ring`/`RingSpec::pre_share_endpoints` grew a real
 // (not `unimplemented!()`) implementation — that's the shared path now.
-// `test` (not just the feature) is required here specifically: `test_support`
-// is a dev-dependency, available to the lib's own unit-test build but not to
-// the library test tree links against — unlike
-// most of this module (widened below), this one re-export must stay
-// invisible there.
-#[cfg(all(test, feature = "integration-test", feature = "cosmos"))]
+// Only the legacy in-process Cosmos fault-injection harness still imports
+// these compatibility re-exports. Shared E2E scenarios use the backend-neutral
+// admin adapter directly.
+#[cfg(all(
+    feature = "integration-test",
+    feature = "cosmos",
+    feature = "fault-injection"
+))]
 pub use test_support::admin::cosmos::{create_orbis_ring_policy, wait_for_ring_finalized};
 
 use crate::helpers::create_routers::{

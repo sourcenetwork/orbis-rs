@@ -381,7 +381,7 @@ class Qualification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             event = {'reason': 'compiler-artifact', 'target': {'name': 'orbis_node'},
-                     'features': ['integration-test', 'unsafe-testing', 'native', 'redb', 'iroh', 'bls12-381'], 'executable': str(root.resolve() / 'release/test')}
+                     'features': ['integration-test', 'fixture-startup', 'native', 'redb', 'iroh', 'bls12-381'], 'executable': str(root.resolve() / 'release/test')}
             path = root / 'build.jsonl'
             path.write_text(json.dumps(event) + '\n')
             self.assertEqual(driver.test_binary(path, root, 'bls12-381'), root.resolve() / 'release/test')
