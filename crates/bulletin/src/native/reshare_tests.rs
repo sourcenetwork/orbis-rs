@@ -117,6 +117,7 @@ fn reshare_preparation_rejects_mismatched_state_without_journaling() {
     assert_eq!(request.signature, hex::encode(signature));
 }
 
+#[cfg(feature = "jubjub")]
 #[test]
 fn native_jubjub_reshare_uses_the_orbis_scheme_and_signature() {
     use crypto::jubjub::common::{Element, Fr, PubPoly};

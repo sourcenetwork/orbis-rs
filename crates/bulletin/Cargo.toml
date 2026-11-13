@@ -10,6 +10,7 @@ orbis-reporting = { path = "../reporting" }
 async-trait = { workspace = true }
 thiserror ={ workspace = true }
 common = { path = "../common", default-features = false }
+crypto = { path = "../crypto", optional = true, default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -57,6 +58,16 @@ dummy = ["dummy-type"]
 # test/benchmark harness. Split from `dummy` so enabling it can't trip the
 # `vera`+`dummy` mutual-exclusivity check below.
 dummy-type = []
+# Gate `crypto` behind an explicit curve choice rather than making it an
+# unconditional (dev-)dependency: `crypto`'s `bls12-381`/`jubjub` features
+# are mutually exclusive (each defines the same helper function names for
+# its curve), so a workspace-wide build that also needs the other curve
+# elsewhere (e.g. `orbis-node`'s default `bls12-381`) would unify both
+# features onto one `crypto` build and fail with duplicate definitions.
+# `native::reshare_tests`'s JubJub-FROST test needs this; production code
+# never uses `crypto` (only `vera_crypto`).
+bls12-381 = ["dep:crypto", "crypto/bls12-381"]
+jubjub = ["dep:crypto", "crypto/jubjub"]
 # The `BulletinFactory`/`PreparedBulletin` traits, the services composer and
 # factory impls. Separate from `native`/`vera` (which just compile the
 # backend module for direct use — `cli-tool`'s admin tooling needs those
@@ -74,12 +85,6 @@ required-features = ["native"]
 
 [dev-dependencies]
 common = { path = "../common", default-features = false, features = ["test-helpers"] }
-# `native::reshare_tests` exercises JubJub-FROST specifically — the native
-# backend's actual signing scheme — not a configurable choice, so this is
-# fixed rather than toggled by a `bulletin`-level `bls12-381`/`jubjub`
-# feature. Production code never uses `crypto` (only `vera_crypto`), so this
-# only needs to exist for tests.
-crypto = { path = "../crypto", default-features = false, features = ["jubjub"] }
 alloy-sol-types = "1"
 vera-acp = { workspace = true }
 vera-modules = { workspace = true }
