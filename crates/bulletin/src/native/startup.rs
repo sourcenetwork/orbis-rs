@@ -18,7 +18,7 @@ use vera_client::VeraClient;
 use zeroize::Zeroizing;
 
 /// Selects whether a brand-new node accepts a deterministic initial signing
-/// key (integration tests) or always generates one randomly (production).
+/// key (explicit fixtures) or always generates one randomly (production).
 /// Mirrors `vera::startup::VeraStartupPolicy`'s own role for the Cosmos
 /// backend exactly — see that trait's doc comment for the rationale.
 pub trait NativeStartupPolicy: Send + 'static {

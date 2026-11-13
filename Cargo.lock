@@ -1967,7 +1967,6 @@ dependencies = [
  "blst",
  "common",
  "commonware-math",
- "crypto 0.0.1",
  "getrandom 0.2.17",
  "hex",
  "k256 0.14.0",

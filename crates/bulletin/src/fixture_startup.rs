@@ -1,11 +1,13 @@
+//! Deterministic Vera/Cosmos startup used by integration fixtures.
+
 use crate::{startup::BulletinStartupError, vera::startup::VeraStartupPolicy};
 use async_trait::async_trait;
 use common::blockchain::ChainConfigBuilder;
 
-pub struct IntegrationTestVeraStartup;
+pub struct FixtureVeraStartup;
 
 #[async_trait]
-impl VeraStartupPolicy for IntegrationTestVeraStartup {
+impl VeraStartupPolicy for FixtureVeraStartup {
     fn initial_signing_key() -> Option<String> {
         std::env::var("ORBIS_SIGNING_KEY").ok()
     }

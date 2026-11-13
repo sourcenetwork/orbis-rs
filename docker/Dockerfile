@@ -39,9 +39,9 @@ ENV CARGO_BUILD_JOBS=${BUILD_JOBS}
 # cooked dependency artifacts don't match and get rebuilt.
 RUN case "$BACKEND" in \
       cosmos) features="redb,authz-vera,bulletin-vera,iroh,${CRYPTO_FEATURE}"; \
-        if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="$features,integration-test"; fi ;; \
+        if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="$features,integration-test,unsafe-testing"; fi ;; \
       native) features="native,redb,iroh,${CRYPTO_FEATURE}"; \
-        if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="$features,unsafe-testing"; fi ;; \
+        if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="$features,fixture-startup"; fi ;; \
       *) echo 'Unsupported integration backend' >&2; exit 1 ;; \
     esac && printf '%s' "$features" > /orbis-features
 
@@ -75,7 +75,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 FROM builder AS native-diagnostic-builder
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     test "$BACKEND" = "native" && test "$ENABLE_INTEGRATION_TEST" = "false" && \
-    features="$(cat /orbis-features),unsafe-testing" && \
+    features="$(cat /orbis-features),fixture-startup,unsafe-testing" && \
     cargo build --release --locked -p orbis-node --bin orbis-node --no-default-features --features "$features" && \
     cargo tree --locked -p orbis-node --no-default-features --features "$features" \
       --edges normal,build --prefix none > /native-diagnostic-dependencies.txt && \

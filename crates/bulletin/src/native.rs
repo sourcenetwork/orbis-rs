@@ -6,8 +6,8 @@
 //! type conversions on top, since those wire shapes are bulletin-specific.
 
 mod backend;
-#[cfg(all(feature = "unsafe-testing", feature = "select-native"))]
-pub mod integration_startup;
+#[cfg(all(feature = "fixture-startup", feature = "select-native"))]
+pub mod fixture_startup;
 #[cfg(test)]
 mod pet_tests;
 #[cfg(test)]

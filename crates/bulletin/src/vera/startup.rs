@@ -13,7 +13,7 @@ use std::{marker::PhantomData, path::Path, sync::Arc};
 
 /// Minimum account balance the node waits for before registering itself.
 /// Also the threshold the devnet-only startup policy tops
-/// an account up to, so a brand-new integration-test node isn't stuck
+/// an account up to, so a brand-new fixture node isn't stuck
 /// waiting on a balance nothing will ever supply. Exposed for test harnesses
 /// that construct a `VeraBulletin` directly (bypassing this factory) and
 /// need the same threshold.

@@ -221,7 +221,6 @@ pub(super) fn bring_up_orbis_nodes(
     reshare_interval_secs: u32,
     enable_unsafe_testing: bool,
 ) -> Vec<String> {
-    assert!(!enable_unsafe_testing || cfg!(feature = "unsafe-testing"));
     let chain_endpoint = format!(
         "http://{}:{}",
         cluster.validator_service(0),

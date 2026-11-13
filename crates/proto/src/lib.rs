@@ -2,6 +2,7 @@ pub mod info_service {
     tonic::include_proto!("orbis.v0.info_service");
 }
 
+#[cfg(feature = "unsafe-testing")]
 pub mod unsafe_testing {
     tonic::include_proto!("orbis.unsafe_testing");
 }

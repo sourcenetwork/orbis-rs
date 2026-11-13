@@ -40,8 +40,8 @@ required-features = ["native"]
 [features]
 native = ["bulletin/native", "common/native", "dep:alloy-primitives", "dep:vera-client", "dep:vera-domain", "dep:local-storage", "dep:zeroize"]
 default = ["bls12-381"]
-bls12-381 = ["crypto/bls12-381", "bulletin/bls12-381", "pre-share/bls12-381"]
-jubjub = ["crypto/jubjub", "bulletin/jubjub", "pre-share/jubjub"]
+bls12-381 = ["crypto/bls12-381", "pre-share/bls12-381"]
+jubjub = ["crypto/jubjub", "pre-share/jubjub"]
 
 [[test]]
 name = "native_admin"
