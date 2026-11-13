@@ -7,7 +7,7 @@ use crate::{
     startup::{AuthzFactory, AuthzStartupError, PreparedAuthz},
 };
 use async_trait::async_trait;
-use common::blockchain::native::{NativeChainConfig, NativeConfig};
+use common::blockchain::native::{NativeTrustChainConfig, NativeTrustConfig};
 use common::startup::{PrepareContext, StartupProgress};
 use std::sync::Arc;
 use vera_client::VeraClient;
@@ -16,12 +16,13 @@ pub struct NativeAuthzFactory;
 
 impl AuthzFactory for NativeAuthzFactory {
     const NAME: &'static str = "authz/native";
-    type Config = NativeChainConfig;
-    type ValidatedConfig = NativeConfig;
+    type Config = NativeTrustChainConfig;
+    type ValidatedConfig = NativeTrustConfig;
     type Prepared = PreparedNativeAuthz;
 
     fn validate(config: Self::Config) -> Result<Self::ValidatedConfig, AuthzStartupError> {
-        NativeConfig::try_from(config).map_err(|e| AuthzStartupError::Configuration(e.to_string()))
+        NativeTrustConfig::try_from(config)
+            .map_err(|e| AuthzStartupError::Configuration(e.to_string()))
     }
 
     fn prepare(
@@ -33,7 +34,7 @@ impl AuthzFactory for NativeAuthzFactory {
 }
 
 pub struct PreparedNativeAuthz {
-    config: NativeConfig,
+    config: NativeTrustConfig,
 }
 
 #[async_trait]

@@ -1,6 +1,7 @@
 use anyhow::{bail, ensure, Context, Result};
-use bulletin::native::{decode_node_signing_key, open_native_worker, NativeConfig};
+use bulletin::native::decode_node_signing_key;
 use clap::{Parser, Subcommand};
+use common::blockchain::native::{open_native_worker, NativeConfig};
 use local_storage::{r#trait::LocalStorage, redb::RedbStorage};
 use serde_json::json;
 use std::{

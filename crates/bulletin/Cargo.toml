@@ -76,6 +76,7 @@ name = "native_service"
 required-features = ["native"]
 
 [dev-dependencies]
+common = { path = "../common", default-features = false, features = ["test-helpers"] }
 alloy-sol-types = "1"
 vera-acp = { workspace = true }
 vera-modules = { workspace = true }

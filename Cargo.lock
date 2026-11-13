@@ -2363,6 +2363,7 @@ dependencies = [
  "vera-client",
  "vera-domain 0.1.2",
  "vera-harness",
+ "zeroize",
 ]
 
 [[package]]
