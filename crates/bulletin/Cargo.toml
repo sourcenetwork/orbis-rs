@@ -20,8 +20,6 @@ tokio = { workspace = true }
 tracing = "0.1"
 authz = { path = "../authz", default-features = false }
 
-commonware-codec = { version = "=2026.10.0", optional = true }
-url = { version = "2.5", optional = true }
 vera-crypto = { workspace = true, optional = true }
 vera-client = { workspace = true, optional = true }
 vera-domain = { workspace = true, optional = true }
@@ -49,7 +47,7 @@ integration-test = ["common/funding"]
 # `docker/Dockerfile`'s native branch) and, like `integration-test` itself,
 # pulls in no backend.
 unsafe-testing = []
-native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
+native = ["common/native", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
 # Selects `DummyBulletin` as the production `BulletinImpl` (mutually
 # exclusive with `vera`, enforced below). Implies `dummy-type` since that's
 # what actually compiles the module this re-exports.

@@ -1,7 +1,6 @@
 //! Native threshold metadata with durable submission and certified reads.
 
 mod backend;
-mod config;
 #[cfg(all(feature = "unsafe-testing", feature = "select-native"))]
 pub mod integration_startup;
 #[cfg(test)]
@@ -12,7 +11,7 @@ mod reshare_tests;
 pub mod startup;
 mod worker_store;
 pub use backend::NativeBulletin;
-pub use config::{ConfigError, NativeBulletinConfig, NativeConfig};
+pub use common::blockchain::native::{NativeChainConfig, NativeConfig};
 pub use worker_store::open_native_worker;
 
 use std::path::Path;

@@ -1,33 +1,37 @@
+//! Chain configuration for the native (Commonware / vera.rs) backend.
+
 use commonware_codec::DecodeExt;
 use serde::Deserialize;
 use std::time::Duration;
 use vera_domain::ConsensusPublicKey;
 
-/// Raw, directly-`Deserialize`-able shape of the `bulletin` section of the
-/// node's services-config file — the `BulletinFactory::Config` for
-/// `NativeBulletinFactory`. Deliberately not shared with `authz::native`'s
-/// own config, even though a real deployment's values usually match: keeping
-/// them separate is what lets native bulletin pair with a non-native authz
-/// backend (or vice versa) instead of permanently coupling the two.
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeBulletinConfig {
-    pub endpoint: String,
-    pub deployment_id: u64,
-    pub deployment_root: String,
-    pub consensus_key: String,
-    #[serde(default = "default_timeout")]
-    pub max_evidence_age_secs: u64,
-    #[serde(default = "default_timeout")]
-    pub request_timeout_secs: u64,
-}
-
 fn default_timeout() -> u64 {
     30
 }
 
+/// Raw, directly-`Deserialize`-able shape of the `authz`/`bulletin` native
+/// factories' services-config sections.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeChainConfig {
+    /// HTTP(S) endpoint serving native requests and evidence.
+    pub endpoint: String,
+    /// Deployment identifier included in signed submissions.
+    pub deployment_id: u64,
+    /// Independently provisioned deployment root (hex-encoded, 32 bytes).
+    pub deployment_root: String,
+    /// Independently provisioned consensus public key (hex-encoded).
+    pub consensus_key: String,
+    /// Maximum age in seconds for current-state evidence.
+    #[serde(default = "default_timeout")]
+    pub max_evidence_age_secs: u64,
+    /// Overall request deadline.
+    #[serde(default = "default_timeout")]
+    pub request_timeout_secs: u64,
+}
+
 #[derive(Debug, thiserror::Error)]
-pub enum ConfigError {
+pub enum NativeConfigError {
     #[error("invalid native Vera endpoint")]
     Url(#[from] url::ParseError),
     #[error("native Vera endpoint must be an HTTP(S) URL without credentials or a fragment")]
@@ -42,7 +46,8 @@ pub enum ConfigError {
     ZeroBound,
 }
 
-/// Validated native deployment trust and request bounds, shared by nodes and operator tools.
+/// Validated native deployment trust and request bounds, shared by the
+/// `authz` and `bulletin` native backends and operator tools.
 #[derive(Clone)]
 pub struct NativeConfig {
     /// HTTP(S) endpoint serving native requests and evidence.
@@ -59,13 +64,13 @@ pub struct NativeConfig {
     pub timeout: Duration,
 }
 
-impl TryFrom<NativeBulletinConfig> for NativeConfig {
-    type Error = ConfigError;
+impl TryFrom<NativeChainConfig> for NativeConfig {
+    type Error = NativeConfigError;
 
-    /// Validate a deserialized `bulletin` config section: reject invalid
-    /// bounds and encodings. Unknown/duplicate fields are already rejected
-    /// by `NativeBulletinConfig`'s own `Deserialize` derive.
-    fn try_from(raw: NativeBulletinConfig) -> Result<Self, ConfigError> {
+    /// Validate a deserialized native config section: reject invalid bounds
+    /// and encodings. Unknown/duplicate fields are already rejected by
+    /// `NativeChainConfig`'s own `Deserialize` derive.
+    fn try_from(raw: NativeChainConfig) -> Result<Self, NativeConfigError> {
         let endpoint = url::Url::parse(&raw.endpoint)?;
         if !matches!(endpoint.scheme(), "http" | "https")
             || endpoint.host_str().is_none()
@@ -73,11 +78,11 @@ impl TryFrom<NativeBulletinConfig> for NativeConfig {
             || endpoint.password().is_some()
             || endpoint.fragment().is_some()
         {
-            return Err(ConfigError::Endpoint);
+            return Err(NativeConfigError::Endpoint);
         }
         let root: [u8; 32] = hex::decode(&raw.deployment_root)?
             .try_into()
-            .map_err(|_| ConfigError::RootLength)?;
+            .map_err(|_| NativeConfigError::RootLength)?;
         let trusted = ConsensusPublicKey::decode(alloy_primitives::bytes::Bytes::from(
             hex::decode(&raw.consensus_key)?,
         ))?;
@@ -86,7 +91,7 @@ impl TryFrom<NativeBulletinConfig> for NativeConfig {
             || raw.max_evidence_age_secs == 0
             || raw.request_timeout_secs == 0
         {
-            return Err(ConfigError::ZeroBound);
+            return Err(NativeConfigError::ZeroBound);
         }
         Ok(Self {
             endpoint: endpoint.into(),
@@ -105,7 +110,7 @@ mod tests {
     use commonware_codec::Encode;
 
     fn load(value: &serde_json::Value) -> Result<NativeConfig, ()> {
-        let raw: NativeBulletinConfig = serde_json::from_value(value.clone()).map_err(|_| ())?;
+        let raw: NativeChainConfig = serde_json::from_value(value.clone()).map_err(|_| ())?;
         NativeConfig::try_from(raw).map_err(|_| ())
     }
 
@@ -131,7 +136,7 @@ mod tests {
             invalid[key] = value;
             assert!(load(&invalid).is_err(), "{key}");
         }
-        // Duplicate JSON keys are rejected by `NativeBulletinConfig`'s derived
+        // Duplicate JSON keys are rejected by `NativeChainConfig`'s derived
         // `Deserialize` itself (serde errors on a field visited twice) — test
         // the raw text directly, since parsing into an untyped `Value` first
         // would silently collapse the duplicate before this struct ever sees it.
@@ -139,6 +144,6 @@ mod tests {
             serde_json::to_string(&valid)
                 .unwrap()
                 .replacen('{', "{\"deployment_id\":1,", 1);
-        assert!(serde_json::from_str::<NativeBulletinConfig>(&duplicate).is_err());
+        assert!(serde_json::from_str::<NativeChainConfig>(&duplicate).is_err());
     }
 }

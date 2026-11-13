@@ -1,10 +1,14 @@
 //! Native identity preparation and durable worker connection.
+//!
+//! Chain configuration itself (`NativeChainConfig`/`NativeConfig`) is shared
+//! with `authz::native` via `common::blockchain::native` — a real
+//! deployment's values are the same for both, and there's no reason to keep
+//! them independently parsed and validated.
 
-use super::{
-    decode_node_signing_key, NativeBulletin, NativeBulletinConfig, NativeConfig, NativeVeraClient,
-};
+use super::{decode_node_signing_key, NativeBulletin, NativeVeraClient};
 use crate::startup::{BulletinFactory, BulletinStartupError, NodeIdentity, PreparedBulletin};
 use async_trait::async_trait;
+use common::blockchain::native::{NativeChainConfig, NativeConfig};
 use common::startup::{PrepareContext, StartupProgress};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 #[cfg(test)]
@@ -33,7 +37,7 @@ pub struct NativeBulletinFactory<P = ProductionNativeStartup>(PhantomData<P>);
 
 impl<P: NativeStartupPolicy> BulletinFactory for NativeBulletinFactory<P> {
     const NAME: &'static str = "bulletin/native";
-    type Config = NativeBulletinConfig;
+    type Config = NativeChainConfig;
     type ValidatedConfig = NativeConfig;
     type Prepared = PreparedNativeBulletin;
 

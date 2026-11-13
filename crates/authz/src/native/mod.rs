@@ -45,19 +45,9 @@ impl NativeAuth {
         if root == [0; 32] || maximum_age == 0 {
             return Err(Error::InvalidConfiguration);
         }
-        let first = client
-            .read_finalized_revision(1, &trusted)
+        common::blockchain::native::verify_deployment_root(&client, &trusted, root)
             .await
-            .map_err(Error::ReadDeployment)?;
-        let root = hex::encode(root);
-        if first
-            .parent_hash
-            .strip_prefix("0x")
-            .unwrap_or(&first.parent_hash)
-            != root
-        {
-            return Err(Error::DeploymentMismatch);
-        }
+            .map_err(Error::DeploymentTrust)?;
         Ok(Self {
             client,
             trusted,
