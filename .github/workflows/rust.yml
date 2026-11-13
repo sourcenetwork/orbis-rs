@@ -170,7 +170,7 @@ jobs:
       run: |
         cargo test --locked -p common --no-default-features --lib node_signing
         cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib bootstrap
-        cargo test --locked -p bulletin --no-default-features --features native,${{ matrix.crypto }} --lib native::
+        cargo test --locked -p bulletin --no-default-features --features native --lib native::
 
   # Build the orbis-node integration image once and push it to GHCR (cargo-chef
   # in docker/Dockerfile keeps the dependency compile a cached layer). The
