@@ -946,7 +946,6 @@ async fn wait_for_pet_pss_refresh_on_all_nodes(
     loop {
         let mut snapshots = Vec::with_capacity(endpoints.len());
         let mut statuses = Vec::with_capacity(endpoints.len());
-        let mut all_refreshed = true;
 
         for (idx, endpoint) in endpoints.iter().enumerate() {
             match cli_tool::query_pet_ring_state(endpoint.clone(), ring_id.to_string()).await {
@@ -954,9 +953,6 @@ async fn wait_for_pet_pss_refresh_on_all_nodes(
                     let baseline = &baselines[idx];
                     let polynomial_changed = public_polynomial != baseline.public_polynomial;
                     let timestamp_advanced = last_pss > baseline.last_pss;
-                    if !polynomial_changed && !timestamp_advanced {
-                        all_refreshed = false;
-                    }
                     statuses.push(format!(
                         "node{}: poly_changed={} timestamp_advanced={} last_pss={} baseline={}",
                         idx + 1,
@@ -971,13 +967,12 @@ async fn wait_for_pet_pss_refresh_on_all_nodes(
                     });
                 }
                 Err(e) => {
-                    all_refreshed = false;
                     statuses.push(format!("node{}: {}", idx + 1, e));
                 }
             }
         }
 
-        if all_refreshed && snapshots.len() == endpoints.len() {
+        if pet_reshare::pet_refresh_converged(&snapshots, baselines) {
             return snapshots;
         }
 
