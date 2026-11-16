@@ -36,13 +36,12 @@ uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = ["bls12-381", "orbis-node"]
-# Vera-backed benchmark node. Each crypto feature enables it, so the default
-# build, `--no-default-features --features bls12-381`, and
-# `--no-default-features --features jubjub` all still build the full benchmark.
-# An unscoped workspace build activates this feature. It follows
-# orbis-node's Commonware default so the resolve does not also select
-# `select-vera-go`. The Docker benchmark image still passes `authz-vera-go`
-# and `bulletin-vera-go` explicitly.
+# In-process benchmark node. Follows orbis-node's Commonware default.
+# The curve features do not enable this: a workspace `--features=bls12-381`
+# or `--features=jubjub` is also how the Go-chain CI cells select
+# `authz-vera-go`/`bulletin-vera-go`, and those factories cannot be combined.
+# Build Jubjub with `--features jubjub,orbis-node`. The Docker benchmark
+# image still passes `authz-vera-go` and `bulletin-vera-go` explicitly.
 orbis-node = [
     "dep:orbis-node",
     "orbis-node/redb",
@@ -51,8 +50,8 @@ orbis-node = [
     "orbis-node/iroh",
     "orbis-node/harness",
 ]
-bls12-381 = ["cli-tool/bls12-381", "crypto/bls12-381", "orbis-node"]
-jubjub = ["cli-tool/jubjub", "crypto/jubjub", "orbis-node"]
+bls12-381 = ["cli-tool/bls12-381", "crypto/bls12-381"]
+jubjub = ["cli-tool/jubjub", "crypto/jubjub"]
 
 [[bin]]
 name = "orbis-bench"
