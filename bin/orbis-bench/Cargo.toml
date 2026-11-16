@@ -52,6 +52,17 @@ orbis-node = [
 ]
 bls12-381 = ["cli-tool/bls12-381", "crypto/bls12-381"]
 jubjub = ["cli-tool/jubjub", "crypto/jubjub"]
+# In-process node for the upgrade image. The compose stack is the Go chain
+# (`sourcehub`), so this follows `docker/Dockerfile.node` and must not enable
+# `orbis-node` (that feature selects the Commonware factories).
+upgrade-driver = [
+    "dep:orbis-node",
+    "orbis-node?/redb",
+    "orbis-node?/authz-vera-go",
+    "orbis-node?/bulletin-vera-go",
+    "orbis-node?/iroh",
+    "orbis-node?/harness",
+]
 
 [[bin]]
 name = "orbis-bench"
@@ -61,7 +72,7 @@ required-features = ["orbis-node"]
 [[bin]]
 name = "orbis-upgrade-driver"
 path = "src/bin/orbis-upgrade-driver.rs"
-required-features = ["orbis-node"]
+required-features = ["upgrade-driver"]
 
 [[test]]
 name = "docker_smoke"
