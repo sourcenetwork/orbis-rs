@@ -48,6 +48,16 @@ impl Pet for PetNode {
     }
 
     fn owner_fingerprint(owner_id: &[u8]) -> Result<Self::PublicKey> {
+        if let Some(encoded) = owner_id.strip_prefix(b"scalar:") {
+            let bytes = hex::decode(encoded).map_err(|e| CryptoError::ParseError(e.to_string()))?;
+            if hex::encode(&bytes).as_bytes() != encoded {
+                return Err(CryptoError::ParseError("noncanonical scalar target".into()));
+            }
+            let scalar: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| CryptoError::ParseError("invalid scalar target size".into()))?;
+            return super::scalar_target::fingerprint(&scalar);
+        }
         let mut hasher = Sha512::new();
         hasher.update(FINGERPRINT_DOMAIN);
         hasher.update(owner_id);

@@ -73,7 +73,6 @@ async fn report_context(
     );
     let state = &coordinator.app_state;
     ReportValidationContext {
-        external_rings: Arc::new(Vec::new()),
         local_node_key: state.node_key.clone(),
         requester_peer_id: None,
         network: state.network.clone(),

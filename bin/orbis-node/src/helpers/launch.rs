@@ -182,10 +182,9 @@ impl CorsPolicy {
 #[command(name = "orbis-node")]
 #[command(about = "Orbis DkgService gRPC server")]
 pub struct Args {
-    /// JSON array of application-validated ring policies. Omission
-    /// disables external documents. This file contains public configuration.
-    #[arg(long, value_name = "PATH")]
-    pub external_rings: Option<PathBuf>,
+    /// Trust application proofs for these rings. Never enable for native enrollment.
+    #[arg(long = "proof-bypass-ring", value_delimiter = ',')]
+    pub proof_bypass_rings: Vec<String>,
     /// Node services configuration (JSON file): an `authz` section and a
     /// `bulletin` section, each in the shape the build's compiled-in
     /// `AuthzFactoryImpl`/`BulletinFactoryImpl` expects. Omit to use every

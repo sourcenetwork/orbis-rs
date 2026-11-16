@@ -195,47 +195,6 @@ pub fn generate_document_id(
     Ok(hex::encode(h.finalize()))
 }
 
-/// Identity for an application-validated inline document. The opaque data binds
-/// application facts; Orbis only interprets the EPK and ownership tag.
-pub fn generate_external_document_id(
-    ring_id: &str,
-    policy_id: &str,
-    document: &str,
-    pet_tag: &str,
-) -> Result<String> {
-    let secret: IdDocumentSecret = serde_json::from_str(document)?;
-    let tag: IdPetTag = serde_json::from_str(pet_tag)?;
-    if ring_id.is_empty()
-        || policy_id.is_empty()
-        || secret.enc_cmt.len() != 32
-        || secret.encrypted_data.len() != 32
-        || secret.nonce != [0; 12]
-        || tag.ephemeral_point.len() != 32
-        || tag.masked_fingerprint.len() != 32
-    {
-        return Err(BlockchainError::Serialization(
-            "invalid external document shape".into(),
-        ));
-    }
-    let mut h = Sha256::new();
-    write_string(&mut h, "orbis/external-document/v1");
-    write_string(&mut h, ring_id);
-    write_string(&mut h, policy_id);
-    write_bytes(&mut h, &secret.enc_cmt);
-    write_bytes(&mut h, &secret.encrypted_data);
-    write_bytes(&mut h, &tag.ephemeral_point);
-    write_bytes(&mut h, &tag.masked_fingerprint);
-    Ok(hex::encode(h.finalize()))
-}
-
-pub fn external_pet_digest(object_id: &str) -> [u8; 32] {
-    Sha256::new()
-        .chain_update(b"orbis/external-pet/v1")
-        .chain_update(object_id.as_bytes())
-        .finalize()
-        .into()
-}
-
 /// Fold the optional PET tag attachment and its knowledge proof into the
 /// document-id hash. See [`generate_document_id`]'s docs for why an absent
 /// attachment hashes nothing at all, unlike every other optional field in this

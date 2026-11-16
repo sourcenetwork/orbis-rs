@@ -258,7 +258,7 @@ pub(super) async fn require_relayed_request_unauthorized(
         _ => {
             return Err(ReportingError::InvalidReport(
                 "relay request valid_window bounds must both be present or both absent".to_string(),
-            ));
+            ))
         }
     };
 
@@ -274,29 +274,12 @@ pub(super) async fn require_relayed_request_unauthorized(
                 (
                     evidence.policy_id.clone(),
                     evidence.resource.clone(),
-                    match context
-                        .external_rings
-                        .iter()
-                        .find(|p| p.ring_id == statement.ring_id)
-                    {
-                        Some(profile) => profile
-                            .permission(statement.pet_target.as_deref())
-                            .ok_or_else(|| {
-                                ReportingError::InvalidReport("invalid external target mode".into())
-                            })?
-                            .to_string(),
-                        None if statement.pet_target.is_none() => evidence.permission.clone(),
-                        _ => {
-                            return Err(ReportingError::InvalidReport(
-                                "unexpected native target".into(),
-                            ))
-                        }
-                    },
+                    evidence.permission.clone(),
                     evidence.tier.clone(),
                     statement.timestamp,
                 )
             } else {
-                reject_unexpected_inline_document_evidence(context, &statement.ring_id)?;
+                reject_unexpected_inline_document_evidence(context)?;
                 let document_post = context
                     .bulletin
                     .read(statement.object_id.clone(), BulletinKind::Document)
@@ -349,7 +332,7 @@ pub(super) async fn require_relayed_request_unauthorized(
             return Err(ReportingError::InvalidReport(format!(
                 "unsupported relay request origin protocol {}",
                 other
-            )));
+            )))
         }
     };
 

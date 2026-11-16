@@ -220,20 +220,7 @@ impl JwtSigner {
         derivation: Option<Vec<u8>>,
         salt: Option<String>,
     ) -> Result<(String, TokenMetadata)> {
-        self.create_pre_jwt_with_target(rdr_pk, object_id, derivation, salt, None)
-    }
-
-    /// Bind a external PET target into the authenticated PRE request.
-    pub fn create_pre_jwt_with_target(
-        &self,
-        rdr_pk: Vec<u8>,
-        object_id: &str,
-        derivation: Option<Vec<u8>>,
-        salt: Option<String>,
-        pet_target: Option<String>,
-    ) -> Result<(String, TokenMetadata)> {
         let claims = PreClaims {
-            pet_target,
             rdr_pk,
             object_id: object_id.to_string(),
             derivation,

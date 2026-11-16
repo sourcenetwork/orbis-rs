@@ -321,26 +321,10 @@ pub(crate) async fn require_pre_proof_verification_failure(
             &statement.object_id,
             statement.timestamp,
         )?;
-        match context
-            .external_rings
-            .iter()
-            .find(|p| p.ring_id == statement.ring_id)
-        {
-            Some(profile)
-                if profile
-                    .permission(statement.pet_target.as_deref())
-                    .is_some() => {}
-            None if statement.pet_target.is_none() => {}
-            _ => {
-                return Err(ReportingError::InvalidReport(
-                    "invalid release target mode".into(),
-                ))
-            }
-        }
         deserialize_secret(&evidence.document)
             .map_err(|error| ReportingError::InvalidReport(error.to_string()))?
     } else {
-        reject_unexpected_inline_document_evidence(context, &statement.ring_id)?;
+        reject_unexpected_inline_document_evidence(context)?;
         let document_post = context
             .bulletin
             .read(statement.object_id.clone(), BulletinKind::Document)

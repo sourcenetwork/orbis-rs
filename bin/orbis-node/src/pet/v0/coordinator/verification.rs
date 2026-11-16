@@ -120,7 +120,6 @@ pub(crate) async fn verify_pet_audit_authorization(
     ctx: &PetCheckContext,
     trusted_auth_relay_dids: Option<&[String]>,
     current_time: u64,
-    profiles: &[common::blockchain::orbis::ExternalRing],
 ) -> Result<String> {
     let token: BearerToken<PreClaims> = resolve_jwt_did(
         &ctx.token_string,
@@ -145,33 +144,6 @@ pub(crate) async fn verify_pet_audit_authorization(
 
     let actor_id = crate::helpers::auth::request_actor(&token, trusted_auth_relay_dids)
         .map_err(PetError::InvalidInput)?;
-
-    let external = profiles.iter().any(|p| p.ring_id == ctx.document.ring_id);
-    crate::pre::v0::helpers::check_target(
-        profiles,
-        &ctx.document,
-        token.claims.pet_target.as_ref(),
-        Some(&ctx.audit_target_object_id),
-    )
-    .map_err(|e| PetError::InvalidInput(e.to_string()))?;
-    if external {
-        if ctx.salt.is_some() || ctx.valid_window.is_some() || token.claims.derivation.is_some() {
-            return Err(PetError::InvalidInput(
-                "unsupported external PET options".into(),
-            ));
-        }
-        crate::pre::v0::helpers::check_policy_access(
-            authz,
-            &ctx.document,
-            &ctx.object_id,
-            &actor_id,
-            None,
-            token.claims.pet_target.as_ref(),
-            profiles,
-        )
-        .await
-        .map_err(|e| PetError::Acp(e.to_string()))?;
-    }
 
     check_pet_permission(
         authz,
@@ -750,12 +722,9 @@ where
         // wire — nothing upstream of this guarantees they actually describe
         // the same document. Without this check, a malicious initiator could
         // pair a genuine document A with a different document B's id.
-        crate::pre::v0::helpers::check_document_id_binding(
-            &ctx.object_id,
-            &ctx.document,
-            &self.app_state.external_rings,
-        )
-        .map_err(|e| PetError::InvalidInput(format!("document does not match object_id: {e}")))?;
+        crate::pre::v0::helpers::check_document_id_binding(&ctx.object_id, &ctx.document).map_err(
+            |e| PetError::InvalidInput(format!("document does not match object_id: {e}")),
+        )?;
 
         let pet_pk_hex = ring_payload.pet_pk.clone().ok_or_else(|| {
             PetError::InvalidState(format!(
@@ -769,27 +738,6 @@ where
         let tag_json = ctx.document.pet_tag.as_deref().ok_or_else(|| {
             PetError::InvalidInput("document has no pet_tag but ring requires PET".to_string())
         })?;
-        let external = crate::pre::v0::helpers::check_document_profile(
-            &self.app_state.external_rings,
-            &ctx.document,
-            &ring_payload,
-        )
-        .map_err(|e| PetError::InvalidInput(e.to_string()))?;
-        if external {
-            if ctx.salt.is_some() || ctx.valid_window.is_some() || !ctx.document_inline {
-                return Err(PetError::InvalidInput(
-                    "external PET requires inline document without options".into(),
-                ));
-            }
-            let tag = PetTag::try_from(tag_json.to_string())
-                .map_err(|e| PetError::Deserialization(e.to_string()))?;
-            return Ok((
-                tag,
-                pet_pk_hex,
-                common::blockchain::orbis::external_pet_digest(&ctx.object_id),
-                ring_payload,
-            ));
-        }
         let tag_proof_json = ctx.document.pet_tag_proof.as_deref().ok_or_else(|| {
             PetError::InvalidInput(
                 "document has no pet_tag_proof but ring requires PET".to_string(),
@@ -821,9 +769,19 @@ where
             &secret,
             &payload_proof,
         );
-        P::verify_tag_knowledge(&tag, &tag_proof, &digest).map_err(|e| {
-            PetError::Crypto(format!("Tag-knowledge proof verification failed: {}", e))
-        })?;
+        if self.app_state.bypasses_proofs(&ctx.document.ring_id) {
+            for bytes in [&tag.ephemeral_point, &tag.masked_fingerprint] {
+                let point =
+                    P::PublicKey::from_bytes(bytes).map_err(|e| PetError::Crypto(e.to_string()))?;
+                if point == P::PublicKey::default() {
+                    return Err(PetError::InvalidInput("identity ownership tag".into()));
+                }
+            }
+        } else {
+            P::verify_tag_knowledge(&tag, &tag_proof, &digest).map_err(|e| {
+                PetError::Crypto(format!("Tag-knowledge proof verification failed: {}", e))
+            })?;
+        }
 
         Ok((tag, pet_pk_hex, digest, ring_payload))
     }
@@ -908,12 +866,8 @@ where
             return Err(PetError::Mismatch);
         }
 
-        let target_fingerprint = target_fingerprint::<P>(
-            &document.ring_id,
-            audit_target_object_id,
-            &self.app_state.external_rings,
-        )
-        .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
+        let target_fingerprint = P::owner_fingerprint(audit_target_object_id.as_bytes())
+            .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
 
         let (aggregate_r, aggregate_diff) = build_and_verify_pet_blind_certificate::<D, P>(
             &evidence.certificate,
@@ -1291,39 +1245,3 @@ where
 /// certificate-shape checks built *around* that primitive.
 #[cfg(test)]
 mod tests;
-
-/// The authority authenticates the address-to-target association. Native rings
-/// retain Orbis's original fingerprint; external profiles decode a canonical subgroup scalar.
-pub(crate) fn target_fingerprint<P: Pet>(
-    ring_id: &str,
-    target: &str,
-    profiles: &[common::blockchain::orbis::ExternalRing],
-) -> crypto::error::Result<P::PublicKey> {
-    if profiles.iter().any(|p| p.ring_id == ring_id) {
-        #[cfg(feature = "jubjub")]
-        {
-            use crypto::CryptoSerialize;
-            let encoded = target.strip_prefix("scalar:").ok_or_else(|| {
-                crypto::error::CryptoError::ParseError("invalid external target prefix".into())
-            })?;
-            let bytes = hex::decode(encoded)
-                .map_err(|e| crypto::error::CryptoError::ParseError(e.to_string()))?;
-            if hex::encode(&bytes) != encoded {
-                return Err(crypto::error::CryptoError::ParseError(
-                    "noncanonical external target".into(),
-                ));
-            }
-            let field: [u8; 32] = bytes.try_into().map_err(|_| {
-                crypto::error::CryptoError::ParseError("invalid external target size".into())
-            })?;
-            return P::PublicKey::from_bytes(
-                &crypto::jubjub::scalar_target::fingerprint(&field)?.to_bytes()?,
-            );
-        }
-        #[cfg(not(feature = "jubjub"))]
-        return Err(crypto::error::CryptoError::ParseError(
-            "external requires Jubjub".into(),
-        ));
-    }
-    P::owner_fingerprint(target.as_bytes())
-}

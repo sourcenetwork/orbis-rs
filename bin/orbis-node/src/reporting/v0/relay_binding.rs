@@ -108,7 +108,6 @@ pub struct RelayRequestBinding {
     /// claiming inline for a bulletin-sourced request (or the reverse) is itself a binding
     /// mismatch.
     pub document_inline: bool,
-    pub pet_target: Option<String>,
 }
 
 /// Ensure the signed relay statement is about the exact request that failed this
@@ -234,11 +233,6 @@ pub fn validate_relay_request_binding(
         ));
     }
 
-    if statement.pet_target != expected.pet_target {
-        return Err(ReportingError::InvalidReport(
-            "relay release scope mismatch".into(),
-        ));
-    }
     if statement.document_inline != expected.document_inline {
         return Err(ReportingError::InvalidReport(
             "relay request statement does not bind to failed request: document_inline mismatch"
@@ -443,7 +437,6 @@ pub struct RelayStatementInputs {
     /// bulletin. The evidence itself is not signed into the statement — it travels out-of-band in
     /// `ReportSigningContext` (see `ReportedDocumentEvidence`).
     pub document_inline: bool,
-    pub pet_target: Option<String>,
 }
 
 /// Build and sign the relayer's `RelayRequestStatement` — its self-incriminating record that it
@@ -500,7 +493,6 @@ pub fn build_signed_relay_statement(
         valid_window_end,
         timestamp: inputs.acp_timestamp,
         document_inline: inputs.document_inline,
-        pet_target: inputs.pet_target,
     };
     let signature = sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
         .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;

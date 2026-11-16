@@ -197,22 +197,6 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    pub(super) fn read_pet_target(&mut self) -> Result<Option<String>> {
-        if self.cursor == self.bytes.len() {
-            return Ok(None);
-        }
-        if self.read_string("target domain")? != "orbis/pet-target/v1" {
-            return Err(ReportingError::InvalidReport(
-                "invalid target domain".into(),
-            ));
-        }
-        let target = self.read_string("PET target")?;
-        if target.is_empty() {
-            return Err(ReportingError::InvalidReport("empty PET target".into()));
-        }
-        Ok(Some(target))
-    }
-
     pub fn finish(&self) -> Result<()> {
         if self.cursor != self.bytes.len() {
             return Err(ReportingError::InvalidReport(
@@ -220,13 +204,5 @@ impl<'a> Decoder<'a> {
             ));
         }
         Ok(())
-    }
-}
-
-/// Native statements have no suffix and retain their existing encoding.
-pub(super) fn write_pet_target(out: &mut Vec<u8>, target: Option<&String>) {
-    if let Some(target) = target {
-        write_string(out, "orbis/pet-target/v1");
-        write_string(out, target);
     }
 }

@@ -3116,6 +3116,7 @@ dependencies = [
  "ff 0.14.0",
  "group 0.13.0",
  "group 0.14.0",
+ "hex",
  "hkdf",
  "jubjub",
  "proptest",

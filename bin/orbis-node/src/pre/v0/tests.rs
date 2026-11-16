@@ -354,7 +354,6 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
         .sign_for_actor(
             actor_id.to_string(),
             PreClaims {
-                pet_target: None,
                 rdr_pk: bob_pk_bytes.clone(),
                 object_id: object_id.clone(),
                 derivation: None,
@@ -494,7 +493,6 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
         .sign_for_actor(
             actor_id.to_string(),
             PreClaims {
-                pet_target: None,
                 rdr_pk: bob_pk_bytes.clone(),
                 object_id: second_object_id.clone(),
                 derivation: None,
@@ -749,7 +747,6 @@ async fn test_pre_with_inline_document_end_to_end() {
         .sign_for_actor(
             actor_id.to_string(),
             PreClaims {
-                pet_target: None,
                 rdr_pk: bob_pk_bytes.clone(),
                 object_id: object_id.clone(),
                 derivation: None,
@@ -2478,7 +2475,6 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
     }
 
     let manifest = pre_share::PreShareRetrievalManifest {
-        pet_target: None,
         manifest_version: pre_share::PRE_SHARE_MANIFEST_VERSION,
         request_id: stored.request_id.clone(),
         ring_id: stored.ring_id.clone(),
@@ -2693,16 +2689,8 @@ async fn test_check_policy_access_enforces_authz_denial() {
         pet_tag_proof: None,
     };
 
-    let result = check_policy_access(
-        &DenyAuthZ,
-        &document_payload,
-        "obj-1",
-        "did:key:test",
-        None,
-        None,
-        &[],
-    )
-    .await;
+    let result =
+        check_policy_access(&DenyAuthZ, &document_payload, "obj-1", "did:key:test", None).await;
 
     assert!(result.is_err(), "denied authz should return Err");
     assert!(

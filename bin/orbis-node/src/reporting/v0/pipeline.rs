@@ -159,7 +159,6 @@ where
         .validate(
             &prepared.envelope,
             &ReportValidationContext {
-                external_rings: Arc::clone(&app_state.external_rings),
                 local_node_key: app_state.node_key.clone(),
                 requester_peer_id: None,
                 network: Arc::clone(&app_state.network),
@@ -255,7 +254,6 @@ where
         .validate(
             &context.envelope,
             &ReportValidationContext {
-                external_rings: Arc::clone(&app_state.external_rings),
                 local_node_key: app_state.node_key.clone(),
                 requester_peer_id: Some(requester_peer_id),
                 network: Arc::clone(&app_state.network),

@@ -288,20 +288,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         config.authz,
         config.bulletin,
     );
-    if let Some(path) = &config.args.external_rings {
-        let rings: Vec<common::blockchain::orbis::ExternalRing> =
-            serde_json::from_slice(&std::fs::read(path)?)?;
-        let mut ids = std::collections::HashSet::new();
-        for ring in &rings {
-            if ring.ring_id.is_empty()
-                || ring.document_policy_id.is_empty()
-                || !ids.insert(&ring.ring_id)
-            {
-                return Err("invalid or duplicate external ring configuration".into());
-            }
-        }
-        app_state.external_rings = Arc::new(rings);
-    }
+    app_state.proof_bypass_rings = config.args.proof_bypass_rings.clone();
     let app_state_arc = Arc::new(app_state);
 
     // Start the router in the background with DKG, PRE, and Sign protocol handlers

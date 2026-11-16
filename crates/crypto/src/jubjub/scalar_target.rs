@@ -1,4 +1,4 @@
-//! Canonical scalar targets for externally admitted external PET documents.
+//! Canonical scalar PET targets supplied by an application.
 //! The application supplies the canonical scalar.
 use super::common::{Element, Fr};
 use crate::{
@@ -27,6 +27,17 @@ mod tests {
         let mut one = [0; 32];
         one[0] = 1;
         assert_eq!(fingerprint(&one).unwrap(), Element::generator());
+        use crate::r#trait::Pet;
+        let target = format!("scalar:{}", hex::encode(one));
+        assert_eq!(
+            crate::PetImpl::owner_fingerprint(target.as_bytes()).unwrap(),
+            Element::generator()
+        );
+        assert!(crate::PetImpl::owner_fingerprint(b"scalar:01").is_err());
+        assert!(crate::PetImpl::owner_fingerprint(
+            format!("scalar:{}", "AB".repeat(32)).as_bytes()
+        )
+        .is_err());
         let mut two = one;
         two[0] = 2;
         assert_eq!(

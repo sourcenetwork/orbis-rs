@@ -313,32 +313,6 @@ pub(super) fn require_inline_document_evidence<'a>(
                 .to_string(),
         )
     })?;
-    if let Some(profile) = context.external_rings.iter().find(|p| p.ring_id == ring_id) {
-        let document = bulletin::r#trait::DocumentPayload {
-            ring_id: ring_id.to_string(),
-            document: evidence.document.clone(),
-            proof: evidence.proof.clone(),
-            policy_id: evidence.policy_id.clone(),
-            resource: evidence.resource.clone(),
-            permission: evidence.permission.clone(),
-            tier: evidence.tier.clone(),
-            timestamp,
-            pet_tag: evidence.pet_tag.clone(),
-            pet_tag_proof: evidence.pet_tag_proof.clone(),
-        };
-        if profile.document_policy_id != evidence.policy_id {
-            return Err(ReportingError::InvalidReport(
-                "external evidence policy mismatch".into(),
-            ));
-        }
-        crate::pre::v0::helpers::check_document_id_binding(
-            object_id,
-            &document,
-            &context.external_rings,
-        )
-        .map_err(|e| ReportingError::InvalidReport(e.to_string()))?;
-        return Ok(evidence);
-    }
     let expected_object_id = generate_document_id(
         ring_id,
         &evidence.document,
@@ -367,13 +341,7 @@ pub(super) fn require_inline_document_evidence<'a>(
 /// re-fetch.
 pub(super) fn reject_unexpected_inline_document_evidence(
     context: &ReportValidationContext,
-    ring_id: &str,
 ) -> Result<()> {
-    if context.external_rings.iter().any(|p| p.ring_id == ring_id) {
-        return Err(ReportingError::InvalidReport(
-            "external documents are inline-only".into(),
-        ));
-    }
     if context.inline_document.is_some() {
         return Err(ReportingError::InvalidReport(
             "statement does not mark the request inline but inline document evidence was provided"

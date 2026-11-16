@@ -297,7 +297,6 @@ where
                             let relay_request_id =
                                 request_id.strip_prefix("nonce-").unwrap_or(&request_id);
                             let binding = RelayRequestBinding {
-                                pet_target: None,
                                 ring: ring_payload.clone(),
                                 ring_id: key_derivation.ring_id.clone(),
                                 protocol_version: self.routes.version,
@@ -627,7 +626,6 @@ where
                 if let Some(statement) = &ctx.relay_statement {
                     let chain_id = self.app_state.bulletin.chain_id();
                     let binding = RelayRequestBinding {
-                        pet_target: None,
                         ring: ring_payload.clone(),
                         ring_id: key_derivation.ring_id.clone(),
                         protocol_version: self.routes.version,

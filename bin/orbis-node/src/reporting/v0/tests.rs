@@ -102,7 +102,6 @@ fn relay_binding_statement(
         .map(|window| (Some(window.start), Some(window.end)))
         .unwrap_or((None, None));
     RelayRequestStatement {
-        pet_target: None,
         domain: RELAY_REQUEST_DOMAIN.to_string(),
         chain_id: RELAY_BINDING_CHAIN_ID.to_string(),
         ring_id: RELAY_BINDING_RING_ID.to_string(),
@@ -133,7 +132,6 @@ fn relay_binding(
     timestamp: RelayRequestTimestampBinding,
 ) -> RelayRequestBinding {
     RelayRequestBinding {
-        pet_target: None,
         ring: ring.clone(),
         ring_id: RELAY_BINDING_RING_ID.to_string(),
         protocol_version: network::V0.version,
@@ -373,7 +371,6 @@ async fn relay_statement_builder_rejects_relayer_key_outside_ring() {
 
     let error = build_signed_relay_statement(
         RelayStatementInputs {
-            pet_target: None,
             ring,
             ring_id: RELAY_BINDING_RING_ID.to_string(),
             protocol_version: network::V0.version,
@@ -2606,7 +2603,6 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         .unwrap()
         .as_secs();
     let statement = PreReencryptResponseStatement {
-        pet_target: None,
         domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
         chain_id: network.alice.app_state.bulletin.chain_id(),
         ring_id: ring_id.clone(),

@@ -14,7 +14,6 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) struct PreResponseReportContext {
-    pub pet_target: Option<String>,
     pub chain_id: String,
     pub ring_id: String,
     pub ring_pk: String,
@@ -211,7 +210,6 @@ where
         }
 
         let statement = PreReencryptResponseStatement {
-            pet_target: report_context.pet_target.clone(),
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: report_context.chain_id.clone(),
             ring_id: report_context.ring_id.clone(),
@@ -511,7 +509,6 @@ mod tests {
         signature_valid: bool,
     ) -> PreMessage {
         let statement = PreReencryptResponseStatement {
-            pet_target: None,
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: "chain".to_string(),
             ring_id: "ring".to_string(),
@@ -553,7 +550,6 @@ mod tests {
 
     fn report_context(fixture: &VerifyFixture, rdr_pk_bytes: &[u8]) -> PreResponseReportContext {
         PreResponseReportContext {
-            pet_target: None,
             chain_id: "chain".to_string(),
             ring_id: "ring".to_string(),
             ring_pk: "ring-pk".to_string(),
@@ -730,7 +726,6 @@ mod tests {
         // reconstructed statement inside `verify_peer_response` to match this signature.
         let signed_at = unix_now();
         let statement = PreReencryptResponseStatement {
-            pet_target: None,
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: "chain".to_string(),
             ring_id: "ring".to_string(),

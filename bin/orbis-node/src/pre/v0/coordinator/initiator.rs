@@ -247,14 +247,6 @@ where
             let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
             let mut seen_node_ids: HashSet<u32> = HashSet::new();
 
-            crate::pre::v0::helpers::refresh_external_access(
-                &*self.app_state.authz,
-                ctx.document.as_ref(),
-                &local_reader_auth_context,
-                ctx.valid_window.clone(),
-                &self.app_state.external_rings,
-            )
-            .await?;
             if let Some(share) = Self::compute_local_reencryption_share(
                 &dealer,
                 self_in_list,
@@ -500,14 +492,6 @@ where
             })?;
         let dist_key_share = DistKeyShare { pri_share };
 
-        crate::pre::v0::helpers::refresh_external_access(
-            &*self.app_state.authz,
-            ctx.document.as_ref(),
-            local_reader_auth_context,
-            ctx.valid_window.clone(),
-            &self.app_state.external_rings,
-        )
-        .await?;
         let reply = dealer
             .reencrypt(
                 &dist_key_share,
@@ -544,7 +528,6 @@ where
                 rdr_pk_bytes: &ctx.rdr_pk_bytes,
                 derivation: ctx.derivation.as_deref(),
                 document_inline: report_binding.inline_document.is_some(),
-                pet_target: report_binding.pet_target.clone(),
                 timestamp: report_binding.timestamp,
                 pinned_public_polynomial: ctx.pinned_public_polynomial.clone(),
                 endpoint,
@@ -1440,7 +1423,6 @@ struct StoredAckDrainArgs {
 /// timestamp is captured here.)
 #[derive(Clone)]
 pub struct PreReportBinding {
-    pub(crate) pet_target: Option<String>,
     chain_id: String,
     ring_id: String,
     ring_pk: String,
@@ -1466,7 +1448,6 @@ impl PreReportBinding {
         inline_document: Option<ReportedDocumentEvidence>,
     ) -> Self {
         Self {
-            pet_target: None,
             chain_id,
             ring_id,
             ring_pk,
@@ -1510,7 +1491,6 @@ impl PreReportBinding {
         derivation: Option<Vec<u8>>,
     ) -> PreResponseReportContext {
         PreResponseReportContext {
-            pet_target: self.pet_target.clone(),
             chain_id: self.chain_id.clone(),
             ring_id: self.ring_id.clone(),
             ring_pk: self.ring_pk.clone(),

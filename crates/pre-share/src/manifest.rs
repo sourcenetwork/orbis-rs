@@ -32,8 +32,6 @@ pub struct PreShareManifestEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreShareRetrievalManifest {
     pub manifest_version: u8,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pet_target: Option<String>,
     pub request_id: String,
     pub ring_id: String,
     pub ring_pk: String,
@@ -66,7 +64,6 @@ mod tests {
     #[test]
     fn manifest_round_trips_through_serde() {
         let manifest = PreShareRetrievalManifest {
-            pet_target: None,
             manifest_version: PRE_SHARE_MANIFEST_VERSION,
             request_id: "req-1".to_string(),
             ring_id: "ring-1".to_string(),

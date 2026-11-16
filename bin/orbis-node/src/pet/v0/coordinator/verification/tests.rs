@@ -828,7 +828,7 @@ async fn verify_pet_audit_authorization_rejects_a_garbage_token() {
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time(), &[]).await;
+    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
     assert!(
         matches!(result, Err(PetError::InvalidInput(_))),
         "a garbage token must be rejected: {:?}",
@@ -854,7 +854,7 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_object_i
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time(), &[]).await;
+    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
     assert!(
         matches!(result, Err(PetError::InvalidInput(_))),
         "a token authorizing a different object_id must be rejected: {:?}",
@@ -885,7 +885,7 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_salt() {
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time(), &[]).await;
+    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
     assert!(
         matches!(result, Err(PetError::InvalidInput(_))),
         "a token authorizing a different salt must be rejected: {:?}",
@@ -911,7 +911,7 @@ async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_token() {
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time(), &[]).await;
+    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
     assert!(
         result.is_ok(),
         "a genuinely matching, valid token must be accepted: {:?}",
@@ -2478,4 +2478,29 @@ fn certificate_rejects_wrong_target_fingerprint() {
         result.is_err(),
         "a certificate built against one target must not verify against a different one"
     );
+}
+
+#[tokio::test]
+async fn tag_proof_bypass_is_ring_configured_and_preserves_document_binding() {
+    let db_name = "pet_tag_proof_bypass";
+    let mut fixture = build_fixture(3, 2, AUDIT_TARGET);
+    fixture.document.proof = r#"{"challenge":[],"response":[]}"#.into();
+    fixture.document.pet_tag_proof = Some(r#"{"challenge":[],"response":[]}"#.into());
+    let mut coordinator = test_coordinator(db_name, &fixture).await;
+    let mut ctx = authorized_pet_context(&fixture);
+    assert!(matches!(
+        coordinator.verify_pet_check_request(&ctx).await,
+        Err(PetError::Crypto(_))
+    ));
+    Arc::get_mut(&mut coordinator.app_state)
+        .unwrap()
+        .proof_bypass_rings
+        .push(RING_ID.into());
+    coordinator.verify_pet_check_request(&ctx).await.unwrap();
+    ctx.object_id = "other-document".into();
+    assert!(matches!(
+        coordinator.verify_pet_check_request(&ctx).await,
+        Err(PetError::InvalidInput(_))
+    ));
+    cleanup_db(&test_db_path(db_name));
 }

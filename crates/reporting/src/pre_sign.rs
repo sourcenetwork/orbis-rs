@@ -43,9 +43,6 @@ pub struct PreReencryptResponseStatement {
     /// validator to expect it out-of-band in [`ReportSigningContext`] and to skip the bulletin
     /// read.
     pub document_inline: bool,
-    /// Authenticated external release capability, including its canonical target.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pet_target: Option<String>,
 }
 
 impl PreReencryptResponseStatement {
@@ -73,7 +70,6 @@ impl PreReencryptResponseStatement {
         write_string(&mut out, &self.crypto_backend);
         write_optional_u64(&mut out, self.timestamp);
         write_bool(&mut out, self.document_inline);
-        super::codec::write_pet_target(&mut out, self.pet_target.as_ref());
         out
     }
 
@@ -99,7 +95,6 @@ impl PreReencryptResponseStatement {
         let crypto_backend = decoder.read_string("crypto_backend")?;
         let timestamp = decoder.read_optional_u64("timestamp")?;
         let document_inline = decoder.read_bool("document_inline")?;
-        let pet_target = decoder.read_pet_target()?;
         decoder.finish()?;
         Ok(Self {
             domain,
@@ -122,7 +117,6 @@ impl PreReencryptResponseStatement {
             crypto_backend,
             timestamp,
             document_inline,
-            pet_target,
         })
     }
 }

@@ -253,7 +253,7 @@ async fn resolve_pet_blind_tag_and_target(
         )?;
         (evidence.pet_tag.clone(), evidence.pet_tag_proof.clone())
     } else {
-        reject_unexpected_inline_document_evidence(context, &blind_context.ring_id)?;
+        reject_unexpected_inline_document_evidence(context)?;
         let document_post = context
             .bulletin
             .read(blind_context.object_id.clone(), BulletinKind::Document)
@@ -274,12 +274,8 @@ async fn resolve_pet_blind_tag_and_target(
     let tag = PetTag::try_from(pet_tag)
         .map_err(|error| ReportingError::InvalidReport(format!("malformed PET tag: {error}")))?;
     let target_fingerprint =
-        crate::pet::v0::coordinator::verification::target_fingerprint::<PetImpl>(
-            &blind_context.ring_id,
-            &blind_context.audit_target_object_id,
-            &context.external_rings,
-        )
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+        PetImpl::owner_fingerprint(blind_context.audit_target_object_id.as_bytes())
+            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
     Ok((tag, target_fingerprint))
 }
 
