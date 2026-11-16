@@ -4,7 +4,7 @@
 
 `vera-admin` manages native participant nodes and threshold rings.
 
-Build the operator tool with `cargo build -p cli-tool --features native --bin vera-admin`.
+Build the operator tool with `cargo build -p cli-tool --features vera --bin vera-admin`.
 Its trust file is the same shape as the `bulletin` section of orbis-node's
 `--services-config`. Its worker identity
 and pending request live in a separate operator directory; the worker key uses the
@@ -109,8 +109,8 @@ covers routes, policy/ring admission, controller transfer and former-controller
 rejection:
 
 ```sh
-HUBD_BINARY=/path/to/hubd cargo test -p cli-tool --features native \
-  --test native_admin -- --ignored
+HUBD_BINARY=/path/to/hubd cargo test -p cli-tool --features vera \
+  --test vera_admin -- --ignored
 ```
 
 ## Existing service commands

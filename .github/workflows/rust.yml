@@ -9,7 +9,7 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway, peer-recovery, vera-image]
+        options: [full, common, vera, gateway, peer-recovery, vera-image]
         default: full
         required: true
       trust_revision:
@@ -23,7 +23,7 @@ permissions:
 
 # A newer push to the same branch / PR cancels the superseded run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}${{ inputs.scope == 'gateway' && '-native-trust' || '' }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ inputs.scope == 'gateway' && '-vera-trust' || '' }}
   cancel-in-progress: true
 
 env:
@@ -46,10 +46,10 @@ env:
   # `docker compose`. Run in their own sharded `integration` job; the `unit`
   # job runs the complement. Validate with `cargo nextest list -E "<this>"`.
   DOCKER_TESTS: >-
-    binary(blockchain_vera)
+    binary(blockchain_vera_go)
     | binary(cosmos_environment)
-    | (package(authz) & test(/^vera::tests::/))
-    | (package(bulletin) & test(/^vera::tests::/))
+    | (package(authz) & test(/^vera_go::tests::/))
+    | (package(bulletin) & test(/^vera_go::tests::/))
     | (package(orbis-node) & (test(/^tests::e2e::/) | test(/^tests::node::/)
     | test(/^tests::scale_testing::/) | test(/^unsafe_testing::tests::/)))
 
@@ -116,7 +116,7 @@ jobs:
           - crypto: bls12-381
             cargo_flags: --features=integration-test,cosmos,fault-injection,scale-testing
           - crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:
@@ -131,9 +131,9 @@ jobs:
     - name: Clippy (${{ matrix.crypto }})
       run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
 
-  native:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'native'
-    name: Native backend (${{ matrix.crypto }})
+  vera:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'vera'
+    name: Vera backend (${{ matrix.crypto }})
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
@@ -149,28 +149,28 @@ jobs:
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
-        key: native-${{ matrix.crypto }}
+        key: vera-${{ matrix.crypto }}
     - name: Install protoc + lld
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
-    - name: Check native dependency boundary
-      run: bash scripts/check-native-dependencies.sh "${{ matrix.crypto }}"
-    - name: Check native node and bulletin
+    - name: Check Vera dependency boundary
+      run: bash scripts/check-vera-dependencies.sh "${{ matrix.crypto }}"
+    - name: Check Vera node and bulletin
       run: |
-        cargo clippy --locked -p orbis-node -p bulletin --lib --bins --no-default-features --features native,redb,iroh,${{ matrix.crypto }} -- -D warnings
+        cargo clippy --locked -p orbis-node -p bulletin --lib --bins --no-default-features --features vera,redb,iroh,${{ matrix.crypto }} -- -D warnings
     - name: Check reshare participant selection
-      run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib coordinator::reshare::selection::tests -- --test-threads=1
-    - name: Check native authorization and revision anchors
+      run: cargo test --locked -p orbis-node --no-default-features --features vera,redb,iroh,${{ matrix.crypto }} --lib coordinator::reshare::selection::tests -- --test-threads=1
+    - name: Check Vera authorization and revision anchors
       if: matrix.crypto == 'bls12-381'
-      run: cargo test --locked -p authz --no-default-features --features native --lib native::tests -- --test-threads=1
-    - name: Compile native lifecycle scenarios
-      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --lib --no-run
+      run: cargo test --locked -p authz --no-default-features --features vera --lib vera::tests -- --test-threads=1
+    - name: Compile Vera lifecycle scenarios
+      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,vera,test-support/vera,redb,iroh,${{ matrix.crypto }} --lib --no-run
     - name: Check private Go failure diagnostics
-      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --lib trust_go_failure_
+      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,vera,test-support/vera,redb,iroh,${{ matrix.crypto }} --lib trust_go_failure_
     - name: Check bootstrap handoff, shutdown and identity storage
       run: |
         cargo test --locked -p common --no-default-features --lib node_signing
-        cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib bootstrap
-        cargo test --locked -p bulletin --no-default-features --features native --lib native::
+        cargo test --locked -p orbis-node --no-default-features --features vera,redb,iroh,${{ matrix.crypto }} --lib bootstrap
+        cargo test --locked -p bulletin --no-default-features --features vera --lib vera::
 
   # Build the orbis-node integration image once and push it to GHCR (cargo-chef
   # in docker/Dockerfile keeps the dependency compile a cached layer). The
@@ -184,7 +184,7 @@ jobs:
       fail-fast: false
       matrix:
         crypto: [bls12-381, jubjub]
-        backend: ${{ github.event_name == 'workflow_dispatch' && (inputs.scope == 'gateway' || inputs.scope == 'native') && fromJSON('["native"]') || fromJSON('["cosmos", "native"]') }}
+        backend: ${{ github.event_name == 'workflow_dispatch' && (inputs.scope == 'gateway' || inputs.scope == 'vera') && fromJSON('["vera"]') || fromJSON('["cosmos", "vera"]') }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -201,48 +201,48 @@ jobs:
         context: .
         file: docker/Dockerfile
         push: true
-        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}${{ matrix.backend == 'native' && '-native' || '' }}-${{ matrix.crypto }}
+        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}${{ matrix.backend == 'vera' && '-vera' || '' }}-${{ matrix.crypto }}
         labels: |
           org.opencontainers.image.revision=${{ github.sha }}
           io.sourcenetwork.orbis.backend=${{ matrix.backend }}
           io.sourcenetwork.orbis.curve=${{ matrix.crypto }}
-          io.sourcenetwork.orbis.integration-features=${{ matrix.backend == 'native' && 'false' || 'true' }}
+          io.sourcenetwork.orbis.integration-features=${{ matrix.backend == 'vera' && 'false' || 'true' }}
         build-args: |
-          ENABLE_INTEGRATION_TEST=${{ matrix.backend == 'native' && 'false' || 'true' }}
+          ENABLE_INTEGRATION_TEST=${{ matrix.backend == 'vera' && 'false' || 'true' }}
           BACKEND=${{ matrix.backend }}
           RUST_IMAGE=rust:1.99.1-bookworm
           CRYPTO_FEATURE=${{ matrix.crypto }}
         cache-from: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }}
         cache-to: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }},mode=max
-    - name: Build + push native diagnostic image (${{ matrix.crypto }})
-      if: matrix.backend == 'native' && inputs.scope != 'gateway'
+    - name: Build + push Vera diagnostic image (${{ matrix.crypto }})
+      if: matrix.backend == 'vera' && inputs.scope != 'gateway'
       uses: docker/build-push-action@v5
       with:
         context: .
         file: docker/Dockerfile
-        target: native-diagnostic
+        target: vera-diagnostic
         labels: |
           org.opencontainers.image.revision=${{ github.sha }}
-          io.sourcenetwork.orbis.backend=native
+          io.sourcenetwork.orbis.backend=vera
           io.sourcenetwork.orbis.curve=${{ matrix.crypto }}
           io.sourcenetwork.orbis.integration-features=false
           io.sourcenetwork.orbis.unsafe-testing=true
         push: true
-        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}
+        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-vera-diagnostic-${{ matrix.crypto }}
         build-args: |
           ENABLE_INTEGRATION_TEST=false
-          BACKEND=native
+          BACKEND=vera
           RUST_IMAGE=rust:1.99.1-bookworm
           CRYPTO_FEATURE=${{ matrix.crypto }}
         cache-from: |
-          type=gha,scope=integ-native-${{ matrix.crypto }}
-          type=gha,scope=integ-native-diagnostic-${{ matrix.crypto }}
-        cache-to: type=gha,scope=integ-native-diagnostic-${{ matrix.crypto }},mode=max
+          type=gha,scope=integ-vera-${{ matrix.crypto }}
+          type=gha,scope=integ-vera-diagnostic-${{ matrix.crypto }}
+        cache-to: type=gha,scope=integ-vera-diagnostic-${{ matrix.crypto }},mode=max
 
   # Compile every test binary once per backend+crypto and save the shared
   # cache the `unit`/`integration` jobs restore. Backend is matrixed here
-  # (not just crypto) so `integration` below can run both Cosmos and native
-  # cells from one job: each needs its own warm target/ dir, and native's
+  # (not just crypto) so `integration` below can run both Cosmos and Vera
+  # cells from one job: each needs its own warm target/ dir, and Vera's
   # actual run is release-mode, so its warm-up builds in release too (a
   # debug warm-up wouldn't populate the cache the release run reads from).
   compile:
@@ -260,15 +260,15 @@ jobs:
             extra_flags: ""
           - backend: cosmos
             crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,test-support/cosmos,fault-injection,scale-testing
             extra_flags: ""
-          - backend: native
+          - backend: vera
             crypto: bls12-381
-            cargo_flags: --no-default-features --features=integration-test,native,redb,iroh,bls12-381
+            cargo_flags: --no-default-features --features=integration-test,vera,redb,iroh,bls12-381
             extra_flags: --release --locked --build-jobs 2
-          - backend: native
+          - backend: vera
             crypto: jubjub
-            cargo_flags: --no-default-features --features=integration-test,native,redb,iroh,jubjub
+            cargo_flags: --no-default-features --features=integration-test,vera,redb,iroh,jubjub
             extra_flags: --release --locked --build-jobs 2
     steps:
     - uses: actions/checkout@v4
@@ -282,20 +282,20 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ${{ matrix.backend == 'native' && 'protobuf-compiler lld clang libclang-dev cmake pkg-config libssl-dev' || 'protobuf-compiler lld' }}
+        sudo apt-get install -y ${{ matrix.backend == 'vera' && 'protobuf-compiler lld clang libclang-dev cmake pkg-config libssl-dev' || 'protobuf-compiler lld' }}
     - name: Install cargo-nextest
       uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
       with:
         tool: cargo-nextest
     - name: Compile test binaries (${{ matrix.backend }}, ${{ matrix.crypto }})
-      # `-p orbis-node` on native cells only: an unscoped `cargo nextest run`
+      # `-p orbis-node` on Vera cells only: an unscoped `cargo nextest run`
       # unifies features across the workspace. `orbis-bench`'s `bls12-381` and
       # `jubjub` features enable its optional node dependency with
-      # `authz-vera`/`bulletin-vera` (`select-vera`), which cannot unify with
-      # native `select-native`. Cosmos cells stay workspace-wide on purpose:
-      # `DOCKER_TESTS` spans `authz`'s/`bulletin`'s own `vera::tests::`
+      # `authz-vera-go`/`bulletin-vera-go` (`select-vera-go`), which cannot unify with
+      # native `select-vera`. Cosmos cells stay workspace-wide on purpose:
+      # `DOCKER_TESTS` spans `authz`'s/`bulletin`'s own `vera_go::tests::`
       # binaries too, not just orbis-node's.
-      run: cargo nextest run --no-run --profile ci ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
+      run: cargo nextest run --no-run --profile ci ${{ matrix.backend == 'vera' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
     - name: Verify shared E2E inventory (${{ matrix.backend }}, ${{ matrix.crypto }})
       # This compiles/discovers tests but never executes their bodies. The
       # sentinel assertions catch stale filters and cfg drift that `--no-run`
@@ -316,7 +316,7 @@ jobs:
           - crypto: bls12-381
             cargo_flags: --features=integration-test,cosmos,test-support/cosmos,fault-injection,scale-testing
           - crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,test-support/cosmos,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:
@@ -336,7 +336,7 @@ jobs:
     - name: Unit + in-process tests (${{ matrix.crypto }})
       run: cargo nextest run --profile ci ${{ matrix.cargo_flags }} -E "not (${{ env.DOCKER_TESTS }})"
 
-  native-vera-image:
+  vera-image:
     if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'peer-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -344,46 +344,46 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Read pinned native Vera revision
+      - name: Read pinned Vera revision
         id: vera
-        run: echo "revision=$(cat docker/NATIVE_VERA_REF)" >> "$GITHUB_OUTPUT"
+        run: echo "revision=$(cat docker/VERA_REF)" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/docker-builder
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build native Vera image
+      - name: Build Vera image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: docker/Dockerfile.native-vera-integration
+          file: docker/Dockerfile.vera-integration
           push: true
-          tags: ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository }}/vera:${{ github.sha }}
           build-args: VERA_REF=${{ steps.vera.outputs.revision }}
-          cache-from: type=gha,scope=native-vera
-          cache-to: type=gha,scope=native-vera,mode=max
+          cache-from: type=gha,scope=vera
+          cache-to: type=gha,scope=vera,mode=max
 
   # Unified Docker-backed integration pipeline for both backends. Cosmos
   # cells run the `-p orbis-node --lib` subset matched by `DOCKER_TESTS`;
-  # native cells run the same library test tree (minus the
+  # Vera cells run the same library test tree (minus the
   # gateway-only fixture test, which needs the separate Trust-ring artifact
   # pipeline — `scope == 'gateway'`). Sharded 3-way on both sides now —
-  # native's suite has grown substantially through the harness-unification
+  # Vera's suite has grown substantially through the harness-unification
   # migration (PRs 4-6 moved dozens of dual-backend tests into the
   # `tests::e2e` module), so it benefits from the same partitioning Cosmos's
   # side already used. Previously two separately-shaped jobs
-  # (`integration`, Cosmos-only; `native-lifecycle`, native-only,
+  # (`integration`, Cosmos-only; `vera-lifecycle`, Vera-only,
   # unsharded, its own narrower dependency-download-only cache) — merged
   # here now that both read backend/crypto from one matrix instead of
   # being hardcoded per job. Release mode, `--locked`, and `--build-jobs 2`
-  # are kept native-only (matching native-lifecycle's prior tuning
+  # are kept Vera-only (matching vera-lifecycle's prior tuning
   # exactly); Cosmos cells are untouched from the prior `integration` job's
   # invocation shape.
   integration:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'native'
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'vera'
     name: Integration (${{ matrix.backend }}, ${{ matrix.crypto }}, shard ${{ matrix.shard }}/3)
-    needs: [compile, image, native-vera-image]
+    needs: [compile, image, vera-image]
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-integration-${{ strategy.job-index }}/spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     timeout-minutes: 120
     env:
@@ -391,7 +391,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [cosmos, native]
+        backend: [cosmos, vera]
         crypto: [bls12-381, jubjub]
         shard: ["1", "2", "3"]
         include:
@@ -401,15 +401,15 @@ jobs:
             extra_flags: ""
           - backend: cosmos
             crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera,bulletin-vera,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,test-support/cosmos,fault-injection,scale-testing
             extra_flags: ""
-          - backend: native
+          - backend: vera
             crypto: bls12-381
-            cargo_flags: --no-default-features --features=integration-test,native,test-support/native,redb,iroh,bls12-381
+            cargo_flags: --no-default-features --features=integration-test,vera,test-support/vera,redb,iroh,bls12-381
             extra_flags: --release --locked --build-jobs 2
-          - backend: native
+          - backend: vera
             crypto: jubjub
-            cargo_flags: --no-default-features --features=integration-test,native,test-support/native,redb,iroh,jubjub
+            cargo_flags: --no-default-features --features=integration-test,vera,test-support/vera,redb,iroh,jubjub
             extra_flags: --release --locked --build-jobs 2
     steps:
     - name: Verify on-demand runner
@@ -426,7 +426,7 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ${{ matrix.backend == 'native' && 'protobuf-compiler lld clang libclang-dev cmake pkg-config libssl-dev' || 'protobuf-compiler lld' }}
+        sudo apt-get install -y ${{ matrix.backend == 'vera' && 'protobuf-compiler lld clang libclang-dev cmake pkg-config libssl-dev' || 'protobuf-compiler lld' }}
     - name: Install cargo-nextest
       uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
       with:
@@ -443,25 +443,25 @@ jobs:
         docker tag "$INTEG_IMAGE:${{ github.sha }}-${{ matrix.crypto }}" orbis-node-integration:${{ matrix.crypto }}
         echo "ORBIS_INTEGRATION_IMAGE=orbis-node-integration:${{ matrix.crypto }}" >> "$GITHUB_ENV"
         echo "ORBIS_INTEGRATION_CRYPTO=${{ matrix.crypto }}" >> "$GITHUB_ENV"
-    - name: Pull native integration images
-      if: matrix.backend == 'native'
+    - name: Pull Vera integration images
+      if: matrix.backend == 'vera'
       run: |
-        docker pull "$INTEG_IMAGE:${{ github.sha }}-native-${{ matrix.crypto }}"
-        docker pull "$INTEG_IMAGE:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}"
-        docker pull "ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}"
+        docker pull "$INTEG_IMAGE:${{ github.sha }}-vera-${{ matrix.crypto }}"
+        docker pull "$INTEG_IMAGE:${{ github.sha }}-vera-diagnostic-${{ matrix.crypto }}"
+        docker pull "ghcr.io/${{ github.repository }}/vera:${{ github.sha }}"
         {
-          echo "ORBIS_NATIVE_IMAGE=$INTEG_IMAGE:${{ github.sha }}-native-${{ matrix.crypto }}"
-          echo "ORBIS_NATIVE_DIAGNOSTIC_IMAGE=$INTEG_IMAGE:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}"
-          echo "ORBIS_NATIVE_VERA_IMAGE=ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}"
+          echo "ORBIS_VERA_NODE_IMAGE=$INTEG_IMAGE:${{ github.sha }}-vera-${{ matrix.crypto }}"
+          echo "ORBIS_VERA_DIAGNOSTIC_IMAGE=$INTEG_IMAGE:${{ github.sha }}-vera-diagnostic-${{ matrix.crypto }}"
+          echo "ORBIS_VERA_IMAGE=ghcr.io/${{ github.repository }}/vera:${{ github.sha }}"
         } >> "$GITHUB_ENV"
     - name: Integration tests (${{ matrix.backend }}, ${{ matrix.crypto }}, shard ${{ matrix.shard }}/3)
-      # `-p orbis-node` on native cells only — see `compile`'s identical note
+      # `-p orbis-node` on Vera cells only — see `compile`'s identical note
       # above; same workspace-wide feature-unification conflict, same fix,
       # same reason Cosmos stays unscoped (DOCKER_TESTS needs authz/bulletin
       # built too).
       run: >-
-        cargo nextest run --profile ci --retries 0 --no-tests fail ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
-        -E "${{ matrix.backend == 'native' && '(test(/^tests::e2e::/) & not test(=tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg)) | test(/^tests::node::/)' || env.DOCKER_TESTS }}"
+        cargo nextest run --profile ci --retries 0 --no-tests fail ${{ matrix.backend == 'vera' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
+        -E "${{ matrix.backend == 'vera' && '(test(/^tests::e2e::/) & not test(=tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg)) | test(/^tests::node::/)' || env.DOCKER_TESTS }}"
         --partition count:${{ matrix.shard }}/3
 
   sign-peer-recovery:
@@ -515,7 +515,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  native-trust-artifacts:
+  vera-trust-artifacts:
     name: Build native Trust ring artifacts once
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'gateway' }}
     runs-on: ubuntu-24.04
@@ -530,7 +530,7 @@ jobs:
         id: sources
         env:
           TRUST_REVISION: ${{ inputs.trust_revision }}
-        run: python3 scripts/native_trust_hosted.py validate --trust-ref "$TRUST_REVISION"
+        run: python3 scripts/vera_trust_hosted.py validate --trust-ref "$TRUST_REVISION"
       - uses: actions/checkout@v4
         with:
           repository: sourcenetwork/trust-api
@@ -559,7 +559,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: native-trust-artifacts-${{ runner.os }}-${{ steps.sources.outputs.defra }}
+          key: vera-trust-artifacts-${{ runner.os }}-${{ steps.sources.outputs.defra }}
       - uses: ./.github/actions/docker-builder
       - uses: docker/login-action@v3
         with:
@@ -567,31 +567,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate private orchestration guards
-        run: python3 scripts/test-native-trust-hosted.py
+        run: python3 scripts/test-vera-trust-hosted.py
       - name: Stage normal runtimes and focused Go driver
         env:
           TRUST_REVISION: ${{ inputs.trust_revision }}
           TRUST_IMAGE: ghcr.io/${{ github.repository }}/trust-native:${{ github.sha }}-${{ inputs.trust_revision }}
         run: |
-          python3 scripts/native_trust_hosted.py build --trust-ref "$TRUST_REVISION" \
+          python3 scripts/vera_trust_hosted.py build --trust-ref "$TRUST_REVISION" \
             --trust .native/trust --vera .native/vera --defra .native/defra \
-            --image "$TRUST_IMAGE" --output "$RUNNER_TEMP/native-trust-build"
+            --image "$TRUST_IMAGE" --output "$RUNNER_TEMP/vera-trust-build"
       - name: Transfer immutable binaries and hashes only
         id: archive
         uses: actions/upload-artifact@v4
         with:
-          name: native-trust-artifacts-${{ github.run_attempt }}
+          name: vera-trust-artifacts-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/native-trust-build/native-trust-artifacts.tar
-            ${{ runner.temp }}/native-trust-build/native-trust-artifacts.sha256
+            ${{ runner.temp }}/vera-trust-build/vera-trust-artifacts.tar
+            ${{ runner.temp }}/vera-trust-build/vera-trust-artifacts.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
-  native-trust-ring:
+  vera-trust-ring:
     name: Native Trust ring (${{ matrix.crypto }})
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'gateway' }}
-    needs: [image, native-vera-image, native-trust-artifacts]
+    needs: [image, vera-image, vera-trust-artifacts]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -602,8 +602,8 @@ jobs:
       matrix:
         crypto: [bls12-381, jubjub]
     env:
-      ORBIS_NATIVE_IMAGE: ghcr.io/${{ github.repository }}/node-integration:${{ github.sha }}-native-${{ matrix.crypto }}
-      ORBIS_NATIVE_VERA_IMAGE: ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}
+      ORBIS_VERA_NODE_IMAGE: ghcr.io/${{ github.repository }}/node-integration:${{ github.sha }}-vera-${{ matrix.crypto }}
+      ORBIS_VERA_IMAGE: ghcr.io/${{ github.repository }}/vera:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -618,8 +618,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: native-trust-ring-${{ runner.os }}-${{ matrix.crypto }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: native-trust-ring-${{ runner.os }}-${{ matrix.crypto }}-
+          key: vera-trust-ring-${{ runner.os }}-${{ matrix.crypto }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: vera-trust-ring-${{ runner.os }}-${{ matrix.crypto }}-
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -627,13 +627,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.native-trust-artifacts.outputs.artifact }}
+          artifact-ids: ${{ needs.vera-trust-artifacts.outputs.artifact }}
           merge-multiple: true
-          path: ${{ runner.temp }}/native-trust-download
+          path: ${{ runner.temp }}/vera-trust-download
       - name: Verify executable and container ring/DKG contracts
         env:
           TRUST_REVISION: ${{ inputs.trust_revision }}
         run: |
-          python3 scripts/native_trust_hosted.py run --trust-ref "$TRUST_REVISION" \
-            --curve "${{ matrix.crypto }}" --artifacts "$RUNNER_TEMP/native-trust-download" \
-            --output "$RUNNER_TEMP/native-trust-run"
+          python3 scripts/vera_trust_hosted.py run --trust-ref "$TRUST_REVISION" \
+            --curve "${{ matrix.crypto }}" --artifacts "$RUNNER_TEMP/vera-trust-download" \
+            --output "$RUNNER_TEMP/vera-trust-run"

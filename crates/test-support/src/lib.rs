@@ -8,13 +8,13 @@
 //! a "failed to become healthy" panic rather than a clear error.
 //!
 //! - [`compose`] — Docker Compose subprocess helpers shared by the two below.
-//! - [`vera_container`] — [`VeraTestContainer`], a standalone Vera chain (Cosmos only).
-//! - [`network`] — [`CosmosNetwork`]/[`NativeNetworkAdapter`], each backend's
+//! - [`vera_go_container`] — [`VeraGoTestContainer`], a standalone Vera chain (Cosmos only).
+//! - [`network`] — [`CosmosNetwork`]/[`VeraNetworkAdapter`], each backend's
 //!   own chain-plus-orbis-node-instances lifecycle type. Each backend's
 //!   `TestEnvironment` implementation constructs its own directly — no
 //!   shared runtime-dispatch wrapper; backend selection happens once, at
 //!   compile time, via which concrete environment a test registers.
-//! - `container` / `native_network` — native containers with explicit stop, crash
+//! - `container` / `vera_network` — native containers with explicit stop, crash
 //!   and restart control, enabled with the `native` feature.
 //! - [`fixture`] — backend-neutral [`fixture::ScenarioFixture`]/
 //!   [`fixture::TestEnvironment`] vocabulary.
@@ -32,38 +32,38 @@ mod network;
 pub mod node_readiness;
 
 pub use admin::BackendAdmin;
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 pub use compose::{build_cli_tool_sidecar_image, run_sidecar_container};
 #[cfg(feature = "cosmos")]
 pub use environment::CosmosTestEnvironment;
 #[cfg(feature = "cosmos")]
 pub use network::CosmosNetwork;
-#[cfg(all(unix, feature = "native"))]
-pub use network::NativeNetworkAdapter;
+#[cfg(all(unix, feature = "vera"))]
+pub use network::VeraNetworkAdapter;
 pub use network::NodeInfo;
 
 #[cfg(feature = "cosmos")]
-mod vera_container;
+mod vera_go_container;
 #[cfg(feature = "cosmos")]
-pub use vera_container::VeraTestContainer;
+pub use vera_go_container::VeraGoTestContainer;
 
 pub mod admin;
 
 #[cfg(unix)]
 mod container;
 #[cfg(unix)]
-pub use container::{bind_mount_user, ContainerError, ContainerExit, ContainerNode, NativeImage};
+pub use container::{bind_mount_user, ContainerError, ContainerExit, ContainerNode, VeraImage};
 
-#[cfg(all(unix, feature = "native"))]
-mod native_network;
-#[cfg(all(unix, feature = "native"))]
-pub use native_network::{NativeTestNetwork, NativeTestNode};
+#[cfg(all(unix, feature = "vera"))]
+mod vera_network;
+#[cfg(all(unix, feature = "vera"))]
+pub use vera_network::{VeraTestNetwork, VeraTestNode};
 // Free-function Compose primitives for callers outside this crate that hold
 // a long-lived handle to one named service (e.g.
-// `bin/orbis-node/src/tests/e2e/native_lifecycle.rs`'s `Node`) — see
-// `native_network::compose_build`'s doc comment.
-#[cfg(all(unix, feature = "native"))]
-pub use native_network::{
+// `bin/orbis-node/src/tests/e2e/vera_lifecycle.rs`'s `Node`) — see
+// `vera_network::compose_build`'s doc comment.
+#[cfg(all(unix, feature = "vera"))]
+pub use vera_network::{
     compose_build, compose_discover_endpoint, compose_exit_code, compose_kill, compose_save_logs,
     compose_start, compose_stop, compose_up,
 };

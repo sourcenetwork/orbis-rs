@@ -1,30 +1,28 @@
-//! Vera (Cosmos) authorization construction via `AuthzFactory`.
+//! Native authorization construction via `AuthzFactory`.
 
 use super::VeraAuth;
 use crate::{
+    error::AuthZError,
     r#trait::Authz,
     startup::{AuthzFactory, AuthzStartupError, PreparedAuthz},
 };
 use async_trait::async_trait;
-use common::{
-    blockchain::ChainConfigBuilder,
-    startup::{ConnectionPhase, PrepareContext, StartupProgress},
-};
+use common::blockchain::vera::{VeraTrustChainConfig, VeraTrustConfig};
+use common::startup::{PrepareContext, StartupProgress};
 use std::sync::Arc;
+use vera_client::VeraClient;
 
 pub struct VeraAuthzFactory;
 
 impl AuthzFactory for VeraAuthzFactory {
     const NAME: &'static str = "authz/vera";
-    type Config = ChainConfigBuilder;
-    type ValidatedConfig = ChainConfigBuilder;
+    type Config = VeraTrustChainConfig;
+    type ValidatedConfig = VeraTrustConfig;
     type Prepared = PreparedVeraAuthz;
 
     fn validate(config: Self::Config) -> Result<Self::ValidatedConfig, AuthzStartupError> {
-        config
-            .validate()
-            .map_err(AuthzStartupError::Configuration)?;
-        Ok(config)
+        VeraTrustConfig::try_from(config)
+            .map_err(|e| AuthzStartupError::Configuration(e.to_string()))
     }
 
     fn prepare(
@@ -36,17 +34,26 @@ impl AuthzFactory for VeraAuthzFactory {
 }
 
 pub struct PreparedVeraAuthz {
-    config: ChainConfigBuilder,
+    config: VeraTrustConfig,
 }
 
 #[async_trait]
 impl PreparedAuthz for PreparedVeraAuthz {
     async fn connect(
         self,
-        progress: &dyn StartupProgress,
+        _progress: &dyn StartupProgress,
     ) -> Result<Arc<dyn Authz>, AuthzStartupError> {
-        progress.set_phase(ConnectionPhase::Connecting);
-        let auth = VeraAuth::new(self.config).await?;
+        let auth = tokio::time::timeout(
+            self.config.timeout,
+            VeraAuth::connect(
+                VeraClient::new(&self.config.endpoint),
+                self.config.trusted,
+                self.config.root,
+                self.config.maximum_age,
+            ),
+        )
+        .await?
+        .map_err(AuthZError::from)?;
         Ok(Arc::new(auth))
     }
 }

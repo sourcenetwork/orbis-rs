@@ -17,7 +17,7 @@ crypto = { path = "../../crates/crypto", default-features = false }
 authn = { path = "../../crates/authn" }
 authz = { path = "../../crates/authz" }
 common = { path = "../../crates/common", features = ["funding"] }
-bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera"] }
+bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera-go"] }
 pre-share = { path = "../../crates/pre-share", default-features = false }
 hex = { workspace = true }
 serde = { workspace = true }
@@ -35,17 +35,17 @@ zeroize = { workspace = true, optional = true }
 [[bin]]
 name = "vera-admin"
 path = "src/bin/vera-admin.rs"
-required-features = ["native"]
+required-features = ["vera"]
 
 [features]
-native = ["bulletin/native", "common/native", "dep:alloy-primitives", "dep:vera-client", "dep:vera-domain", "dep:local-storage", "dep:zeroize"]
+vera = ["bulletin/vera", "common/vera", "dep:alloy-primitives", "dep:vera-client", "dep:vera-domain", "dep:local-storage", "dep:zeroize"]
 default = ["bls12-381"]
 bls12-381 = ["crypto/bls12-381", "pre-share/bls12-381"]
 jubjub = ["crypto/jubjub", "pre-share/jubjub"]
 
 [[test]]
-name = "native_admin"
-required-features = ["native"]
+name = "vera_admin"
+required-features = ["vera"]
 
 [dev-dependencies]
 vera-harness = { workspace = true }

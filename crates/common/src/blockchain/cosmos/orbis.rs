@@ -1,10 +1,10 @@
-//! `VeraClient` extension methods for x/orbis: transaction submission and queries.
+//! `VeraGoClient` extension methods for x/orbis: transaction submission and queries.
 
 use crate::blockchain::orbis::*;
-use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
+use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraGoClient};
 use prost::Message;
 
-impl VeraClient {
+impl VeraGoClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn orbis_create_ring(
         &self,

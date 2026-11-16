@@ -1,0 +1,14 @@
+{
+  "authz": {
+    "chain_id": "vera-localnet",
+    "rpc_url": "http://vera-go:26657",
+    "rest_url": "http://vera-go:1317",
+    "grpc_url": "http://vera-go:9090"
+  },
+  "bulletin": {
+    "chain_id": "vera-localnet",
+    "rpc_url": "http://vera-go:26657",
+    "rest_url": "http://vera-go:1317",
+    "grpc_url": "http://vera-go:9090"
+  }
+}

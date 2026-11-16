@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// `bulletin::startup::NodeServicesConfig`). `validate` is side-effect free;
 /// `prepare` may use local storage after every selected service has validated.
 pub trait AuthzFactory {
-    /// Diagnostics name (logging/tracing), e.g. `"authz/native"`.
+    /// Diagnostics name (logging/tracing), e.g. `"authz/vera"`.
     const NAME: &'static str;
     type Config: DeserializeOwned;
     type ValidatedConfig;

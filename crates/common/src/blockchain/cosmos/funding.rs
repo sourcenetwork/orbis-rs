@@ -6,7 +6,7 @@
 //! both `cli-tool` and `bulletin`'s Vera backend can call it without `bulletin`
 //! depending on `cli-tool`.
 
-use super::{ChainConfig, TxSigner, VeraClient};
+use super::{ChainConfig, TxSigner, VeraGoClient};
 use crate::blockchain::{Result, TEST_ACCOUNT_HEX_KEY};
 
 pub async fn fund_with_signer(
@@ -24,7 +24,7 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
 /// Ensure an integration account has at least `minimum` tokens without
 /// submitting another transfer when the fixture funded it in genesis.
 pub async fn ensure_funded(address: String, config: ChainConfig, minimum: u64) -> Result<()> {
-    let client = VeraClient::new(config.clone()).await?;
+    let client = VeraGoClient::new(config.clone()).await?;
     const BALANCE_MAX_ATTEMPTS: u32 = 30;
     const BALANCE_RETRY_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(1);
 
@@ -64,7 +64,7 @@ async fn fund_impl(address: String, config: ChainConfig, signing_key_hex: &str) 
 
     // Create the client (with signer) once
     let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())?;
-    let client = VeraClient::with_signer(config, signer).await?;
+    let client = VeraGoClient::with_signer(config, signer).await?;
 
     for attempt in 1..=max_retries {
         match client.transfer(&address, amount, denom).await {

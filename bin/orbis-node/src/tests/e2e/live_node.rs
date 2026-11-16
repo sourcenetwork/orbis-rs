@@ -2,9 +2,9 @@
 //! test families (harness-unification migration, PR 6).
 //!
 //! Spins up real orbis nodes IN-PROCESS (no Docker node images) against a
-//! chain-only Docker container — Cosmos/Vera via [`test_support::VeraTestContainer`],
-//! native Vera via [`test_support::NativeTestNetwork`] directly (not through
-//! `NativeNetworkAdapter`, which also launches `node1..4` Docker images this
+//! chain-only Docker container — Cosmos/Vera via [`test_support::VeraGoTestContainer`],
+//! native Vera via [`test_support::VeraTestNetwork`] directly (not through
+//! `VeraNetworkAdapter`, which also launches `node1..4` Docker images this
 //! layer doesn't want). Every per-node gRPC server is a bare
 //! `tonic::transport::Server` built from an `InitializedNode`
 //! ([`spawn_test_grpc_server`]), giving test code a direct, in-process handle
@@ -17,7 +17,7 @@
 //! `Chain`'s surface (`node_keys`, `policy_id`) and the 4-node shape are here
 //! for the next migration batch (the other 10 Bucket A/B tests in
 //! `concurrent.rs`/`fault_injection.rs`), not yet exercised. Same precedent as
-//! `native_environment.rs`'s own module-level `#![allow(dead_code)]`.
+//! `vera_environment.rs`'s own module-level `#![allow(dead_code)]`.
 #![allow(dead_code)]
 
 // `crate::` is the `orbis-node` lib. This module is part of that lib's
@@ -44,7 +44,7 @@ use crate::{
     store_secret::StoreSecretServiceImpl,
     Args, InitializedNode, NetworkIngressArgs, NodeConfig,
 };
-#[cfg(all(feature = "integration-test", feature = "native"))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 use crate::{
     app_state::AppState,
     constants::{
@@ -83,23 +83,23 @@ use tonic::Request;
 #[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use {
     authz::AuthzImpl,
-    bulletin::vera::startup::MIN_NODE_BALANCE,
+    bulletin::vera_go::startup::MIN_NODE_BALANCE,
     bulletin::BulletinImpl,
-    common::blockchain::{ChainConfig, VeraClient},
-    test_support::VeraTestContainer,
+    common::blockchain::{ChainConfig, VeraGoClient},
+    test_support::VeraGoTestContainer,
 };
 
-#[cfg(all(feature = "integration-test", feature = "native"))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 use {
     alloy_primitives::B256,
-    authz::native::NativeAuth,
-    bulletin::native::{startup::initialize_identity, NativeBulletin, NativeVeraClient},
+    authz::vera::VeraAuth,
+    bulletin::vera::{startup::initialize_identity, VeraBulletin, VeraClient},
     commonware_codec::DecodeExt,
-    test_support::NativeTestNetwork,
+    test_support::VeraTestNetwork,
     vera_client::{
         create_scoped_bearer_token,
         rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig, RingState},
-        BlsSigner, DelegationScope, VeraClient,
+        BlsSigner, DelegationScope, VeraClient as SdkVeraClient,
     },
     vera_domain::{ConsensusPublicKey, NativeTx},
 };
@@ -486,13 +486,13 @@ fn unix_now() -> u64 {
 #[cfg(all(feature = "integration-test", feature = "cosmos"))]
 pub struct Chain {
     pub chain_config: ChainConfig,
-    container: VeraTestContainer,
+    container: VeraGoTestContainer,
 }
 
 #[cfg(all(feature = "integration-test", feature = "cosmos"))]
 impl Chain {
     async fn start() -> Self {
-        let container = VeraTestContainer::new();
+        let container = VeraGoTestContainer::new();
         let chain_config = container.chain_config();
         Self {
             chain_config,
@@ -616,7 +616,7 @@ impl Chain {
     }
 
     async fn read_node_demerits(&self, ring_id: &str, node_key: &str) -> u64 {
-        let client = VeraClient::new(self.chain_config.clone())
+        let client = VeraGoClient::new(self.chain_config.clone())
             .await
             .expect("chain client for demerit read");
         client
@@ -632,17 +632,17 @@ impl Chain {
 }
 
 // =========================================================================
-// Native chain-only bootstrap
+// Vera chain-only bootstrap
 // =========================================================================
 
-#[cfg(all(feature = "integration-test", feature = "native"))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 const DEPLOYMENT: u64 = 9100;
 
 /// Same policy YAML as `cli_tool::commands::admin::TEST_POLICY_YAML`
 /// (private to that crate) — duplicated verbatim for native's direct
 /// `native_create_policy` call, same "duplicate the deterministic test
 /// constant" precedent used throughout this migration.
-#[cfg(all(feature = "integration-test", feature = "native"))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 const DOCUMENT_POLICY_YAML: &str = r#"
 name: test-policy
 resources:
@@ -661,10 +661,10 @@ resources:
         expr: creator
 "#;
 
-#[cfg(all(feature = "integration-test", feature = "native"))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 pub struct Chain {
-    cluster: NativeTestNetwork,
-    client: VeraClient,
+    cluster: VeraTestNetwork,
+    client: SdkVeraClient,
     trusted: ConsensusPublicKey,
     root: [u8; 32],
     controller: k256::ecdsa::SigningKey,
@@ -672,10 +672,10 @@ pub struct Chain {
     worker: BlsSigner,
 }
 
-#[cfg(all(feature = "integration-test", feature = "native"))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 impl Chain {
     async fn start() -> Self {
-        let cluster = NativeTestNetwork::start(DEPLOYMENT).await;
+        let cluster = VeraTestNetwork::start(DEPLOYMENT).await;
         let root: [u8; 32] = hex::decode(cluster.deployment_root_hex())
             .expect("deployment root is hex")
             .try_into()
@@ -691,7 +691,7 @@ impl Chain {
         .expect("controller did");
         let worker = BlsSigner::new(7u64.into(), DEPLOYMENT).expect("worker signer");
         let endpoint = cluster.node(0).rpc_url();
-        let client = VeraClient::new(&endpoint);
+        let client = SdkVeraClient::new(&endpoint);
         Self {
             cluster,
             client,
@@ -708,7 +708,7 @@ impl Chain {
     }
 
     /// Poll until a submitted native transaction is certified (or panic).
-    /// Mirrors `bin/orbis-node/src/tests/e2e/native_confirmation.rs`'s own
+    /// Mirrors `bin/orbis-node/src/tests/e2e/vera_confirmation.rs`'s own
     /// `confirmed`/`wait` helpers — duplicated here, parameterized on this
     /// cluster's client, rather than re-invented.
     async fn confirmed(&self, id: B256) {
@@ -799,10 +799,10 @@ impl Chain {
         let identity = initialize_identity(local_storage, &node_dir, None)
             .expect("initialize native identity");
 
-        let worker_dir = node_dir.join("native-vera").join(hex::encode(self.root));
+        let worker_dir = node_dir.join("vera").join(hex::encode(self.root));
         let endpoint = self.cluster.node(0).rpc_url();
-        let writer = NativeVeraClient::open(
-            VeraClient::new(&endpoint),
+        let writer = VeraClient::open(
+            SdkVeraClient::new(&endpoint),
             self.trusted,
             self.root,
             DEPLOYMENT,
@@ -812,19 +812,19 @@ impl Chain {
         .expect("open native vera client");
 
         let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-            NativeBulletin::connect(
+            VeraBulletin::connect(
                 writer,
-                VeraClient::new(&endpoint),
+                SdkVeraClient::new(&endpoint),
                 30,
                 Duration::from_secs(30),
             )
             .await
-            .expect("NativeBulletin connect"),
+            .expect("VeraBulletin connect"),
         );
         let authz: Arc<dyn Authz> = Arc::new(
-            NativeAuth::connect(VeraClient::new(&endpoint), self.trusted, self.root, 30)
+            VeraAuth::connect(SdkVeraClient::new(&endpoint), self.trusted, self.root, 30)
                 .await
-                .expect("NativeAuth connect"),
+                .expect("VeraAuth connect"),
         );
 
         (

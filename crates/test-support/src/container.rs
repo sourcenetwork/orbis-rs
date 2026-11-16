@@ -35,19 +35,19 @@ pub enum ContainerError {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum NativeImage {
+pub enum VeraImage {
     Vera,
     Orbis,
     OrbisDiagnostic,
 }
-impl NativeImage {
+impl VeraImage {
     fn image(self) -> String {
         let (variable, fallback) = match self {
-            Self::Vera => ("ORBIS_NATIVE_VERA_IMAGE", "orbis-vera-native:local"),
-            Self::Orbis => ("ORBIS_NATIVE_IMAGE", "orbis-node-native:local"),
+            Self::Vera => ("ORBIS_VERA_IMAGE", "orbis-vera:local"),
+            Self::Orbis => ("ORBIS_VERA_NODE_IMAGE", "orbis-node-vera:local"),
             Self::OrbisDiagnostic => (
-                "ORBIS_NATIVE_DIAGNOSTIC_IMAGE",
-                "orbis-node-native-diagnostic:local",
+                "ORBIS_VERA_DIAGNOSTIC_IMAGE",
+                "orbis-node-vera-diagnostic:local",
             ),
         };
         std::env::var(variable).unwrap_or_else(|_| fallback.into())
@@ -108,7 +108,7 @@ pub struct ContainerNode {
 }
 impl ContainerNode {
     pub fn start(
-        image: NativeImage,
+        image: VeraImage,
         root: &Path,
         directory: &Path,
         args: &[String],
@@ -119,7 +119,7 @@ impl ContainerNode {
             return Err(ContainerError::Platform);
         }
         let (root, directory, log) = private_paths(root, directory, log)?;
-        let project = unique_project_name("orbis-native");
+        let project = unique_project_name("orbis-vera");
         let mut control = tempfile::Builder::new()
             .prefix("orbis-compose-")
             .tempdir()?;
@@ -224,7 +224,7 @@ impl ContainerNode {
 
     // Direct Docker commands avoid a Compose plugin subprocess surviving
     // cancellation. Dropping the future kills the Docker client, not the node.
-    #[cfg(feature = "native")]
+    #[cfg(feature = "vera")]
     async fn run_async(
         &self,
         operation: &'static str,
@@ -257,7 +257,7 @@ impl ContainerNode {
     }
 
     /// Observe the node without blocking a caller's asynchronous readiness gate.
-    #[cfg(feature = "native")]
+    #[cfg(feature = "vera")]
     pub async fn try_wait_async(&self) -> Result<Option<ContainerExit>, ContainerError> {
         let mut command = Command::new("docker");
         command.args(["inspect", "--format", "{{json .State}}", &self.container]);
@@ -269,7 +269,7 @@ impl ContainerNode {
     }
 
     /// Refresh private live logs; cancellation respects the caller's deadline.
-    #[cfg(feature = "native")]
+    #[cfg(feature = "vera")]
     pub async fn refresh_logs(&self) -> Result<(), ContainerError> {
         let mut command = Command::new("docker");
         command.args(["logs", &self.container]);
@@ -278,7 +278,7 @@ impl ContainerNode {
         Ok(())
     }
 
-    #[cfg(feature = "native")]
+    #[cfg(feature = "vera")]
     pub async fn interrupt_async(&self) -> Result<(), ContainerError> {
         let mut command = Command::new("docker");
         command.args(["kill", "--signal", "SIGINT", &self.container]);

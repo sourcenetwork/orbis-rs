@@ -72,7 +72,7 @@ cargo run -p orbis-bench -- doctor
 cargo run -p orbis-bench -- doctor --runtime-image orbis-bench-node:bls12-381
 ```
 
-The benchmark node image is [Dockerfile.node](./Dockerfile.node). It uses the production features `redb`, `authz-vera`, `bulletin-vera`, and `iroh`, plus the selected crypto implementation. It adds only `iproute2` and basic health-check utilities to the runtime layer.
+The benchmark node image is [Dockerfile.node](./Dockerfile.node). It uses the production features `redb`, `authz-vera-go`, `bulletin-vera-go`, and `iroh`, plus the selected crypto implementation. It adds only `iproute2` and basic health-check utilities to the runtime layer.
 
 ## Lifecycle
 

@@ -1,7 +1,7 @@
 use anyhow::{bail, ensure, Context, Result};
-use bulletin::native::decode_node_signing_key;
+use bulletin::vera::decode_node_signing_key;
 use clap::{Parser, Subcommand};
-use common::blockchain::native::{open_native_worker, NativeConfig};
+use common::blockchain::vera::{open_vera_worker, VeraConfig};
 use local_storage::{r#trait::LocalStorage, redb::RedbStorage};
 use serde_json::json;
 use std::{
@@ -98,7 +98,7 @@ fn ring_command(path: &Path) -> Result<RingCommand> {
     Ok(serde_json::from_slice(&read_bounded(path, 64 * 1024)?)?)
 }
 
-fn open_worker(args: &Args, config: &NativeConfig) -> Result<NativeWorker> {
+fn open_worker(args: &Args, config: &VeraConfig) -> Result<NativeWorker> {
     let base = args
         .directory
         .as_ref()
@@ -125,7 +125,7 @@ fn open_worker(args: &Args, config: &NativeConfig) -> Result<NativeWorker> {
             .context("store path is not UTF-8")?
             .to_owned(),
     )?;
-    Ok(open_native_worker(
+    Ok(open_vera_worker(
         &storage,
         &base.join("worker"),
         config.root,
@@ -142,7 +142,7 @@ fn print(value: serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-fn observe(timestamp: u64, config: &NativeConfig) -> Result<()> {
+fn observe(timestamp: u64, config: &VeraConfig) -> Result<()> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     ensure!(
         timestamp <= now.saturating_add(15) && now.saturating_sub(timestamp) <= config.maximum_age,
@@ -154,9 +154,9 @@ fn observe(timestamp: u64, config: &NativeConfig) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let raw: common::blockchain::native::NativeChainConfig =
+    let raw: common::blockchain::vera::VeraChainConfig =
         serde_json::from_slice(&read_bounded(&args.vera_config, 16 * 1024)?)?;
-    let config = NativeConfig::try_from(raw).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let config = VeraConfig::try_from(raw).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     if let Command::RingId { request } = &args.command {
         let RingCommand::Create(ring) = ring_command(request)? else {
             bail!("ring-id requires a Create request")
@@ -197,7 +197,7 @@ async fn main() -> Result<()> {
         .context("request deadline exceeded; any pending submission remains journaled")?
 }
 
-async fn run(args: &Args, config: &NativeConfig) -> Result<()> {
+async fn run(args: &Args, config: &VeraConfig) -> Result<()> {
     let client = VeraClient::new(&config.endpoint);
     let first = client.read_finalized_revision(1, &config.trusted).await?;
     ensure!(

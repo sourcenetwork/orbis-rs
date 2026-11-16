@@ -13,7 +13,7 @@ mod rpc;
 mod signer;
 
 use super::{BlockchainError, Result};
-pub use client::{AccountInfo, BroadcastResult, VeraClient};
+pub use client::{AccountInfo, BroadcastResult, VeraGoClient};
 pub use config::{ChainConfig, ChainConfigBuilder, GasPrice};
 pub use signer::TxSigner;
 

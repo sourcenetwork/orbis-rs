@@ -91,7 +91,7 @@ impl ChainConfig {
 
     /// Reject a chain endpoint that would send reads — ACP verdicts, bulletin
     /// records, block metadata — in plaintext to a host outside the operator's
-    /// trust boundary. Called by [`VeraClient::new`](super::VeraClient::new).
+    /// trust boundary. Called by [`VeraGoClient::new`](super::VeraGoClient::new).
     ///
     /// A lying or man-in-the-middled endpoint can return `authorized = true` or a
     /// doctored record, so `rpc_url` / `rest_url` are effectively an authorization

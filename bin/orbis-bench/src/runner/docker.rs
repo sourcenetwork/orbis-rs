@@ -23,7 +23,7 @@ impl BenchmarkRunner {
             stack_id,
             stack,
             crypto: self.experiment.crypto,
-            vera_ref: &self.experiment.vera_ref,
+            vera_go_ref: &self.experiment.vera_go_ref,
             vera_replicas: self.experiment.vera_replicas,
             resources: &self.experiment.resources,
             scheduler_poll_secs: self.experiment.pss_poll_interval_secs,
@@ -50,7 +50,7 @@ impl BenchmarkRunner {
             .await
             .ok();
             manifest.vera_image =
-                image_digest(&crate::compose::vera_image_tag(&self.experiment.vera_ref))
+                image_digest(&crate::compose::vera_image_tag(&self.experiment.vera_go_ref))
                     .await
                     .ok();
             store.update_manifest(manifest)?;
@@ -247,7 +247,7 @@ impl BenchmarkRunner {
         &self,
         ctx: &mut TrialContext<'_>,
         compose: &DockerCompose,
-        controller: &VeraClient,
+        controller: &VeraGoClient,
         endpoints: &[NodeEndpoint],
         rings: &CaseRings,
         resource_rx: &mut mpsc::Receiver<crate::results::ResourceSample>,
@@ -714,7 +714,7 @@ impl BenchmarkRunner {
         &self,
         ctx: &mut TrialContext<'_>,
         compose: &DockerCompose,
-        controller: &VeraClient,
+        controller: &VeraGoClient,
         endpoints: &[NodeEndpoint],
         rings: &CaseRings,
         ring: &PlannedRing,
@@ -848,7 +848,7 @@ impl BenchmarkRunner {
         &self,
         ctx: &mut TrialContext<'_>,
         compose: &DockerCompose,
-        controller: &VeraClient,
+        controller: &VeraGoClient,
         endpoints: &[NodeEndpoint],
         rings: &CaseRings,
     ) -> Result<bool> {
@@ -1137,7 +1137,7 @@ fn committee_endpoints(ring: &PlannedRing, endpoints: &[NodeEndpoint]) -> Vec<No
 
 async fn establish_ring(
     clients: &mut DirectClients,
-    controller: &VeraClient,
+    controller: &VeraGoClient,
     ring: &PlannedRing,
     rng: &mut StdRng,
     deadline: Duration,
@@ -1376,9 +1376,9 @@ async fn discover_identities(
 }
 
 async fn discover_chain_config(compose: &DockerCompose) -> Result<ChainConfig> {
-    let rpc = compose.published_port("vera", 26657).await?;
-    let rest = compose.published_port("vera", 1317).await?;
-    let grpc = compose.published_port("vera", 9090).await?;
+    let rpc = compose.published_port("vera-go", 26657).await?;
+    let rest = compose.published_port("vera-go", 1317).await?;
+    let grpc = compose.published_port("vera-go", 9090).await?;
     Ok(ChainConfig::builder()
         .rpc_url(Some(format!("http://127.0.0.1:{rpc}")))
         .rest_url(Some(format!("http://127.0.0.1:{rest}")))
@@ -1386,9 +1386,9 @@ async fn discover_chain_config(compose: &DockerCompose) -> Result<ChainConfig> {
         .build())
 }
 
-async fn controller_client(config: ChainConfig) -> Result<VeraClient> {
+async fn controller_client(config: ChainConfig) -> Result<VeraGoClient> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())?;
-    Ok(VeraClient::with_signer(config, signer).await?)
+    Ok(VeraGoClient::with_signer(config, signer).await?)
 }
 
 async fn scrape_committee(committee: &[NodeEndpoint]) -> Vec<MetricSnapshot> {
@@ -1444,7 +1444,7 @@ fn histogram_average_ms(deltas: &BTreeMap<String, f64>, metric: &str) -> Option<
 }
 
 async fn wait_reshare_finalized(
-    controller: &VeraClient,
+    controller: &VeraGoClient,
     clients: &DirectClients,
     ring_id: &str,
     original_ring_pk: &str,
@@ -1520,7 +1520,7 @@ async fn wait_reshare_finalized(
 }
 
 pub(crate) async fn read_ring_with_retry(
-    controller: &VeraClient,
+    controller: &VeraGoClient,
     ring_id: &str,
 ) -> Result<Option<Ring>> {
     const MAX_ATTEMPTS: usize = 3;

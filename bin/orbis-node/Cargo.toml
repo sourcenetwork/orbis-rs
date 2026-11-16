@@ -94,19 +94,19 @@ test-support = { path = "../../crates/test-support", default-features = false }
 
 [features]
 # Combined convenience feature for the common "fully native" build.
-# `authz-native`/`bulletin-native` below are independently selectable, so a
+# `authz-vera`/`bulletin-vera` below are independently selectable, so a
 # build can also mix one native side with the other's vera implementation.
-native = ["authz-native", "bulletin-native", "test-support/native"]
-authz-native = ["authz/native", "authz/select-native", "local-storage/redb"]
-bulletin-native = ["bulletin/native", "bulletin/select-native", "local-storage/redb"]
-default = ["local-storage/redb", "bls12-381", "authz-vera", "bulletin-vera", "network/iroh"]
+vera = ["authz-vera", "bulletin-vera", "test-support/vera"]
+authz-vera = ["authz/vera", "authz/select-vera", "local-storage/redb"]
+bulletin-vera = ["bulletin/vera", "bulletin/select-vera", "local-storage/redb"]
+default = ["local-storage/redb", "bls12-381", "authz-vera-go", "bulletin-vera-go", "network/iroh"]
 bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "pre-share/bls12-381"]
 jubjub = ["crypto/jubjub", "cli-tool?/jubjub", "pre-share/jubjub"]
 redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
 cosmos = ["common/cosmos", "bulletin/cosmos-identity", "test-support/cosmos"]
-authz-vera = ["authz/vera", "authz/select-vera", "cosmos"]
-bulletin-vera = ["bulletin/vera", "bulletin/select-vera", "cosmos"]
+authz-vera-go = ["authz/vera-go", "authz/select-vera-go", "cosmos"]
+bulletin-vera-go = ["bulletin/vera-go", "bulletin/select-vera-go", "cosmos"]
 iroh = ["network/iroh"]
 # Shared E2E scenario machinery and deterministic fixture startup. The backend
 # is selected with the same production features (`authz-*` and `bulletin-*`)

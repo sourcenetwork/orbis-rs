@@ -40,7 +40,7 @@ use crate::setup::{
     update_peer_addresses,
 };
 use anyhow::{bail, Context, Result};
-use common::blockchain::{orbis::Ring, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY};
+use common::blockchain::{orbis::Ring, ChainConfig, TxSigner, VeraGoClient, TEST_ACCOUNT_HEX_KEY};
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::{Dkg, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoSerialize, DkgImpl, PreImpl, SignImpl};
@@ -154,7 +154,7 @@ impl BenchmarkRunner {
                 status: RunStatus::Running,
                 experiment: self.experiment.clone(),
                 host: host_metadata(),
-                vera_ref: self.experiment.vera_ref.clone(),
+                vera_go_ref: self.experiment.vera_go_ref.clone(),
                 node_image: None,
                 vera_image: None,
                 crypto_implementation: format!(

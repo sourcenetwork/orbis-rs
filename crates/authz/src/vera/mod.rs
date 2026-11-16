@@ -1,42 +1,162 @@
-//! Vera-backed authorization implementation.
+//! Certified authorization with exact revision anchors and bounded freshness.
 
 use crate::{
-    error::{AuthZError, Result},
-    r#trait::{Authz, VerifiedEvidence},
+    error::Result as AuthzResult, r#trait::Authz, r#trait::VerifiedEvidence,
+    request::AccessCheckRequest,
 };
 use async_trait::async_trait;
-use common::blockchain::{
-    acp::{AccessRequest, Actor, Object, Operation, Policy},
-    ChainConfigBuilder, VeraClient,
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
+use vera_client::{
+    AccessRequest, Actor, ClientError, Object, Operation, PermissionResponse, VeraClient,
+    PERMISSION_LIMITS,
+};
+use vera_domain::ConsensusPublicKey;
 
+pub mod error;
 #[cfg(feature = "startup")]
 pub mod startup;
-#[cfg(test)]
-mod tests;
-
-pub use crate::request::{AccessCheckRequest, ValidWindow};
+pub use error::Error;
 
 pub struct VeraAuth {
-    pub chain_client: VeraClient,
+    client: VeraClient,
+    trusted: ConsensusPublicKey,
+    minimum: AtomicU64,
+    maximum_age: u64,
+}
+
+fn now() -> Result<u64, Error> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|t| t.as_secs())
+        .map_err(Error::Clock)
+}
+
+impl VeraAuth {
+    /// Bind consensus trust to the configured genesis before serving requests.
+    pub async fn connect(
+        client: VeraClient,
+        trusted: ConsensusPublicKey,
+        root: [u8; 32],
+        maximum_age: u64,
+    ) -> Result<Self, Error> {
+        if root == [0; 32] || maximum_age == 0 {
+            return Err(Error::InvalidConfiguration);
+        }
+        common::blockchain::vera::verify_deployment_root(&client, &trusted, root)
+            .await
+            .map_err(Error::DeploymentTrust)?;
+        Ok(Self {
+            client,
+            trusted,
+            minimum: AtomicU64::new(1),
+            maximum_age,
+        })
+    }
+
+    fn observe(&self, requested_minimum: u64, height: u64, timestamp: u64) -> Result<(), Error> {
+        check_freshness(timestamp, now()?, self.maximum_age)?;
+        if height < requested_minimum {
+            return Err(Error::RevisionRegressed);
+        }
+        self.minimum.fetch_max(height, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
+fn check_freshness(timestamp: u64, now: u64, maximum_age: u64) -> Result<(), Error> {
+    if timestamp > now.saturating_add(15) || now.saturating_sub(timestamp) > maximum_age {
+        return Err(Error::StaleEvidence);
+    }
+    Ok(())
+}
+
+fn request(bytes: &[u8], subject: &str) -> Result<Option<(String, AccessRequest)>, Error> {
+    if bytes.len() > 64 << 10 || subject.len() > 512 {
+        return Err(Error::RequestTooLarge);
+    }
+    let request: AccessCheckRequest =
+        serde_json::from_slice(bytes).map_err(Error::RequestDecode)?;
+    match (&request.valid_window, request.timestamp) {
+        (Some(window), Some(timestamp)) => {
+            if window.start > window.end {
+                return Err(Error::InvalidWindow);
+            }
+            if timestamp < window.start || timestamp > window.end {
+                return Ok(None);
+            }
+        }
+        (None, None) => {}
+        _ => return Err(Error::IncompleteWindow),
+    }
+    let actor = Actor(subject.parse().map_err(Error::Subject)?);
+    Ok(Some((
+        request.policy_id,
+        AccessRequest {
+            actor,
+            operations: vec![Operation {
+                object: Object {
+                    resource: request.resource,
+                    id: request.object_id,
+                },
+                permission: request.permission,
+            }],
+        },
+    )))
 }
 
 #[async_trait]
 impl Authz for VeraAuth {
-    async fn check(&self, permission: Vec<u8>, subject: &str) -> Result<bool> {
-        self.verify_at(permission, subject, None).await
+    async fn check(&self, permission: Vec<u8>, subject: &str) -> AuthzResult<bool> {
+        let Some((policy, request)) = request(&permission, subject)? else {
+            return Ok(false);
+        };
+        let requested_minimum = self.minimum.load(Ordering::Acquire);
+        let (revision, allowed) = self
+            .client
+            .verify_current_access(
+                &policy,
+                &request,
+                requested_minimum,
+                &self.trusted,
+                PERMISSION_LIMITS,
+            )
+            .await
+            .map_err(Error::VerifyCurrentAccess)?;
+        self.observe(requested_minimum, revision.height, revision.timestamp)?;
+        Ok(allowed)
     }
 
-    /// The evidence bundle is a decimal block height, same as the old opaque anchor. Cosmos's
-    /// historical ABCI query already works reliably at a specific height, so this stays a
-    /// cheap pointer rather than adopting native's self-contained bundle.
-    async fn capture_evidence(&self, _permission: Vec<u8>, _subject: &str) -> Result<Vec<u8>> {
-        let height = self
-            .chain_client
-            .get_latest_height()
+    async fn capture_evidence(&self, permission: Vec<u8>, subject: &str) -> AuthzResult<Vec<u8>> {
+        let Some((policy, request)) = request(&permission, subject)? else {
+            return Err(Error::RequestOutsideWindow.into());
+        };
+        let requested_minimum = self.minimum.load(Ordering::Acquire);
+        let response = self
+            .client
+            .current_permission_response(&policy, &request, requested_minimum, PERMISSION_LIMITS)
             .await
-            .map_err(|e| AuthZError::ChainError(e.to_string()))?;
-        Ok(height.to_string().into_bytes())
+            .map_err(Error::CaptureEvidence)?;
+        // Verify locally right away, same as `check` does via `verify_current_access` --
+        // a bad RPC response fails fast here rather than being deferred to validate time.
+        response
+            .verify(
+                &policy,
+                &request,
+                requested_minimum,
+                &self.trusted,
+                PERMISSION_LIMITS,
+            )
+            .map_err(ClientError::from)
+            .map_err(Error::VerifyEvidence)?;
+        self.observe(
+            requested_minimum,
+            response.revision.height,
+            response.revision.timestamp,
+        )?;
+        Ok(serde_json::to_vec(&response).map_err(Error::EvidenceEncode)?)
     }
 
     async fn verify_evidence(
@@ -44,113 +164,114 @@ impl Authz for VeraAuth {
         evidence: &[u8],
         permission: Vec<u8>,
         subject: &str,
-    ) -> Result<VerifiedEvidence> {
-        let anchor = std::str::from_utf8(evidence).map_err(|e| {
-            AuthZError::InvalidRequest(format!("evidence is not a valid anchor string: {e}"))
-        })?;
-        let height = parse_anchor_height(anchor)?;
-        let captured_at = self
-            .chain_client
-            .get_block_time(height)
-            .await
-            .map_err(|e| AuthZError::ChainError(e.to_string()))?;
-        let allowed = self.verify_at(permission, subject, Some(height)).await?;
+    ) -> AuthzResult<VerifiedEvidence> {
+        if evidence.len() > 64 << 10 {
+            return Err(Error::EvidenceTooLarge.into());
+        }
+        let Some((policy, request)) = request(&permission, subject)? else {
+            return Ok(VerifiedEvidence {
+                captured_at: 0,
+                allowed: false,
+            });
+        };
+        let response: PermissionResponse =
+            serde_json::from_slice(evidence).map_err(Error::EvidenceDecode)?;
+        let allowed = response
+            .verify(&policy, &request, 0, &self.trusted, PERMISSION_LIMITS)
+            .map_err(ClientError::from)
+            .map_err(Error::VerifyEvidence)?;
         Ok(VerifiedEvidence {
-            captured_at,
+            captured_at: response.revision.timestamp,
             allowed,
         })
     }
 }
 
-/// Parse a Vera opaque anchor (a decimal block height).
-fn parse_anchor_height(anchor: &str) -> Result<u64> {
-    let height = anchor.parse::<u64>().map_err(|e| {
-        AuthZError::InvalidRequest(format!("invalid block-height anchor {anchor:?}: {e}"))
-    })?;
-    if height == 0 {
-        return Err(AuthZError::InvalidRequest(
-            "block-height anchor must be greater than zero".to_string(),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::request::ValidWindow;
+
+    #[test]
+    fn native_request_validation_preserves_decode_and_identity_sources() {
+        use std::error::Error as _;
+
+        let error = request(b"{", "did:key:reader").unwrap_err();
+        assert!(matches!(error, Error::RequestDecode(_)));
+        assert!(error.source().unwrap().is::<serde_json::Error>());
+
+        let permission = AccessCheckRequest::new(
+            "11".repeat(32),
+            "document".into(),
+            "doc".into(),
+            "read".into(),
+            None,
+            None,
+            None,
+        );
+        let error = request(&permission.to_bytes().unwrap(), "not-a-did").unwrap_err();
+        assert!(matches!(error, Error::Subject(_)));
+        assert!(error.source().unwrap().is::<vera_identity::Error>());
+        assert!(matches!(
+            request(&vec![b' '; (64 << 10) + 1], "did:key:reader"),
+            Err(Error::RequestTooLarge)
+        ));
+        assert!(matches!(
+            request(&permission.to_bytes().unwrap(), &"x".repeat(513)),
+            Err(Error::RequestTooLarge)
         ));
     }
-    Ok(height)
-}
 
-impl VeraAuth {
-    async fn verify_at(
-        &self,
-        permission: Vec<u8>,
-        subject: &str,
-        height: Option<u64>,
-    ) -> Result<bool> {
-        // Decode the access check request from bytes
-        let request = AccessCheckRequest::from_bytes(&permission)?;
-
-        // Validate that valid_window and timestamp are either both present or both absent
-        match (&request.valid_window, &request.timestamp) {
-            (Some(window), Some(ts)) => {
-                if ts < &window.start || ts > &window.end {
-                    return Ok(false);
-                }
-            }
-            (Some(_), None) => {
-                return Err(AuthZError::InvalidRequest(
-                    "valid_window provided but timestamp is missing".to_string(),
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(AuthZError::InvalidRequest(
-                    "timestamp provided but valid_window is missing".to_string(),
-                ));
-            }
-            (None, None) => {}
-        }
-
-        // Verify the permission using the policy expression (e.g. "read = creator + reader").
-        // This mirrors the Go implementation which uses QueryVerifyAccessRequest with a permission name.
-        let access_request = AccessRequest {
-            operations: vec![Operation {
-                object: Some(Object {
-                    resource: request.resource.clone(),
-                    id: request.object_id.clone(),
-                }),
-                permission: request.permission.clone(),
-            }],
-            actor: Some(Actor {
-                id: subject.to_owned(),
-            }),
+    #[test]
+    fn overlapping_authorization_reads_preserve_the_minimum() {
+        let keys = vera_harness::cluster::KeySet::builder()
+            .seed(9071)
+            .build()
+            .unwrap();
+        let auth = VeraAuth {
+            client: VeraClient::new("http://127.0.0.1:1"),
+            trusted: *keys.epoch_info().output.public().public(),
+            minimum: AtomicU64::new(5),
+            maximum_age: 30,
         };
-
-        let is_authorized = self
-            .chain_client
-            .acp_verify_access(&request.policy_id, &access_request, height)
-            .await
-            .map_err(|e| AuthZError::ChainError(e.to_string()))?;
-
-        Ok(is_authorized)
-    }
-}
-
-impl VeraAuth {
-    pub fn name() -> String {
-        "authz/vera".to_string()
+        let requested = auth.minimum.load(Ordering::Acquire);
+        let timestamp = now().unwrap();
+        auth.observe(requested, 12, timestamp).unwrap();
+        auth.observe(requested, 10, timestamp).unwrap();
+        assert_eq!(auth.minimum.load(Ordering::Acquire), 12);
+        assert!(auth.observe(12, 10, timestamp).is_err());
+        assert!(auth.observe(12, 20, timestamp - 31).is_err());
+        assert!(auth.observe(12, 20, timestamp + 60).is_err());
+        assert_eq!(auth.minimum.load(Ordering::Acquire), 12);
     }
 
-    pub async fn new(chain_config_builder: ChainConfigBuilder) -> Result<Self> {
-        Ok(VeraAuth {
-            chain_client: VeraClient::new(chain_config_builder.build())
-                .await
-                .map_err(|e| AuthZError::ChainError(e.to_string()))?,
-        })
-    }
-
-    pub async fn get_policy(&self, policy_id: String) -> Result<Policy> {
-        self.chain_client
-            .acp_query_policy(&policy_id)
-            .await
-            .map_err(|e| AuthZError::ChainError(e.to_string()))?
-            .record
-            .ok_or_else(|| AuthZError::NotFound("Policy record not found".to_string()))?
-            .policy
-            .ok_or_else(|| AuthZError::NotFound("Policy not found".to_string()))
+    #[test]
+    fn native_authorization_rejects_ambiguous_windows() {
+        let mut permission = AccessCheckRequest::new(
+            "11".repeat(32),
+            "document".into(),
+            "doc".into(),
+            "read".into(),
+            None,
+            None,
+            None,
+        );
+        assert!(request(&permission.to_bytes().unwrap(), "did:key:reader")
+            .unwrap()
+            .is_some());
+        permission.timestamp = Some(10);
+        assert!(request(&permission.to_bytes().unwrap(), "did:key:reader").is_err());
+        permission.valid_window = Some(ValidWindow { start: 11, end: 20 });
+        assert!(request(&permission.to_bytes().unwrap(), "did:key:reader")
+            .unwrap()
+            .is_none());
+        permission.valid_window = Some(ValidWindow { start: 10, end: 10 });
+        assert!(request(&permission.to_bytes().unwrap(), "did:key:reader")
+            .unwrap()
+            .is_some());
+        assert!(check_freshness(70, 100, 30).is_ok());
+        assert!(check_freshness(69, 100, 30).is_err());
+        assert!(check_freshness(115, 100, 30).is_ok());
+        assert!(check_freshness(116, 100, 30).is_err());
     }
 }

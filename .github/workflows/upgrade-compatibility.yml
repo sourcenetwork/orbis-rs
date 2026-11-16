@@ -59,7 +59,7 @@ jobs:
         # Pin the network launch revision so every target is checked against
         # the same compatibility baseline, including manual runs.
         # The harness auto-selects --fresh-target-chain when HEAD's
-        # docker/VERA_REF differs from the pinned baseline's (the baseline
+        # docker/VERA_GO_REF differs from the pinned baseline's (the baseline
         # chain otherwise cannot verify the target's threshold signatures).
         run: |
           scripts/test-upgrade-unit.sh

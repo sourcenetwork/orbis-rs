@@ -38,7 +38,7 @@ use crate::{
         },
     },
 };
-#[cfg(all(feature = "integration-test", feature = "native"))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 use crate::{
     app_state::AppState,
     dkg::v0::helpers::serialize_commitment_coefficients,
