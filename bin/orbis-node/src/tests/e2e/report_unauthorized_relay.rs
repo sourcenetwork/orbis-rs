@@ -88,6 +88,7 @@ fn signed_unauthorized_relay_statement(
     accused_signing_key_hex: &str,
     object_id: &str,
     actor_id: &str,
+    user_signed_at: u64,
 ) -> (crate::reporting::v0::types::RelayRequestStatement, Vec<u8>) {
     use crate::reporting::v0::types::{
         CommitteeScope, RelayRequestStatement, RELAY_REQUEST_DOMAIN,
@@ -102,7 +103,8 @@ fn signed_unauthorized_relay_statement(
         protocol_version: network::V0.version,
         request_id: format!("unauthorized-relay-{origin_protocol}-{object_id}"),
         signed_at,
-        user_signed_at: signed_at,
+        // Bind the token timestamp exactly, even when relaying in a later second.
+        user_signed_at,
         relayer_node_key: accused_node_key.to_string(),
         origin_protocol: origin_protocol.to_string(),
         accused_committee_scope: CommitteeScope::Current,
@@ -248,7 +250,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
     let pre_reader_pk_bytes =
         CryptoSerialize::to_bytes(&pre_reader_pk).expect("serialize PRE reader public key");
     let pre_jwt_signer = authn::JwtSigner::new();
-    let (pre_token, _) = pre_jwt_signer
+    let (pre_token, pre_metadata) = pre_jwt_signer
         .create_pre_jwt(pre_reader_pk_bytes.clone(), &pre_object_id, None, None)
         .expect("create PRE JWT");
 
@@ -261,6 +263,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         NODE1_SIGNING_KEY_HEX,
         &pre_object_id,
         &pre_jwt_signer.did_uri,
+        pre_metadata.issued_time,
     );
 
     let node3_peer_id = environment.reporting_peer_address(2);
@@ -310,6 +313,16 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         .create_sign_jwt(&derivation_id, sign_message)
         .expect("create Sign JWT");
 
+    let sign_issued_time = authn::resolve_jwt_did::<authn::SignClaims>(
+        &sign_token,
+        current_unix_time_secs(),
+        crate::constants::MAX_TOKEN_LIFETIME_SECS,
+        crate::constants::MAX_JWT_BYTES,
+        crate::constants::JWT_CLOCK_SKEW_LEEWAY_SECS,
+    )
+    .expect("verify Sign JWT for relay statement")
+    .issued_time;
+
     let (sign_statement, sign_signature) = signed_unauthorized_relay_statement(
         chain_id,
         &ring_id.0,
@@ -319,6 +332,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         NODE2_SIGNING_KEY_HEX,
         &derivation_id,
         &sign_jwt_signer.did_uri,
+        sign_issued_time,
     );
 
     let node1_peer_id = environment.reporting_peer_address(0);
@@ -354,4 +368,104 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         "node2 should have at least 1 demerit after the Sign unauthorized relay report"
     );
     println!("relayer demerits: node1={node1_demerits}, node2={node2_demerits}");
+}
+
+#[tokio::test]
+async fn relay_statement_preserves_jwt_issued_time() {
+    use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+    use crate::reporting::v0::{
+        validate_relay_request_binding, RelayRequestBinding, RelayRequestTimestampBinding,
+    };
+    use bulletin::r#trait::RingPayload;
+    use common::blockchain::verify_node_message;
+
+    let node_key = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    let ring = RingPayload {
+        ring_pk: "relay-test-ring-key".into(),
+        peer_node_keys: vec![node_key.into()],
+        threshold: 1,
+        ..Default::default()
+    };
+    let facts = RingStateFacts {
+        ring_pk: ring.ring_pk.clone(),
+        peer_node_keys: ring.peer_node_keys.clone(),
+        threshold: ring.threshold,
+        new_peer_node_keys: None,
+        new_threshold: None,
+        state_sha256: crate::reporting::v0::types::ring_state_sha256(&ring),
+    };
+    let signer = authn::JwtSigner::new();
+    let (pre_jwt, pre_metadata) = signer
+        .create_pre_jwt(vec![1, 2, 3], "object", None, None)
+        .expect("create PRE JWT");
+    let pre_token = authn::resolve_jwt_did::<authn::PreClaims>(
+        &pre_jwt,
+        current_unix_time_secs(),
+        MAX_TOKEN_LIFETIME_SECS,
+        MAX_JWT_BYTES,
+        JWT_CLOCK_SKEW_LEEWAY_SECS,
+    )
+    .expect("verify PRE JWT");
+    assert_eq!(pre_metadata.issued_time, pre_token.issued_time);
+
+    let sign_jwt = signer
+        .create_sign_jwt("object", b"message")
+        .expect("create Sign JWT");
+    let sign_token = authn::resolve_jwt_did::<authn::SignClaims>(
+        &sign_jwt,
+        current_unix_time_secs(),
+        MAX_TOKEN_LIFETIME_SECS,
+        MAX_JWT_BYTES,
+        JWT_CLOCK_SKEW_LEEWAY_SECS,
+    )
+    .expect("verify Sign JWT");
+    // Force the second-boundary race without depending on scheduler luck.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    for (origin, issued_time) in [
+        ("pre", pre_metadata.issued_time),
+        ("sign", sign_token.issued_time),
+    ] {
+        let document_inline = false;
+        let (statement, signature) = signed_unauthorized_relay_statement(
+            "chain".into(),
+            "ring",
+            &facts,
+            origin,
+            node_key,
+            NODE1_SIGNING_KEY_HEX,
+            "object",
+            &signer.did_uri,
+            issued_time,
+        );
+
+        assert!(
+            statement.signed_at > issued_time,
+            "test must cross a clock second"
+        );
+        verify_node_message(node_key, &statement.canonical_bytes(), &signature)
+            .expect("relay signature must verify");
+        validate_relay_request_binding(
+            &statement,
+            RelayRequestBinding {
+                ring: ring.clone(),
+                ring_id: "ring".into(),
+                protocol_version: network::V0.version,
+                chain_id: "chain".into(),
+                request_id: format!("unauthorized-relay-{origin}-object"),
+                origin_protocol: origin.into(),
+                actor_id: signer.did_uri.clone(),
+                object_id: "object".into(),
+                user_signed_at: issued_time,
+                valid_window: None,
+                timestamp: if origin == "sign" {
+                    RelayRequestTimestampBinding::SignPolicy
+                } else {
+                    RelayRequestTimestampBinding::Exact(None)
+                },
+                from_node_id: 1,
+                document_inline,
+            },
+        )
+        .expect("delayed relay must bind to the JWT's original issued_time");
+    }
 }
