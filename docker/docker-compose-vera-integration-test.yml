@@ -138,7 +138,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        BACKEND: native
+        BACKEND: vera
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
         # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
@@ -195,7 +195,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        BACKEND: native
+        BACKEND: vera
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
         # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
@@ -252,7 +252,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        BACKEND: native
+        BACKEND: vera
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
         # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
@@ -310,7 +310,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        BACKEND: native
+        BACKEND: vera
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
         # docker/Dockerfile defaults to the floating `rust:latest` tag, whose

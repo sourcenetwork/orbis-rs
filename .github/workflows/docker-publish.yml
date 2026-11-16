@@ -1,8 +1,9 @@
 name: Publish Docker Image
 
-# Builds the orbis-node integration image (ENABLE_INTEGRATION_TEST=true, jubjub)
-# and pushes a multi-arch manifest (linux/amd64 + linux/arm64) to GHCR. arm64 is
-# built on a native runner rather than QEMU so the Rust compile doesn't crawl.
+# Builds four production orbis-node images (ENABLE_INTEGRATION_TEST=false):
+# vera and vera-go, each for bls12-381 and jubjub. Each image is a multi-arch
+# manifest (linux/amd64 + linux/arm64) on GHCR. arm64 is built on a native
+# runner rather than QEMU so the Rust compile doesn't crawl.
 #
 # NOTE: needs write packages perms. Repo Settings -> Actions -> General ->
 # Workflow permissions -> "Read and write permissions". First push of a new
@@ -66,11 +67,12 @@ jobs:
           echo "sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build ${{ matrix.crypto }} ${{ matrix.arch }}
+    name: Build ${{ matrix.backend }} ${{ matrix.crypto }} ${{ matrix.arch }}
     needs: meta
     strategy:
       fail-fast: false
       matrix:
+        backend: [vera, vera-go]
         crypto: [bls12-381, jubjub]
         arch: [amd64, arm64]
         include:
@@ -94,7 +96,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push (${{ matrix.crypto }} ${{ matrix.arch }})
+      - name: Build and push (${{ matrix.backend }} ${{ matrix.crypto }} ${{ matrix.arch }})
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -102,19 +104,21 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           provenance: false
-          tags: ${{ needs.meta.outputs.image }}:${{ needs.meta.outputs.tag }}-${{ matrix.crypto }}-${{ matrix.arch }}
+          tags: ${{ needs.meta.outputs.image }}:${{ needs.meta.outputs.tag }}-${{ matrix.backend }}-${{ matrix.crypto }}-${{ matrix.arch }}
           build-args: |
             ENABLE_INTEGRATION_TEST=${{ env.ENABLE_INTEGRATION_TEST }}
             CRYPTO_FEATURE=${{ matrix.crypto }}
-          cache-from: type=gha,scope=${{ matrix.arch }}-${{ matrix.crypto }}
-          cache-to: type=gha,scope=${{ matrix.arch }}-${{ matrix.crypto }},mode=max
+            BACKEND=${{ matrix.backend }}
+          cache-from: type=gha,scope=${{ matrix.arch }}-${{ matrix.backend }}-${{ matrix.crypto }}
+          cache-to: type=gha,scope=${{ matrix.arch }}-${{ matrix.backend }}-${{ matrix.crypto }},mode=max
 
   manifest:
-    name: Push multi-arch manifest (${{ matrix.crypto }})
+    name: Push multi-arch manifest (${{ matrix.backend }} ${{ matrix.crypto }})
     needs: [meta, build]
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        backend: [vera, vera-go]
         crypto: [bls12-381, jubjub]
     steps:
       - name: Set up Docker Buildx
@@ -133,9 +137,10 @@ jobs:
           TAG: ${{ needs.meta.outputs.tag }}
           SHA: ${{ needs.meta.outputs.sha }}
           CRYPTO: ${{ matrix.crypto }}
+          BACKEND: ${{ matrix.backend }}
         run: |
           docker buildx imagetools create \
-            --tag "$IMAGE:$TAG-$CRYPTO" \
-            --tag "$IMAGE:$TAG-$CRYPTO-$SHA" \
-            "$IMAGE:$TAG-$CRYPTO-amd64" \
-            "$IMAGE:$TAG-$CRYPTO-arm64"
+            --tag "$IMAGE:$TAG-$BACKEND-$CRYPTO" \
+            --tag "$IMAGE:$TAG-$BACKEND-$CRYPTO-$SHA" \
+            "$IMAGE:$TAG-$BACKEND-$CRYPTO-amd64" \
+            "$IMAGE:$TAG-$BACKEND-$CRYPTO-arm64"

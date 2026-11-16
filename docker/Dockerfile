@@ -38,7 +38,7 @@ ENV CARGO_BUILD_JOBS=${BUILD_JOBS}
 # The two branches must use identical feature flags in `cook` and `build` or the
 # cooked dependency artifacts don't match and get rebuilt.
 RUN case "$BACKEND" in \
-      cosmos) features="redb,authz-vera-go,bulletin-vera-go,iroh,${CRYPTO_FEATURE}"; \
+      cosmos|vera-go) features="redb,authz-vera-go,bulletin-vera-go,iroh,${CRYPTO_FEATURE}"; \
         if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="$features,integration-test,unsafe-testing"; fi ;; \
       vera) features="vera,redb,iroh,${CRYPTO_FEATURE}"; \
         if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="$features,fixture-startup"; fi ;; \
