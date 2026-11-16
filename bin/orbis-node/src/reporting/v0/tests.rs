@@ -102,6 +102,7 @@ fn relay_binding_statement(
         .map(|window| (Some(window.start), Some(window.end)))
         .unwrap_or((None, None));
     RelayRequestStatement {
+        release_scope: None,
         domain: RELAY_REQUEST_DOMAIN.to_string(),
         chain_id: RELAY_BINDING_CHAIN_ID.to_string(),
         ring_id: RELAY_BINDING_RING_ID.to_string(),
@@ -132,6 +133,7 @@ fn relay_binding(
     timestamp: RelayRequestTimestampBinding,
 ) -> RelayRequestBinding {
     RelayRequestBinding {
+        release_scope: None,
         ring: ring.clone(),
         ring_id: RELAY_BINDING_RING_ID.to_string(),
         protocol_version: network::V0.version,
@@ -371,6 +373,7 @@ async fn relay_statement_builder_rejects_relayer_key_outside_ring() {
 
     let error = build_signed_relay_statement(
         RelayStatementInputs {
+            release_scope: None,
             ring,
             ring_id: RELAY_BINDING_RING_ID.to_string(),
             protocol_version: network::V0.version,
@@ -2525,6 +2528,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
     .unwrap();
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
     let document_payload = DocumentPayload {
+        shieldd: None,
         ring_id: ring_id.clone(),
         document: String::from_utf8(secret_bytes).unwrap(),
         proof: String::try_from(proof).unwrap(),
@@ -2550,6 +2554,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
     let (reader_sk, rdr_pk) = PreImpl::generate_keypair();
     let rdr_pk_bytes = CryptoSerialize::to_bytes(&rdr_pk).unwrap();
     let reader_auth_context = crypto::context::ReaderAuthorizationContext {
+        release_scope: None,
         chain_id: "test-chain".to_string(),
         ring_pk: Vec::new(),
         jwt_issuer: "did:key:test".to_string(),
@@ -2603,6 +2608,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         .unwrap()
         .as_secs();
     let statement = PreReencryptResponseStatement {
+        release_scope: None,
         domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
         chain_id: network.alice.app_state.bulletin.chain_id(),
         ring_id: ring_id.clone(),

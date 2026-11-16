@@ -405,6 +405,7 @@ async fn verify_optional_direct_path(
     }
     let prepared = prepare(DIRECT_PLAINTEXT, ring_pk, policy_id, None, None, None, None);
     let payload = DocumentPayload {
+        shieldd: None,
         ring_id: ring.0.clone(),
         document: String::from_utf8(prepared.encrypted_document).expect("encrypted JSON is UTF-8"),
         proof: EncryptionProof {

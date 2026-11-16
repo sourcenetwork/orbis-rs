@@ -160,8 +160,11 @@ where
         )?;
         let node_id = pri_share.i;
 
-        let target_fingerprint = P::owner_fingerprint(ctx.audit_target_object_id.as_bytes())
-            .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
+        let target_fingerprint = super::verification::target_fingerprint::<P>(
+            &ctx.document,
+            &ctx.audit_target_object_id,
+        )
+        .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
 
         // A fresh, independent blinding scalar per attempt — reusing one
         // across attempts would reintroduce a cancellation attack (the same
@@ -358,8 +361,11 @@ where
             &pending.commitment,
         );
 
-        let target_fingerprint = P::owner_fingerprint(ctx.audit_target_object_id.as_bytes())
-            .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
+        let target_fingerprint = super::verification::target_fingerprint::<P>(
+            &ctx.document,
+            &ctx.audit_target_object_id,
+        )
+        .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
         let reply = P::prove_blinding_correctness(
             &pending.z_i,
             &tag,
@@ -475,8 +481,11 @@ where
             ));
         }
 
-        let target_fingerprint = P::owner_fingerprint(ctx.audit_target_object_id.as_bytes())
-            .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
+        let target_fingerprint = super::verification::target_fingerprint::<P>(
+            &ctx.document,
+            &ctx.audit_target_object_id,
+        )
+        .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
         let (aggregate_r, aggregate_diff) = build_and_verify_pet_blind_certificate::<D, P>(
             &certificate,
             &ring_payload,

@@ -6,6 +6,7 @@ use crypto::r#trait::{EncryptionProof, PubShare, ReaderAuthorizationSignature, T
 /// Fixed reader-authorization context for the PRE benchmarks.
 pub fn bench_reader_auth_context() -> ReaderAuthorizationContext {
     ReaderAuthorizationContext {
+        release_scope: None,
         chain_id: "bench-chain".to_string(),
         ring_pk: b"bench-ring-pk".to_vec(),
         jwt_issuer: "did:key:bench-issuer".to_string(),

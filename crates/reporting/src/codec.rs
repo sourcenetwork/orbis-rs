@@ -197,6 +197,40 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    pub(super) fn read_release_scope(
+        &mut self,
+    ) -> Result<Option<common::blockchain::orbis::ReleaseScope>> {
+        use common::blockchain::orbis::ReleaseScope;
+        let scope = if self.is_empty() {
+            None
+        } else {
+            if self.read_string("release scope domain")? != "shieldd-release-scope-v1" {
+                return Err(crate::error::ReportingError::InvalidReport(
+                    "invalid release scope domain".into(),
+                ));
+            }
+            Some(match self.read_u8("release scope")? {
+                0 => ReleaseScope::AssetWide,
+                1 => ReleaseScope::NamedPerson {
+                    target: self.read_string("target")?,
+                },
+                2 => ReleaseScope::NoteRecovery {
+                    target: self.read_string("target")?,
+                },
+                _ => {
+                    return Err(crate::error::ReportingError::InvalidReport(
+                        "invalid release scope".into(),
+                    ))
+                }
+            })
+        };
+        Ok(scope)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cursor == self.bytes.len()
+    }
+
     pub fn finish(&self) -> Result<()> {
         if self.cursor != self.bytes.len() {
             return Err(ReportingError::InvalidReport(
@@ -204,5 +238,27 @@ impl<'a> Decoder<'a> {
             ));
         }
         Ok(())
+    }
+}
+
+/// External-only suffix; native statement encodings remain unchanged.
+pub(super) fn write_release_scope(
+    out: &mut Vec<u8>,
+    scope: Option<&common::blockchain::orbis::ReleaseScope>,
+) {
+    use common::blockchain::orbis::ReleaseScope;
+    if let Some(scope) = scope {
+        write_string(out, "shieldd-release-scope-v1");
+        match scope {
+            ReleaseScope::AssetWide => out.push(0),
+            ReleaseScope::NamedPerson { target } => {
+                out.push(1);
+                write_string(out, target);
+            }
+            ReleaseScope::NoteRecovery { target } => {
+                out.push(2);
+                write_string(out, target);
+            }
+        }
     }
 }

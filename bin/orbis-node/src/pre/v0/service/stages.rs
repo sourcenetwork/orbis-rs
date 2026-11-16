@@ -80,7 +80,7 @@ pub(super) struct PreBulletinState {
 /// threshold coordination round.
 pub(super) struct AuthorizedPreRequest {
     token_str: String,
-    token: BearerToken<PreClaims>,
+    pub(super) token: BearerToken<PreClaims>,
     object_id: String,
     rdr_pk: Vec<u8>,
     rdr_pk_signature: ReaderAuthorizationSignature,
@@ -141,6 +141,7 @@ pub(super) fn validate_pre_request_size(
 pub(super) fn encode_pre_response(
     result: Vec<u8>,
     ciphertext_context: CiphertextContext,
+    release_scope: Option<common::blockchain::orbis::ReleaseScope>,
     created_at: i64,
 ) -> Result<StartPreResponse, PreError> {
     use crate::pre::v0::coordinator::{
@@ -160,6 +161,7 @@ pub(super) fn encode_pre_response(
         }
         PreResponse::Stored(stored) => PreReencryptResponse::Stored {
             manifest: Box::new(PreShareRetrievalManifest {
+                release_scope,
                 manifest_version: PRE_SHARE_MANIFEST_VERSION,
                 request_id: stored.request_id,
                 ring_id: stored.ring_id,
@@ -282,9 +284,11 @@ where
             object_id,
             self.routes.version,
             inline_document,
+            &self.state.shieldd_rings,
         )
         .await?;
         let document_evidence = is_inline.then(|| ReportedDocumentEvidence {
+            shieldd: document_payload.shieldd.clone(),
             document: document_payload.document.clone(),
             proof: document_payload.proof.clone(),
             policy_id: document_payload.policy_id.clone(),
@@ -325,6 +329,7 @@ where
             &authenticated.object_id,
             &bulletin_state.actor_id,
             authenticated.valid_window.clone(),
+            authenticated.token.claims.release_scope.as_ref(),
         )
         .await?;
 
@@ -389,11 +394,17 @@ where
             authenticated.salt.as_deref(),
             bulletin_state.ring_payload.pet_pk.as_deref(),
         )?;
-        verify_encryption_binding(
-            &ciphertext_context,
-            &secret,
-            bulletin_state.document_payload.proof.clone(),
-        )?;
+        if !crate::pre::v0::helpers::check_document_profile(
+            &self.state.shieldd_rings,
+            &bulletin_state.document_payload,
+            &bulletin_state.ring_payload,
+        )? {
+            verify_encryption_binding(
+                &ciphertext_context,
+                &secret,
+                bulletin_state.document_payload.proof.clone(),
+            )?;
+        }
 
         tracing::info!(
             ring_id = %bulletin_state.document_payload.ring_id,
@@ -447,7 +458,11 @@ where
         &self,
         authorized: &AuthorizedPreRequest,
     ) -> Result<Option<crate::pet::v0::attestation::PetBlindEvidence>, PreError> {
-        if !authorized.ring_payload.requires_pet {
+        if !crate::pre::v0::helpers::requires_pet(
+            &authorized.document_payload,
+            &authorized.ring_payload,
+            authorized.token.claims.release_scope.as_ref(),
+        )? {
             return Ok(None);
         }
         let audit_target_object_id =
@@ -511,13 +526,14 @@ where
         // Chain/ring binding for invalid-proof reporting, taken from the same payloads
         // that authorized this request (must be built before
         // `ring_payload.peer_node_keys` is moved into the RingConfig below).
-        let report_binding = PreReportBinding::from_ring(
+        let mut report_binding = PreReportBinding::from_ring(
             self.state.bulletin.chain_id(),
             authorized.document_payload.ring_id.clone(),
             &authorized.ring_payload,
             authorized.document_payload.timestamp,
             authorized.document_evidence,
         );
+        report_binding.release_scope = authorized.token.claims.release_scope.clone();
 
         // The relayer signs a record that it forwarded this request (after passing its
         // own ACP check above), so a peer whose re-check fails can attribute it via
@@ -527,6 +543,7 @@ where
         // never signed into the statement.
         let (relay_statement, relay_signature) = build_signed_relay_statement(
             RelayStatementInputs {
+                release_scope: authorized.token.claims.release_scope.clone(),
                 ring: authorized.ring_payload.clone(),
                 ring_id: authorized.document_payload.ring_id.clone(),
                 protocol_version: self.routes.version,

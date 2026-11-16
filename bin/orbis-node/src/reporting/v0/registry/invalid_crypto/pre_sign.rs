@@ -321,6 +321,15 @@ pub(crate) async fn require_pre_proof_verification_failure(
             &statement.object_id,
             statement.timestamp,
         )?;
+        match (&evidence.shieldd, &statement.release_scope) {
+            (Some(document), Some(scope)) if scope.permission(document.purpose).is_some() => {}
+            (None, None) => {}
+            _ => {
+                return Err(ReportingError::InvalidReport(
+                    "document/release scope mismatch".into(),
+                ))
+            }
+        }
         deserialize_secret(&evidence.document)
             .map_err(|error| ReportingError::InvalidReport(error.to_string()))?
     } else {

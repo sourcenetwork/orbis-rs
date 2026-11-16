@@ -423,6 +423,7 @@ async fn incomplete_or_malformed_pet_documents_are_rejected_without_journaling()
         (Some(tag), Some("not-json")),
     ] {
         let request = DocumentPayload {
+            shieldd: None,
             ring_id: "11".repeat(32),
             document: r#"{"enc_cmt":[1],"encrypted_data":[2],"nonce":[3]}"#.into(),
             proof: r#"{"challenge":[4],"response":[5]}"#.into(),

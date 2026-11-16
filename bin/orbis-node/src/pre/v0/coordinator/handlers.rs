@@ -185,9 +185,11 @@ where
             &ctx.object_id,
             self.routes.version,
             ctx.document.clone(),
+            &self.app_state.shieldd_rings,
         )
         .await?;
         let document_evidence = ctx.document.as_ref().map(|doc| ReportedDocumentEvidence {
+            shieldd: doc.shieldd.clone(),
             document: doc.document.clone(),
             proof: doc.proof.clone(),
             policy_id: doc.policy_id.clone(),
@@ -232,6 +234,7 @@ where
         // same request, so a relayer's signed statement binds identically to either failure —
         // built once and reused by `report_relay_if_bound` from whichever branch rejects.
         let relay_binding = RelayRequestBinding {
+            release_scope: token.claims.release_scope.clone(),
             ring: ring_payload.clone(),
             ring_id: document_payload.ring_id.clone(),
             protocol_version: self.routes.version,
@@ -253,7 +256,11 @@ where
             document_payload.policy_id.clone(),
             document_payload.resource.clone(),
             ctx.object_id.clone(),
-            document_payload.permission.clone(),
+            crate::pre::v0::helpers::document_permission(
+                &document_payload,
+                token.claims.release_scope.as_ref(),
+            )?
+            .to_string(),
             document_payload.tier.clone(),
             document_payload.timestamp,
             ctx.valid_window.clone(),
@@ -267,6 +274,7 @@ where
             &ctx.object_id,
             &actor_id,
             ctx.valid_window.clone(),
+            token.claims.release_scope.as_ref(),
         )
         .await
         {
@@ -294,7 +302,11 @@ where
         // `pet::v0::coordinator::verification::verify_pet_admission`'s doc comment for why
         // this necessarily exposes the audit target to every committee member, not just the
         // initiator.
-        if ring_payload.requires_pet {
+        if crate::pre::v0::helpers::requires_pet(
+            &document_payload,
+            &ring_payload,
+            token.claims.release_scope.as_ref(),
+        )? {
             let audit_target_object_id = ctx.audit_target_object_id.clone().ok_or_else(|| {
                 PreError::Unauthorized(
                     "ring requires PET but the request carried no audit_target_object_id"
@@ -420,7 +432,24 @@ where
         // 6. Perform reencryption
         let dealer = T::new();
         // Check permission binding - verify proof before re-encryption
-        verify_encryption_binding(&ciphertext_context, &secret, document_payload.proof)?;
+        if !crate::pre::v0::helpers::check_document_profile(
+            &self.app_state.shieldd_rings,
+            &document_payload,
+            &ring_payload,
+        )? {
+            verify_encryption_binding(
+                &ciphertext_context,
+                &secret,
+                document_payload.proof.clone(),
+            )?;
+        }
+        crate::pre::v0::helpers::refresh_external_access(
+            &*self.app_state.authz,
+            Some(&document_payload),
+            &reader_auth_context,
+            ctx.valid_window.clone(),
+        )
+        .await?;
         let reply = dealer
             .reencrypt(
                 &dist_key_share,
@@ -450,6 +479,7 @@ where
                     rdr_pk_bytes: &ctx.rdr_pk_bytes,
                     derivation: ctx.derivation.as_deref(),
                     document_inline: document_evidence.is_some(),
+                    release_scope: token.claims.release_scope.clone(),
                     timestamp: document_payload.timestamp,
                     pinned_public_polynomial: ctx.pinned_public_polynomial.clone(),
                     endpoint,
@@ -482,6 +512,7 @@ where
             .map_err(|e| PreError::SystemTime(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
         let statement = PreReencryptResponseStatement {
+            release_scope: token.claims.release_scope.clone(),
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: self.app_state.bulletin.chain_id(),
             ring_id: document_payload.ring_id.clone(),

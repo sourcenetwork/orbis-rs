@@ -294,6 +294,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         .unwrap();
     assert_eq!(ring.ring_pk, ring_key);
     let document = DocumentPayload {
+        shieldd: None,
         ring_id: ring_id.clone(),
         document: r#"{"enc_cmt":[1],"encrypted_data":[2],"nonce":[3]}"#.into(),
         proof: r#"{"challenge":[4],"response":[5]}"#.into(),

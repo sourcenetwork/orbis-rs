@@ -125,7 +125,8 @@ pub async fn recover_from_manifest(
             && statement.object_id == manifest.object_id
             && statement.ring_id == manifest.ring_id
             && statement.ring_pk == manifest.ring_pk
-            && statement.rdr_pk == manifest.rdr_pk_bytes;
+            && statement.rdr_pk == manifest.rdr_pk_bytes
+            && statement.release_scope == manifest.release_scope;
         if !fields_match {
             tracing::warn!(
                 from_node_id = entry.from_node_id,
@@ -240,6 +241,7 @@ mod tests {
         derivation: Option<Vec<u8>>,
     ) -> ReaderAuthorizationContext {
         ReaderAuthorizationContext {
+            release_scope: None,
             chain_id: "test-chain".to_string(),
             ring_pk: vec![9, 9, 9],
             jwt_issuer: "did:key:test".to_string(),
@@ -333,6 +335,7 @@ mod tests {
         request_id: &str,
     ) -> PreReencryptResponseStatement {
         PreReencryptResponseStatement {
+            release_scope: None,
             domain: "orbis-pre-reencrypt-response-v1".to_string(),
             chain_id: "test-chain".to_string(),
             ring_id: "ring-1".to_string(),
@@ -383,6 +386,7 @@ mod tests {
 
     fn base_manifest(fixture: &RealPreFixture, server_uri: String) -> PreShareRetrievalManifest {
         PreShareRetrievalManifest {
+            release_scope: None,
             manifest_version: PRE_SHARE_MANIFEST_VERSION,
             request_id: "req-1".to_string(),
             ring_id: "ring-1".to_string(),

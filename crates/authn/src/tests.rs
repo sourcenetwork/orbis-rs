@@ -47,6 +47,7 @@ fn test_resolve_jwt_did_with_pre_claims() {
         expiration_time: 2000,
         not_before: None,
         claims: PreClaims {
+            release_scope: None,
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             derivation: None,
@@ -151,6 +152,7 @@ fn test_resolve_jwt_did_expired() {
         expiration_time: 2000,
         not_before: None,
         claims: PreClaims {
+            release_scope: None,
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             derivation: None,
@@ -180,6 +182,7 @@ fn test_resolve_jwt_did_future_issued_time() {
         expiration_time: 2000,
         not_before: None,
         claims: PreClaims {
+            release_scope: None,
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             derivation: None,
@@ -273,6 +276,7 @@ fn test_token_lifetime_at_limit() {
         not_before: None,
         expiration_time: issued_time + TEST_MAX_LIFETIME,
         claims: PreClaims {
+            release_scope: None,
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             derivation: None,
@@ -307,6 +311,7 @@ fn test_token_lifetime_one_second_over_limit() {
         not_before: None,
         expiration_time: issued_time + TEST_MAX_LIFETIME + 1,
         claims: PreClaims {
+            release_scope: None,
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             derivation: None,
@@ -343,6 +348,7 @@ fn test_token_lifetime_far_future() {
         not_before: None,
         expiration_time: issued_time + (365 * 24 * 60 * 60 * 10), // 10 years
         claims: PreClaims {
+            release_scope: None,
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             derivation: None,
@@ -376,6 +382,7 @@ fn test_resolve_jwt_did_invalid_signature() {
         expiration_time: 2000,
         not_before: None,
         claims: PreClaims {
+            release_scope: None,
             rdr_pk: b"test_rdr_pk".to_vec(),
             object_id: "".to_string(),
             derivation: None,

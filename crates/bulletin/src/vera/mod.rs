@@ -345,6 +345,11 @@ impl VeraBulletin {
     async fn post_document(&self, payload: Vec<u8>) -> Result<String> {
         let doc: DocumentPayload = serde_json::from_slice(&payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        if doc.shieldd.is_some() {
+            return Err(BulletinError::ParseError(
+                "Shieldd documents are inline-only".into(),
+            ));
+        }
         match self
             .chain_client
             .orbis_store_document_get_id(
@@ -512,6 +517,7 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
 
 fn document_to_bulletin_post(doc: orbis::Document) -> Result<BulletinPost> {
     let payload = DocumentPayload {
+        shieldd: None,
         ring_id: doc.ring_id,
         document: doc.document,
         proof: doc.proof,

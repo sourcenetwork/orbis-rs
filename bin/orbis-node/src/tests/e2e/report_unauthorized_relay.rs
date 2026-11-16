@@ -95,6 +95,7 @@ fn signed_unauthorized_relay_statement(
     };
     let signed_at = current_unix_time_secs();
     let statement = RelayRequestStatement {
+        release_scope: None,
         domain: RELAY_REQUEST_DOMAIN.to_string(),
         chain_id,
         ring_id: ring_id.to_string(),
@@ -447,6 +448,7 @@ async fn relay_statement_preserves_jwt_issued_time() {
         validate_relay_request_binding(
             &statement,
             RelayRequestBinding {
+                release_scope: None,
                 ring: ring.clone(),
                 ring_id: "ring".into(),
                 protocol_version: network::V0.version,

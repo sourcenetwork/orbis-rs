@@ -163,6 +163,7 @@ where
         };
 
         let document_payload = DocumentPayload {
+            shieldd: None,
             ring_id: req.ring_id.clone(),
             document: encrypted_document_str,
             proof: proof.try_into().map_err(|e: crypto::error::CryptoError| {

@@ -274,7 +274,22 @@ pub(super) async fn require_relayed_request_unauthorized(
                 (
                     evidence.policy_id.clone(),
                     evidence.resource.clone(),
-                    evidence.permission.clone(),
+                    match (&evidence.shieldd, &statement.release_scope) {
+                        (Some(document), Some(scope)) => scope
+                            .permission(document.purpose)
+                            .ok_or_else(|| {
+                                ReportingError::InvalidReport(
+                                    "invalid external release scope".into(),
+                                )
+                            })?
+                            .to_string(),
+                        (None, None) => evidence.permission.clone(),
+                        _ => {
+                            return Err(ReportingError::InvalidReport(
+                                "document/release scope mismatch".into(),
+                            ))
+                        }
+                    },
                     evidence.tier.clone(),
                     statement.timestamp,
                 )

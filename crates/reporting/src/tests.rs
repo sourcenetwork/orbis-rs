@@ -27,6 +27,7 @@ fn envelope() -> ReportEnvelope {
 
 fn relay_request_statement() -> RelayRequestStatement {
     RelayRequestStatement {
+        release_scope: None,
         domain: RELAY_REQUEST_DOMAIN.to_string(),
         chain_id: "vera-test".to_string(),
         ring_id: "ring-1".to_string(),
@@ -112,6 +113,7 @@ fn offline_payload_round_trips() {
 
 fn pre_statement() -> PreReencryptResponseStatement {
     PreReencryptResponseStatement {
+        release_scope: None,
         domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
         chain_id: "vera-test".to_string(),
         ring_id: "ring-1".to_string(),
@@ -857,5 +859,47 @@ fn report_encoding_golden_vector() {
     assert_eq!(
         envelope().report_id(),
         "954c67cd1885283a0d22a074b0b6db7eb412bad414d4fcfb5ff59cd1719e6dc0"
+    );
+}
+
+#[test]
+fn external_release_scope_is_signed_and_canonically_decoded() {
+    use common::blockchain::orbis::ReleaseScope;
+    let native = pre_statement();
+    let native_bytes = native.canonical_bytes();
+    let scopes = [
+        ReleaseScope::AssetWide,
+        ReleaseScope::NamedPerson {
+            target: "alice".into(),
+        },
+        ReleaseScope::NamedPerson {
+            target: "bob".into(),
+        },
+        ReleaseScope::NoteRecovery {
+            target: "alice".into(),
+        },
+    ];
+    let mut encodings = std::collections::HashSet::new();
+    for scope in scopes {
+        let mut statement = native.clone();
+        statement.release_scope = Some(scope);
+        let encoded = statement.canonical_bytes();
+        assert_ne!(encoded, native_bytes);
+        assert!(encodings.insert(encoded.clone()));
+        assert_eq!(
+            PreReencryptResponseStatement::from_canonical_bytes(&encoded).unwrap(),
+            statement
+        );
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert!(PreReencryptResponseStatement::from_canonical_bytes(&trailing).is_err());
+        assert!(
+            PreReencryptResponseStatement::from_canonical_bytes(&encoded[..encoded.len() - 1])
+                .is_err()
+        );
+    }
+    assert_eq!(
+        PreReencryptResponseStatement::from_canonical_bytes(&native_bytes).unwrap(),
+        native
     );
 }

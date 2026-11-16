@@ -17,10 +17,12 @@
 
 mod decode;
 mod ids;
+mod shieldd;
 mod types;
 
 pub use decode::*;
 pub use ids::*;
+pub use shieldd::*;
 pub use types::*;
 
 #[cfg(test)]

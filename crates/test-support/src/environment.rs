@@ -790,6 +790,7 @@ impl BulletinTestDriver for CosmosTestEnvironment {
         permission: &str,
     ) -> String {
         let payload = serde_json::to_vec(&DocumentPayload {
+            shieldd: None,
             ring_id: ring.0.clone(),
             document: document.to_string(),
             proof: proof.to_string(),

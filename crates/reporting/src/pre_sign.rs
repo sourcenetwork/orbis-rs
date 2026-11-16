@@ -1,6 +1,7 @@
 //! The two non-DKG invalid-crypto evidence statements: a PRE re-encrypt
 //! response and a Sign response.
 
+use common::blockchain::orbis::ReleaseScope;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -43,6 +44,9 @@ pub struct PreReencryptResponseStatement {
     /// validator to expect it out-of-band in [`ReportSigningContext`] and to skip the bulletin
     /// read.
     pub document_inline: bool,
+    /// Authenticated external release capability, including its canonical target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_scope: Option<ReleaseScope>,
 }
 
 impl PreReencryptResponseStatement {
@@ -70,6 +74,7 @@ impl PreReencryptResponseStatement {
         write_string(&mut out, &self.crypto_backend);
         write_optional_u64(&mut out, self.timestamp);
         write_bool(&mut out, self.document_inline);
+        super::codec::write_release_scope(&mut out, self.release_scope.as_ref());
         out
     }
 
@@ -95,6 +100,7 @@ impl PreReencryptResponseStatement {
         let crypto_backend = decoder.read_string("crypto_backend")?;
         let timestamp = decoder.read_optional_u64("timestamp")?;
         let document_inline = decoder.read_bool("document_inline")?;
+        let release_scope = decoder.read_release_scope()?;
         decoder.finish()?;
         Ok(Self {
             domain,
@@ -117,6 +123,7 @@ impl PreReencryptResponseStatement {
             crypto_backend,
             timestamp,
             document_inline,
+            release_scope,
         })
     }
 }

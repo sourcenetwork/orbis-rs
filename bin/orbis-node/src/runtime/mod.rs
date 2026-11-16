@@ -281,13 +281,28 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     tracing::info!(connection = %connection_string, "Iroh peer route");
 
     // Create shared application state (needed for router)
-    let app_state = AppState::<DkgImpl>::new(
+    let mut app_state = AppState::<DkgImpl>::new(
         config.identity.node_key.clone(),
         config.network.clone(),
         config.local_storage,
         config.authz,
         config.bulletin,
     );
+    if let Some(path) = &config.args.shieldd_rings {
+        let rings: Vec<common::blockchain::orbis::ShielddRing> =
+            serde_json::from_slice(&std::fs::read(path)?)?;
+        let mut ids = std::collections::HashSet::new();
+        for ring in &rings {
+            if ring.profile != common::blockchain::orbis::SHIELDD_PROFILE
+                || ring.ring_id.is_empty()
+                || ring.policy_id.is_empty()
+                || !ids.insert(&ring.ring_id)
+            {
+                return Err("invalid or duplicate Shieldd ring configuration".into());
+            }
+        }
+        app_state.shieldd_rings = Arc::new(rings);
+    }
     let app_state_arc = Arc::new(app_state);
 
     // Start the router in the background with DKG, PRE, and Sign protocol handlers

@@ -545,6 +545,7 @@ async fn request_pre_reencryption(
         _ => None,
     };
     let reader_auth_context = crypto::context::ReaderAuthorizationContext {
+        release_scope: None,
         chain_id,
         ring_pk: ring_pk_bytes.clone(),
         jwt_issuer: jwt_signer.did_uri.clone(),

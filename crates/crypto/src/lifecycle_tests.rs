@@ -36,6 +36,7 @@ fn lifecycle_ctx() -> CiphertextContext {
 /// lifecycle test — same reader, same object, across all three rotations.
 fn lifecycle_reader_auth_context() -> ReaderAuthorizationContext {
     ReaderAuthorizationContext {
+        release_scope: None,
         chain_id: "lifecycle-chain".to_string(),
         ring_pk: b"lifecycle-ring-pk".to_vec(),
         jwt_issuer: "did:key:lifecycle-issuer".to_string(),

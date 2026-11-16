@@ -221,6 +221,7 @@ impl JwtSigner {
         salt: Option<String>,
     ) -> Result<(String, TokenMetadata)> {
         let claims = PreClaims {
+            release_scope: None,
             rdr_pk,
             object_id: object_id.to_string(),
             derivation,

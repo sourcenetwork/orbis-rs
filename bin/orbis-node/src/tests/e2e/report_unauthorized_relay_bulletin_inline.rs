@@ -92,6 +92,7 @@ fn signed_unauthorized_relay_statement(
     };
     let signed_at = current_unix_time_secs();
     let statement = RelayRequestStatement {
+        release_scope: None,
         domain: RELAY_REQUEST_DOMAIN.to_string(),
         chain_id,
         ring_id: ring_id.to_string(),
@@ -359,6 +360,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         true,
     );
     let inline_proto_document = InlineDocument {
+        shieldd_document: None,
         ring_id: ring_id.0.clone(),
         encrypted_document: inline_document_bytes,
         enc_cmt: inline_secret.enc_cmt,
@@ -468,6 +470,7 @@ async fn relay_statement_preserves_jwt_issued_time() {
         validate_relay_request_binding(
             &statement,
             RelayRequestBinding {
+                release_scope: None,
                 ring: ring.clone(),
                 ring_id: "ring".into(),
                 protocol_version: network::V0.version,

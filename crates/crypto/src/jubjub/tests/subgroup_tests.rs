@@ -82,6 +82,7 @@ fn pre_rejects_non_subgroup_and_noncanonical_points_at_decoding() {
     let reader_secret = Fr::from(7u64);
     let reader_key = Element::generator() * reader_secret;
     let reader_auth_context = ReaderAuthorizationContext {
+        release_scope: None,
         chain_id: "test-chain".to_string(),
         ring_pk: public_key.to_bytes().unwrap(),
         jwt_issuer: "did:key:issuer".to_string(),

@@ -242,6 +242,7 @@ resources:
         .await;
 
     let inline_document = proto::v0::pre::InlineDocument {
+        shieldd_document: None,
         ring_id: ring_id.clone(),
         encrypted_document: prepared.encrypted_document.clone(),
         enc_cmt: prepared.enc_cmt.clone(),
@@ -409,6 +410,7 @@ resources:
         .await;
 
     let inline_document_no_tag = proto::v0::pre::InlineDocument {
+        shieldd_document: None,
         ring_id: ring_id.clone(),
         encrypted_document: prepared_no_tag.encrypted_document.clone(),
         enc_cmt: prepared_no_tag.enc_cmt.clone(),
@@ -847,6 +849,7 @@ resources:
         .await;
 
     let inline_document = proto::v0::pre::InlineDocument {
+        shieldd_document: None,
         ring_id: ring_id.to_string(),
         encrypted_document: prepared.encrypted_document.clone(),
         enc_cmt: prepared.enc_cmt.clone(),

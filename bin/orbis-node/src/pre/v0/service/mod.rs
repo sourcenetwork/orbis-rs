@@ -33,16 +33,51 @@ pub(crate) fn document_payload_from_inline(
         PreError::InvalidInput(format!("encrypted_document is not valid UTF-8: {}", e))
     })?;
 
-    let proof: String = EncryptionProof {
-        challenge: inline.challenge,
-        response: inline.response,
+    let shieldd: Option<common::blockchain::orbis::ShielddDocument> = inline
+        .shieldd_document
+        .map(|bytes| serde_json::from_slice(&bytes))
+        .transpose()
+        .map_err(|e| PreError::InvalidInput(format!("invalid Shieldd document: {e}")))?;
+    let external = shieldd.is_some();
+    if external && (!inline.challenge.is_empty() || !inline.response.is_empty()) {
+        return Err(PreError::InvalidInput(
+            "external document carries native proof".into(),
+        ));
     }
-    .try_into()
-    .map_err(|e: crypto::error::CryptoError| {
-        PreError::Serialization(format!("Failed to serialize proof: {}", e))
-    })?;
+    let proof: String = if external {
+        String::new()
+    } else {
+        EncryptionProof {
+            challenge: inline.challenge,
+            response: inline.response,
+        }
+        .try_into()
+        .map_err(|e: crypto::error::CryptoError| {
+            PreError::Serialization(format!("Failed to serialize proof: {}", e))
+        })?
+    };
 
     let (pet_tag, pet_tag_proof) = match inline.pet_tag {
+        Some(attachment) if external => {
+            if !attachment.knowledge_proof_challenge.is_empty()
+                || !attachment.knowledge_proof_response.is_empty()
+            {
+                return Err(PreError::InvalidInput(
+                    "external tag carries native proof".into(),
+                ));
+            }
+            let tag = crypto::r#trait::PetTag {
+                ephemeral_point: attachment.ephemeral_point,
+                masked_fingerprint: attachment.masked_fingerprint,
+            };
+            (
+                Some(
+                    serde_json::to_string(&tag)
+                        .map_err(|e| PreError::Serialization(e.to_string()))?,
+                ),
+                None,
+            )
+        }
         Some(attachment) => {
             let (pet_tag, pet_tag_proof) =
                 crate::helpers::pet_tag::pet_tag_attachment_to_document_fields(
@@ -57,7 +92,8 @@ pub(crate) fn document_payload_from_inline(
         None => (None, None),
     };
 
-    Ok(bulletin::r#trait::DocumentPayload {
+    let payload = bulletin::r#trait::DocumentPayload {
+        shieldd,
         ring_id: inline.ring_id,
         document,
         proof,
@@ -68,7 +104,11 @@ pub(crate) fn document_payload_from_inline(
         timestamp: inline.timestamp,
         pet_tag,
         pet_tag_proof,
-    })
+    };
+    payload
+        .shieldd_document()
+        .map_err(|e| PreError::InvalidInput(e.to_string()))?;
+    Ok(payload)
 }
 
 /// Implementation of the v0 PreService.
@@ -168,6 +208,7 @@ where
             .authorize_pre_request(authenticated, bulletin_state)
             .await?;
         let ciphertext_context = authorized.ciphertext_context.clone();
+        let release_scope = authorized.token.claims.release_scope.clone();
 
         // 4. PET check (no-op unless the ring requires it). The returned evidence is
         //    forwarded to every PRE peer so each one independently re-verifies the same
@@ -181,7 +222,12 @@ where
         let result = self.coordinate_pre_reencryption(setup).await?;
 
         // 7. Response encoding.
-        let response = encode_pre_response(result, ciphertext_context, current_time as i64)?;
+        let response = encode_pre_response(
+            result,
+            ciphertext_context,
+            release_scope,
+            current_time as i64,
+        )?;
 
         request_metrics.complete();
         grpc_metrics.success();

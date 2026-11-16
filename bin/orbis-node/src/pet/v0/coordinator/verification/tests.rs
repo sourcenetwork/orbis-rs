@@ -145,6 +145,7 @@ fn build_fixture(committee_size: usize, threshold: u32, target: &str) -> TagFixt
         response: vec![12, 13],
     };
     let mut document = DocumentPayload {
+        shieldd: None,
         ring_id: RING_ID.to_string(),
         document: serde_json::to_string(&secret).expect("serialize secret"),
         proof: String::try_from(EncryptionProof {
@@ -763,6 +764,7 @@ async fn verify_pet_check_request_rejects_a_document_object_id_mismatch() {
 fn audit_authz_fixture() -> (TestKeyPair, DocumentPayload, String) {
     let signer = TestKeyPair::new();
     let document = DocumentPayload {
+        shieldd: None,
         ring_id: "audit-authz-ring".to_string(),
         document: String::new(),
         proof: String::new(),

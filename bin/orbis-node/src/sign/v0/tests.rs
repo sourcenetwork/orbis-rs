@@ -268,6 +268,7 @@ async fn create_test_document_and_post(
 ) -> Vec<u8> {
     // Create a test DocumentPayload
     let doc_payload = DocumentPayload {
+        shieldd: None,
         ring_id: ring_id.to_string(),
         document: TEST_DOCUMENT_JSON.to_string(),
         proof: TEST_PROOF_JSON.to_string(),
@@ -785,6 +786,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
 
     // Create a valid BulletinPost but DON'T post it to the bulletin
     let doc_payload = DocumentPayload {
+        shieldd: None,
         ring_id: ring_id.clone(),
         document: TEST_DOCUMENT_JSON.to_string(),
         proof: TEST_PROOF_JSON.to_string(),
@@ -904,6 +906,7 @@ async fn test_sign_fails_tampered_payload() {
 
     // First, create and post a legitimate document
     let original_doc = DocumentPayload {
+        shieldd: None,
         ring_id: ring_id.clone(),
         document: TEST_DOCUMENT_JSON.to_string(),
         proof: TEST_PROOF_JSON.to_string(),
@@ -928,6 +931,7 @@ async fn test_sign_fails_tampered_payload() {
 
     // Now create a tampered BulletinPost with same ID but different payload
     let tampered_doc = DocumentPayload {
+        shieldd: None,
         ring_id: ring_id.clone(),
         document: TAMPERED_DOCUMENT_JSON.to_string(), // Different content!
         proof: TEST_PROOF_JSON.to_string(),
@@ -1044,6 +1048,7 @@ async fn test_sign_fails_invalid_ring_id() {
 
     // Create a document with a fake ring_id that doesn't exist
     let doc_with_fake_ring = DocumentPayload {
+        shieldd: None,
         ring_id: "fake_ring_id_that_doesnt_exist_on_bulletin".to_string(),
         document: TEST_DOCUMENT_JSON.to_string(),
         proof: TEST_PROOF_JSON.to_string(),

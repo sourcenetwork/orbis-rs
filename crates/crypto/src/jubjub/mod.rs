@@ -2,6 +2,7 @@ pub mod common;
 pub mod dkg;
 pub mod pet;
 pub mod pre;
+pub mod shieldd;
 pub mod sign;
 mod types;
 

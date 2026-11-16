@@ -73,6 +73,7 @@ pub enum ReportValidationMode {
 }
 
 pub struct ReportValidationContext {
+    pub shieldd_rings: Arc<Vec<::common::blockchain::orbis::ShielddRing>>,
     pub local_node_key: String,
     pub requester_peer_id: Option<PeerId>,
     pub network: Arc<dyn Network>,

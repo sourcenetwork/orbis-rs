@@ -52,6 +52,8 @@ pub struct RelayRequestStatement {
     /// [`ReportSigningContext`]; this only tells a validator to expect it and to skip the
     /// bulletin read.
     pub document_inline: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_scope: Option<common::blockchain::orbis::ReleaseScope>,
 }
 
 impl RelayRequestStatement {
@@ -79,6 +81,7 @@ impl RelayRequestStatement {
         write_optional_u64(&mut out, self.valid_window_end);
         write_optional_u64(&mut out, self.timestamp);
         write_bool(&mut out, self.document_inline);
+        super::codec::write_release_scope(&mut out, self.release_scope.as_ref());
         out
     }
 
@@ -106,6 +109,7 @@ impl RelayRequestStatement {
         let valid_window_end = decoder.read_optional_u64("valid_window_end")?;
         let timestamp = decoder.read_optional_u64("timestamp")?;
         let document_inline = decoder.read_bool("document_inline")?;
+        let release_scope = decoder.read_release_scope()?;
         decoder.finish()?;
         Ok(Self {
             domain,
@@ -128,6 +132,7 @@ impl RelayRequestStatement {
             valid_window_end,
             timestamp,
             document_inline,
+            release_scope,
         })
     }
 }

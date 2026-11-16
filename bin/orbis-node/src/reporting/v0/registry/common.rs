@@ -313,6 +313,36 @@ pub(super) fn require_inline_document_evidence<'a>(
                 .to_string(),
         )
     })?;
+    if let Some(external) = &evidence.shieldd {
+        let document = bulletin::r#trait::DocumentPayload {
+            shieldd: Some(external.clone()),
+            ring_id: ring_id.to_string(),
+            document: evidence.document.clone(),
+            proof: evidence.proof.clone(),
+            policy_id: evidence.policy_id.clone(),
+            resource: evidence.resource.clone(),
+            permission: evidence.permission.clone(),
+            tier: evidence.tier.clone(),
+            timestamp,
+            pet_tag: evidence.pet_tag.clone(),
+            pet_tag_proof: evidence.pet_tag_proof.clone(),
+        };
+        document
+            .shieldd_document()
+            .map_err(|e| ReportingError::InvalidReport(e.to_string()))?;
+        if external.profile != ::common::blockchain::orbis::SHIELDD_PROFILE
+            || !context
+                .shieldd_rings
+                .iter()
+                .any(|profile| profile.accepts(external))
+            || external.id() != object_id
+        {
+            return Err(ReportingError::InvalidReport(
+                "Shieldd evidence/profile mismatch".into(),
+            ));
+        }
+        return Ok(evidence);
+    }
     let expected_object_id = generate_document_id(
         ring_id,
         &evidence.document,

@@ -49,6 +49,10 @@ message InlineDocument {
   optional uint64 timestamp = 10;
   // PET tag, present only when the ring requires PET.
   optional PetTagAttachment pet_tag = 11;
+  // Canonical typed ShielddDocument JSON for the proof-free external variant.
+  // Native proof fields must be empty. Nodes verify every projected field and
+  // require a matching authority-controlled ring configuration and ACP grant.
+  optional bytes shieldd_document = 12;
 }
 
 // Schnorr signature of knowledge of the discrete log of a StartPreRequest.rdr_pk
