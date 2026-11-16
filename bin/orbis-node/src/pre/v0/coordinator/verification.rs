@@ -434,7 +434,6 @@ mod tests {
         let enc_cmt = <DkgImpl as Dkg>::PublicKey::from_bytes(&encrypted_secret.enc_cmt).unwrap();
         let (rdr_sk, rdr_pk) = PreImpl::generate_keypair();
         let reader_auth_context = crypto::context::ReaderAuthorizationContext {
-            pet_target: report_context.pet_target.clone(),
             chain_id: "test-chain".to_string(),
             ring_pk: Vec::new(),
             jwt_issuer: "did:key:test".to_string(),

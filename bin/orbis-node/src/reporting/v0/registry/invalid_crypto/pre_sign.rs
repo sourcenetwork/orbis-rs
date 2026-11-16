@@ -340,7 +340,7 @@ pub(crate) async fn require_pre_proof_verification_failure(
         deserialize_secret(&evidence.document)
             .map_err(|error| ReportingError::InvalidReport(error.to_string()))?
     } else {
-        reject_unexpected_inline_document_evidence(context)?;
+        reject_unexpected_inline_document_evidence(context, &statement.ring_id)?;
         let document_post = context
             .bulletin
             .read(statement.object_id.clone(), BulletinKind::Document)

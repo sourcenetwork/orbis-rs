@@ -367,7 +367,13 @@ pub(super) fn require_inline_document_evidence<'a>(
 /// re-fetch.
 pub(super) fn reject_unexpected_inline_document_evidence(
     context: &ReportValidationContext,
+    ring_id: &str,
 ) -> Result<()> {
+    if context.external_rings.iter().any(|p| p.ring_id == ring_id) {
+        return Err(ReportingError::InvalidReport(
+            "external documents are inline-only".into(),
+        ));
+    }
     if context.inline_document.is_some() {
         return Err(ReportingError::InvalidReport(
             "statement does not mark the request inline but inline document evidence was provided"

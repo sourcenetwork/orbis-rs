@@ -565,6 +565,81 @@ pub async fn store_response(
 mod tests {
     use super::*;
 
+    #[test]
+    #[cfg(feature = "jubjub")]
+    fn external_mode_requires_configuration_and_exact_context() {
+        use crypto::CryptoSerialize;
+        let (_, pk) = crypto::helpers::generate_keypair().unwrap();
+        let point = pk.to_bytes().unwrap();
+        let ring = RingPayload {
+            ring_pk: hex::encode(&point),
+            pet_pk: Some(hex::encode(&point)),
+            requires_pet: true,
+            ..Default::default()
+        };
+        let document = DocumentPayload {
+            ring_id: "external".into(),
+            policy_id: "authority-policy".into(),
+            document: serde_json::to_string(&Secret {
+                enc_cmt: point.clone(),
+                encrypted_data: vec![7; 32],
+                nonce: vec![0; 12],
+            })
+            .unwrap(),
+            proof: String::new(),
+            resource: "document".into(),
+            permission: "read".into(),
+            tier: None,
+            timestamp: None,
+            pet_tag: Some(
+                serde_json::to_string(&PetTag {
+                    ephemeral_point: point.clone(),
+                    masked_fingerprint: point,
+                })
+                .unwrap(),
+            ),
+            pet_tag_proof: None,
+        };
+        let profiles = [common::blockchain::orbis::ExternalRing {
+            ring_id: "external".into(),
+            document_policy_id: "authority-policy".into(),
+            allow_unconditional_read: true,
+        }];
+        assert!(check_document_profile(&profiles, &document, &ring).unwrap());
+        assert!(check_document_profile(&[], &document, &ring).is_err());
+        let id = external_document_id(&document).unwrap();
+        check_document_id_binding(&id, &document, &profiles).unwrap();
+        let target = "scalar:authorized".to_string();
+        check_target(&profiles, &document, Some(&target), Some(&target)).unwrap();
+        check_target(&profiles, &document, None, None).unwrap();
+        for (claim, request) in [(Some(&target), None), (None, Some(&target))] {
+            assert!(check_target(&profiles, &document, claim, request).is_err());
+        }
+        assert!(check_target(&[], &document, Some(&target), Some(&target)).is_err());
+        let mutations: Vec<Box<dyn Fn(&mut DocumentPayload)>> = vec![
+            Box::new(|d| d.policy_id = "reader-policy".into()),
+            Box::new(|d| d.tier = Some("application-tier".into())),
+            Box::new(|d| d.timestamp = Some(0)),
+            Box::new(|d| d.permission = "read_all".into()),
+            Box::new(|d| d.proof = "proof".into()),
+            Box::new(|d| d.pet_tag_proof = Some("proof".into())),
+        ];
+        for mutate in mutations {
+            let mut changed = document.clone();
+            mutate(&mut changed);
+            assert!(check_document_profile(&profiles, &changed, &ring).is_err());
+        }
+        let mut unprovisioned = ring.clone();
+        unprovisioned.requires_pet = false;
+        assert!(check_document_profile(&profiles, &document, &unprovisioned).is_err());
+        let mut changed = document.clone();
+        let mut secret: Secret = serde_json::from_str(&changed.document).unwrap();
+        secret.encrypted_data[0] ^= 1;
+        changed.document = serde_json::to_string(&secret).unwrap();
+        assert!(check_document_profile(&profiles, &changed, &ring).unwrap());
+        assert!(check_document_id_binding(&id, &changed, &profiles).is_err());
+    }
+
     /// A well-formed encrypted-`Secret` JSON; `tag` varies the ciphertext bytes.
     fn secret_json(tag: u8) -> String {
         format!(

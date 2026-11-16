@@ -354,7 +354,7 @@ where
             .map_err(PetError::ProtocolError)?;
 
         let target_fingerprint = super::verification::target_fingerprint::<P>(
-            &ctx.document,
+            &ctx.document.ring_id,
             &audit_target_object_id,
             &self.app_state.external_rings,
         )

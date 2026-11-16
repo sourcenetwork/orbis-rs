@@ -162,7 +162,7 @@ where
         let node_id = pri_share.i;
 
         let target_fingerprint = super::verification::target_fingerprint::<P>(
-            &ctx.document,
+            &ctx.document.ring_id,
             &ctx.audit_target_object_id,
             &self.app_state.external_rings,
         )
@@ -365,7 +365,7 @@ where
         );
 
         let target_fingerprint = super::verification::target_fingerprint::<P>(
-            &ctx.document,
+            &ctx.document.ring_id,
             &ctx.audit_target_object_id,
             &self.app_state.external_rings,
         )
@@ -487,7 +487,7 @@ where
         }
 
         let target_fingerprint = super::verification::target_fingerprint::<P>(
-            &ctx.document,
+            &ctx.document.ring_id,
             &ctx.audit_target_object_id,
             &self.app_state.external_rings,
         )

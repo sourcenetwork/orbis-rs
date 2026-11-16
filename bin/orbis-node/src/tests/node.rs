@@ -98,6 +98,7 @@ async fn make_test_node_config(
     let config = NodeConfig {
         args: Args {
             services_config: None,
+            external_rings: None,
             addr: addr.to_string(),
             cors_allow_origins: vec![],
             cors_permissive: false,
@@ -173,6 +174,7 @@ fn node_info_test_args(
 ) -> Args {
     Args {
         services_config: None,
+        external_rings: None,
         addr: "127.0.0.1:0".to_string(),
         cors_allow_origins: vec![],
         cors_permissive: false,
@@ -788,6 +790,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
     let config = NodeConfig {
         args: Args {
             services_config: None,
+            external_rings: None,
             addr: grpc_addr.to_string(),
             cors_allow_origins: vec!["http://localhost:5173".to_string()],
             cors_permissive: false,

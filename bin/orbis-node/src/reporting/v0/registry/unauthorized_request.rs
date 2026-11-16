@@ -296,7 +296,7 @@ pub(super) async fn require_relayed_request_unauthorized(
                     statement.timestamp,
                 )
             } else {
-                reject_unexpected_inline_document_evidence(context)?;
+                reject_unexpected_inline_document_evidence(context, &statement.ring_id)?;
                 let document_post = context
                     .bulletin
                     .read(statement.object_id.clone(), BulletinKind::Document)

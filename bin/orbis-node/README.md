@@ -377,3 +377,30 @@ The PET scenario checks paired DKG, stored and inline PRE, document/audit denial
 and revoke/regrant, committee shrink with both share polynomials rotated, and
 recovery after abrupt restart. These bounded container scenarios do not cover
 the 24-hour scheduled refresh, production capacity or power-loss recovery.
+
+## Externally validated inline documents (Jubjub)
+
+`--external-rings PATH` loads a JSON array of entries with `ring_id`,
+`document_policy_id`, and `allow_unconditional_read`. Every participant and report
+validator must use the same trusted configuration. The authoritative bulletin
+still supplies ring keys and generations. Unlisted rings retain native proofs.
+
+Configured rings accept the existing inline document with an EPK, opaque 32-byte
+application commitment, zero nonce, ownership tag, empty opening proof and absent
+tag-knowledge proof. Context is fixed to `document/read` without tier, timestamp,
+salt, derivation or validity window. The application authenticates the source and
+proves encryption/ownership before authority admission; Orbis does not parse its
+records. External documents cannot be resolved from persisted native bulletin IDs.
+
+An authenticated target requires exact-document `read`, target `read`, and PET.
+Targets use `scalar:` plus a canonical nonzero lowercase little-endian Jubjub
+scalar; PET compares its generator multiple. No target requires `read_all` and
+`allow_unconditional_read=true`. Signatures and stored-share manifests bind the
+optional target. Deployed chain report decoders must support the generic
+`orbis/pet-target/v1` suffix; native reports retain their existing encoding.
+
+The pinned policy must reserve effective grants for the admitting authority.
+Object registration/ownership must not grant readers access or let them grant it
+to themselves. A discretionary ACP backend that automatically gives owners every
+permission does not meet this requirement merely by pinning a policy ID. This
+mode requires an authorization backend that enforces that admission boundary.

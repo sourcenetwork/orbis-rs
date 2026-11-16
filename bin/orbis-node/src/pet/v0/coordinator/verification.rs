@@ -909,7 +909,7 @@ where
         }
 
         let target_fingerprint = target_fingerprint::<P>(
-            document,
+            &document.ring_id,
             audit_target_object_id,
             &self.app_state.external_rings,
         )
@@ -1295,11 +1295,11 @@ mod tests;
 /// The authority authenticates the address-to-target association. Native rings
 /// retain Orbis's original fingerprint; external profiles decode a canonical subgroup scalar.
 pub(crate) fn target_fingerprint<P: Pet>(
-    document: &bulletin::r#trait::DocumentPayload,
+    ring_id: &str,
     target: &str,
     profiles: &[common::blockchain::orbis::ExternalRing],
 ) -> crypto::error::Result<P::PublicKey> {
-    if profiles.iter().any(|p| p.ring_id == document.ring_id) {
+    if profiles.iter().any(|p| p.ring_id == ring_id) {
         #[cfg(feature = "jubjub")]
         {
             use crypto::CryptoSerialize;
