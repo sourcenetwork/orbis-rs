@@ -258,7 +258,7 @@ pub(super) async fn require_relayed_request_unauthorized(
         _ => {
             return Err(ReportingError::InvalidReport(
                 "relay request valid_window bounds must both be present or both absent".to_string(),
-            ))
+            ));
         }
     };
 
@@ -287,11 +287,15 @@ pub(super) async fn require_relayed_request_unauthorized(
                         _ => {
                             return Err(ReportingError::InvalidReport(
                                 "document/release scope mismatch".into(),
-                            ))
+                            ));
                         }
                     },
                     evidence.tier.clone(),
-                    statement.timestamp,
+                    if evidence.shieldd.is_some() {
+                        None
+                    } else {
+                        statement.timestamp
+                    },
                 )
             } else {
                 reject_unexpected_inline_document_evidence(context)?;
@@ -347,7 +351,7 @@ pub(super) async fn require_relayed_request_unauthorized(
             return Err(ReportingError::InvalidReport(format!(
                 "unsupported relay request origin protocol {}",
                 other
-            )))
+            )));
         }
     };
 

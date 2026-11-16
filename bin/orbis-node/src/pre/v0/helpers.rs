@@ -6,8 +6,8 @@ use crate::pre::v0::{
     response_state::PreResponseManager,
 };
 use authn::{BearerToken, PreClaims};
-use authz::r#trait::Authz;
 use authz::request::{AccessCheckRequest, ValidWindow};
+use authz::r#trait::Authz;
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::orbis::generate_document_id;
 use crypto::context::{
@@ -188,6 +188,11 @@ pub async fn check_policy_access(
     valid_window: Option<ValidWindow>,
     scope: Option<&common::blockchain::orbis::ReleaseScope>,
 ) -> Result<()> {
+    if document_payload.shieldd.is_some() && valid_window.is_some() {
+        return Err(PreError::Unauthorized(
+            "external grants do not use caller-selected timestamp windows".into(),
+        ));
+    }
     let required = document_permission(document_payload, scope)?;
     let permission = AccessCheckRequest::new(
         document_payload.policy_id.clone(),
@@ -195,7 +200,7 @@ pub async fn check_policy_access(
         object_id.to_string(),
         required.to_string(),
         document_payload.tier.clone(),
-        document_payload.timestamp,
+        permission_timestamp(document_payload),
         valid_window,
     )
     .to_bytes()
@@ -213,6 +218,16 @@ pub async fn check_policy_access(
     }
 
     Ok(())
+}
+
+/// Creation timestamps bind the external transcript, never grant validity.
+/// ACP evaluates current grants independently of the accepted creation time.
+pub(crate) fn permission_timestamp(document: &DocumentPayload) -> Option<u64> {
+    if document.shieldd.is_some() {
+        None
+    } else {
+        document.timestamp
+    }
 }
 
 pub(crate) fn document_permission<'a>(
@@ -273,7 +288,7 @@ pub(crate) async fn refresh_external_access(
         _ => {
             return Err(PreError::Unauthorized(
                 "invalid external release scope".into(),
-            ))
+            ));
         }
     };
     check_document_id_binding(&reader.object_id, document)?;
@@ -296,6 +311,15 @@ pub(crate) async fn refresh_external_access(
         )
         .await
         .map_err(|e| PreError::Unauthorized(e.to_string()))?;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| PreError::SystemTime(e.to_string()))?
+        .as_secs();
+    if now >= reader.jwt_expiration_time {
+        return Err(PreError::Unauthorized(
+            "release request expired before share production".into(),
+        ));
     }
     Ok(())
 }

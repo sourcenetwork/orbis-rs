@@ -9,15 +9,15 @@ use crate::pre::v0::helpers::{
 };
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::types::{
-    ring_state_sha256, PreReencryptResponseStatement, ReportedDocumentEvidence,
-    PRE_REENCRYPT_RESPONSE_DOMAIN,
+    PRE_REENCRYPT_RESPONSE_DOMAIN, PreReencryptResponseStatement, ReportedDocumentEvidence,
+    ring_state_sha256,
 };
 use crate::reporting::v0::{
-    report_unauthorized_relay, validate_relay_request_binding, RelayRequestBinding,
-    RelayRequestTimestampBinding,
+    RelayRequestBinding, RelayRequestTimestampBinding, report_unauthorized_relay,
+    validate_relay_request_binding,
 };
 use crate::ring_state::RingShareBundle;
-use authn::{resolve_jwt_did, BearerToken, PreClaims};
+use authn::{BearerToken, PreClaims, resolve_jwt_did};
 use authz::request::AccessCheckRequest;
 use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
@@ -262,7 +262,7 @@ where
             )?
             .to_string(),
             document_payload.tier.clone(),
-            document_payload.timestamp,
+            crate::pre::v0::helpers::permission_timestamp(&document_payload),
             ctx.valid_window.clone(),
         )
         .to_bytes()

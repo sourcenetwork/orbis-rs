@@ -30,21 +30,21 @@ use crate::helpers::identity::{extract_node_part, node_key_for_id};
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::pet::v0::attestation::{
-    build_pet_blind_context, invalid_pet_blind_decrypt_observation,
-    invalid_pet_blind_reveal_observation, PetBlindEvidence,
+    PetBlindEvidence, build_pet_blind_context, invalid_pet_blind_decrypt_observation,
+    invalid_pet_blind_reveal_observation,
 };
 use crate::pet::v0::error::{PetError, Result};
 use crate::pet::v0::messages::PetCheckContext;
 use crate::reporting::v0::observation::InvalidCryptoResponseObservation;
 use crate::reporting::v0::types::{
-    pet_blind_commit_hash, pet_blind_proof_transcript_digest, pet_blind_selection_digest,
     PetBlindCertificate, PetBlindContext, PetBlindDecryptStatement, PetBlindRevealStatement,
-    PetBlindSignedReveal, ReportedDocumentEvidence,
+    PetBlindSignedReveal, ReportedDocumentEvidence, pet_blind_commit_hash,
+    pet_blind_proof_transcript_digest, pet_blind_selection_digest,
 };
 use crate::ring_state::RingShareBundle;
-use authn::{resolve_jwt_did, BearerToken, PreClaims};
-use authz::r#trait::Authz;
+use authn::{BearerToken, PreClaims, resolve_jwt_did};
 use authz::request::{AccessCheckRequest, ValidWindow};
+use authz::r#trait::Authz;
 use bulletin::r#trait::Bulletin;
 use common::blockchain::verify_node_message;
 use crypto::context::CiphertextContext;
@@ -80,7 +80,7 @@ pub(crate) async fn check_pet_permission(
         audit_target_object_id.to_string(),
         document.permission.clone(),
         document.tier.clone(),
-        document.timestamp,
+        crate::pre::v0::helpers::permission_timestamp(document),
         valid_window,
     )
     .to_bytes()

@@ -7,7 +7,7 @@
 use k256::sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 
-pub const SHIELDD_PROFILE: &str = "shieldd-jubjub-poseidon-scalar-v1";
+pub const SHIELDD_PROFILE: &str = "shieldd-jubjub-pari-v9-poseidon-scalar-v1";
 
 /// Canonical accepted location, attached after transaction acceptance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
