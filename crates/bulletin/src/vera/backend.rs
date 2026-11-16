@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use vera_client::{create_scoped_bearer_token, DelegationScope, ExecutionReceipt};
 
 #[cfg(test)]
+#[path = "backend_tests.rs"]
 mod tests;
 
 pub struct VeraBulletin {
