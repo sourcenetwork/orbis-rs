@@ -235,25 +235,13 @@ where
         &route_assignments,
     )?;
 
-    let bundle = RingShareBundle::load_by_pet_ring_key(&coord.app_state.local_storage, ring_id)
-        .map_err(|e| {
-            DkgError::Unauthorized(format!(
-                "Refresh PET session validation requires current PET ring bundle for {}: {}",
-                ring_id, e
-            ))
-        })?;
-    let expected_session_id = derive_refresh_pet_session_id(
+    validate_refresh_pet_bundle_for_session(
+        &coord.app_state.local_storage,
         ring_id,
+        session_id,
         &ring_payload.peer_node_keys,
         ring_payload.threshold,
-        &bundle.public_polynomial,
     )?;
-    if session_id != expected_session_id {
-        return Err(DkgError::Unauthorized(format!(
-            "Refresh PET session_id mismatch for ring {}: expected {}, got {}",
-            ring_id, expected_session_id, session_id
-        )));
-    }
 
     Ok(ResolvedSessionRoutes {
         old_peer_ids: route_peer_ids,
@@ -969,6 +957,7 @@ where
     // Refresh/Reshare/FreshPet: claim the ring's active PSS slot before creating
     // the session (gated on `kind.ring_key()`, which is `Some` for all three —
     // `Fresh` alone has no existing ring to protect and stays ungated).
+    let mut claimed_pss = false;
     if let Some(ring_key) = kind.ring_key() {
         match coord
             .app_state
@@ -977,6 +966,7 @@ where
             .await
         {
             RingPssClaimOutcome::Claimed => {
+                claimed_pss = true;
                 tracing::info!(
                     session_id = session_id,
                     ring_key = %ring_key,
@@ -996,6 +986,28 @@ where
                     ring_key, active_session_id, session_id
                 )));
             }
+        }
+    }
+
+    if let SessionKind::RefreshPet { ring_id } = kind {
+        // The first validation preceded claim acquisition. A PET reshare may
+        // have staged or promoted in between, so check the generation again
+        // while this attempt excludes any new PET ceremony.
+        if let Err(error) = validate_refresh_pet_bundle_for_session(
+            &coord.app_state.local_storage,
+            ring_id,
+            session_id,
+            peer_node_keys,
+            threshold,
+        ) {
+            if claimed_pss {
+                coord
+                    .app_state
+                    .dkg_session_state
+                    .unmark_ring_pss_for_attempt(ring_id, attempt)
+                    .await;
+            }
+            return Err(error);
         }
     }
 

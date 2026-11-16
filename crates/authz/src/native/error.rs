@@ -1,15 +1,14 @@
 //! Errors from certified native authorization and its request boundaries.
 
+use common::blockchain::native::DeploymentTrustError;
 use vera_client::ClientError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid deployment root or freshness bound")]
     InvalidConfiguration,
-    #[error("failed to read the deployment revision: {0}")]
-    ReadDeployment(#[source] ClientError),
-    #[error("consensus proof does not bind the configured deployment")]
-    DeploymentMismatch,
+    #[error(transparent)]
+    DeploymentTrust(#[from] DeploymentTrustError),
     #[error("system clock is before the Unix epoch: {0}")]
     Clock(#[source] std::time::SystemTimeError),
     #[error("authorization revision regressed")]

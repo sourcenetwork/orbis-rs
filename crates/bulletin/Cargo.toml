@@ -10,7 +10,6 @@ orbis-reporting = { path = "../reporting" }
 async-trait = { workspace = true }
 thiserror ={ workspace = true }
 common = { path = "../common", default-features = false }
-crypto = { path = "../crypto", optional = true, default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -20,8 +19,6 @@ tokio = { workspace = true }
 tracing = "0.1"
 authz = { path = "../authz", default-features = false }
 
-commonware-codec = { version = "=2026.10.0", optional = true }
-url = { version = "2.5", optional = true }
 vera-crypto = { workspace = true, optional = true }
 vera-client = { workspace = true, optional = true }
 vera-domain = { workspace = true, optional = true }
@@ -35,33 +32,14 @@ zeroize = { workspace = true, optional = true }
 default = ["vera"]
 vera = ["cosmos-identity"]
 cosmos-identity = ["common/cosmos", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
-# Selects test-only startup behavior for whichever production backend is
-# selected. It intentionally pulls in no backend: a native test build must
-# remain free of Cosmos dependencies.
-integration-test = ["common/funding"]
-# Native's own equivalent of `integration-test`, kept separate rather than
-# reused: `integration-test` is unconditionally wired to `orbis-node`'s own
-# `integration-test` feature, which also activates `cli-tool` there -- and
-# `cli-tool` hardcodes `bulletin`'s `vera` feature regardless of server
-# backend (it's a pure gRPC client), pulling in Cosmos dependencies a native
-# build must stay free of. `unsafe-testing` is already native's own
-# Dockerfile-level "this is a testing build" flag (see
-# `docker/Dockerfile`'s native branch) and, like `integration-test` itself,
-# pulls in no backend.
-unsafe-testing = []
-native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
-# Selects `DummyBulletin` as the production `BulletinImpl` (mutually
-# exclusive with `vera`, enforced below). Implies `dummy-type` since that's
-# what actually compiles the module this re-exports.
-dummy = ["dummy-type"]
-# Compiles the `dummy` module (an in-memory mock, no chain) without
-# selecting it as `BulletinImpl` — for a `vera`-backed binary (orbis-node,
-# orbis-bench) that still wants `DummyBulletin` available for an in-process
-# test/benchmark harness. Split from `dummy` so enabling it can't trip the
-# `vera`+`dummy` mutual-exclusivity check below.
+# Selects deterministic identity and devnet-funding startup for whichever
+# production backend is selected. This is deliberately separate from the
+# node's dangerous `unsafe-testing` diagnostic surface.
+fixture-startup = ["common/funding"]
+native = ["common/native", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
+# Compiles the in-memory mock type without selecting it as the production
+# implementation. Used by in-process tests and benchmarks.
 dummy-type = []
-bls12-381 = ["dep:crypto", "crypto/bls12-381"]
-jubjub = ["dep:crypto", "crypto/jubjub"]
 # The `BulletinFactory`/`PreparedBulletin` traits, the services composer and
 # factory impls. Separate from `native`/`vera` (which just compile the
 # backend module for direct use — `cli-tool`'s admin tooling needs those
@@ -78,6 +56,7 @@ name = "native_service"
 required-features = ["native"]
 
 [dev-dependencies]
+common = { path = "../common", default-features = false, features = ["test-helpers"] }
 alloy-sol-types = "1"
 vera-acp = { workspace = true }
 vera-modules = { workspace = true }

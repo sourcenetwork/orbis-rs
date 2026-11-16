@@ -2,6 +2,8 @@
 //!
 //! The default `cosmos` feature also provides `ChainConfig`, `VeraClient`,
 //! `TxSigner`, and Cosmos SDK / CometBFT queries, transactions, and subscriptions.
+//! The `native` feature provides `NativeConfig` and deployment-trust
+//! bootstrap for the Commonware / vera.rs backend.
 //! Disable default features to use the shared encodings without chain transport.
 
 pub mod acp;
@@ -10,12 +12,16 @@ pub mod bulletin;
 #[cfg(feature = "cosmos")]
 pub mod cosmos;
 mod error;
+#[cfg(feature = "native")]
+pub mod native;
 mod node_signing;
 pub mod orbis;
 
 #[cfg(feature = "cosmos")]
 pub use cosmos::*;
 pub use error::{BlockchainError, Result};
+#[cfg(feature = "native")]
+pub use native::*;
 pub use node_signing::{sign_node_message_with_hex_key, verify_node_message};
 
 // Known test key for the "test" account created in docker-compose-vera-test.yml

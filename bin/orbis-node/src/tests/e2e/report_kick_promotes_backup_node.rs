@@ -45,7 +45,7 @@ async fn test_report_kick_promotes_backup_node() {
         // Native's genesis `node_demerits` seeding predicts the ring's id
         // ahead of boot from each node's *deterministic* key — only present
         // when the cluster runs in `unsafe-testing` mode (see
-        // `crates/bulletin/src/native/integration_startup.rs`). Without
+        // `crates/bulletin/src/native/fixture_startup.rs`). Without
         // this, nodes get random keys and the prediction silently diverges
         // from the real, live-created ring id.
         requires_unsafe_testing: true,

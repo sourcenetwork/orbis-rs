@@ -1,6 +1,7 @@
 use anyhow::{bail, ensure, Context, Result};
-use bulletin::native::{decode_node_signing_key, open_native_worker, NativeConfig};
+use bulletin::native::decode_node_signing_key;
 use clap::{Parser, Subcommand};
+use common::blockchain::native::{open_native_worker, NativeConfig};
 use local_storage::{r#trait::LocalStorage, redb::RedbStorage};
 use serde_json::json;
 use std::{
@@ -21,7 +22,8 @@ use zeroize::Zeroizing;
 #[derive(Parser)]
 #[command(about = "Native Vera node and ring administration with certified results")]
 struct Args {
-    /// Deployment trust file, also accepted by orbis-node --vera-config.
+    /// Deployment trust file — the same shape as the `bulletin` section of
+    /// orbis-node's `--services-config`.
     #[arg(long)]
     vera_config: PathBuf,
     /// Private operator directory, separate from running node storage.
@@ -152,7 +154,7 @@ fn observe(timestamp: u64, config: &NativeConfig) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let raw: bulletin::native::NativeBulletinConfig =
+    let raw: common::blockchain::native::NativeChainConfig =
         serde_json::from_slice(&read_bounded(&args.vera_config, 16 * 1024)?)?;
     let config = NativeConfig::try_from(raw).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     if let Command::RingId { request } = &args.command {

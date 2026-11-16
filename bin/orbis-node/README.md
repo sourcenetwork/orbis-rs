@@ -36,7 +36,9 @@ Defined in [`Cargo.toml`](Cargo.toml):
 | `authz-vera` | yes | `authz/vera` |
 | `bulletin-vera` | yes | `bulletin/vera` |
 | `iroh` | yes | `network/iroh` |
-| `integration-test` | no | `cli-tool` + test-only chain funding |
+| `integration-test` | no | Shared E2E driver, diagnostic RPC client types, and deterministic fixture startup |
+| `fixture-startup` | no | Deterministic test identity and devnet funding; does not expose diagnostic RPCs |
+| `unsafe-testing` | no | Dangerous diagnostic RPC service and fault hooks; only diagnostic test images opt in |
 | `fault-injection` | no | `network/fault-injection` for partition tests |
 
 ## CLI (quick reference)

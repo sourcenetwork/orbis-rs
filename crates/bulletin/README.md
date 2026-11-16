@@ -95,7 +95,9 @@ and derivation posts, cancellation, duplicate calls and restart:
 VERAD_BINARY=/path/to/verad cargo test -p bulletin --features native --test native_service -- --ignored
 ```
 
-Node startup can select this backend with `--vera-config`; see the node README.
+Node startup selects this backend at compile time (the `bulletin-native`
+build feature); the node's `--services-config` `bulletin` section supplies
+its endpoint, deployment root and consensus key — see the node README.
 The report/reshare recovery fixture uses supplied aggregate signatures and checks
 lost-reply recovery, service restart and exact retries against certified state.
 Distributed resharing, report co-signing, fault qualification and historical

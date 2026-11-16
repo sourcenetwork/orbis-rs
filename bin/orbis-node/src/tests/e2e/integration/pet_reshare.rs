@@ -187,3 +187,41 @@ fn convergence_requires_the_exact_finalized_committee() {
     current.threshold = 1;
     assert!(!same_finalized_committee(&current, &expected));
 }
+
+// Advancing timestamps alone do not prove that the same refresh completed on
+// every member. Do not start the next reshare from mixed PET generations.
+pub(super) fn pet_refresh_converged(
+    states: &[RingStateSnapshot],
+    baselines: &[RingStateSnapshot],
+) -> bool {
+    let Some(first) = states.first() else {
+        return false;
+    };
+    states.len() == baselines.len()
+        && !first.public_polynomial.is_empty()
+        && states.iter().zip(baselines).all(|(current, before)| {
+            current.public_polynomial == first.public_polynomial
+                && current.public_polynomial != before.public_polynomial
+        })
+}
+
+#[test]
+fn pet_refresh_requires_one_changed_generation() {
+    let state = |poly: &str, last_pss| RingStateSnapshot {
+        public_polynomial: poly.into(),
+        last_pss,
+    };
+    let baseline = [state("old", 10), state("old", 10)];
+    let mut current = [state("old", 20), state("old", 21)];
+    assert!(!pet_refresh_converged(&current, &baseline));
+    current[0].public_polynomial = "new".into();
+    current[1].public_polynomial = "other".into();
+    assert!(!pet_refresh_converged(&current, &baseline));
+    current[1].public_polynomial = "new".into();
+    assert!(pet_refresh_converged(&current, &baseline));
+    assert!(!pet_refresh_converged(&current[..1], &baseline));
+    assert!(!pet_refresh_converged(&[], &[]));
+    current[0].public_polynomial.clear();
+    current[1].public_polynomial.clear();
+    assert!(!pet_refresh_converged(&current, &baseline));
+}

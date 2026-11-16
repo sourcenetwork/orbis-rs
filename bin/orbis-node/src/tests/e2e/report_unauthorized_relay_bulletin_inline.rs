@@ -84,6 +84,7 @@ fn signed_unauthorized_relay_statement(
     accused_signing_key_hex: &str,
     object_id: &str,
     actor_id: &str,
+    user_signed_at: u64,
     document_inline: bool,
 ) -> (crate::reporting::v0::types::RelayRequestStatement, Vec<u8>) {
     use crate::reporting::v0::types::{
@@ -99,7 +100,8 @@ fn signed_unauthorized_relay_statement(
         protocol_version: network::V0.version,
         request_id: format!("unauthorized-relay-{origin_protocol}-{object_id}"),
         signed_at,
-        user_signed_at: signed_at,
+        // Bind the token timestamp exactly, even when relaying in a later second.
+        user_signed_at,
         relayer_node_key: accused_node_key.to_string(),
         origin_protocol: origin_protocol.to_string(),
         accused_committee_scope: CommitteeScope::Current,
@@ -244,7 +246,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     let bulletin_reader_pk_bytes =
         CryptoSerialize::to_bytes(&bulletin_reader_pk).expect("serialize PRE reader public key");
     let bulletin_jwt_signer = authn::JwtSigner::new();
-    let (bulletin_token, _) = bulletin_jwt_signer
+    let (bulletin_token, bulletin_metadata) = bulletin_jwt_signer
         .create_pre_jwt(
             bulletin_reader_pk_bytes.clone(),
             &bulletin_object_id,
@@ -262,6 +264,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         NODE1_SIGNING_KEY_HEX,
         &bulletin_object_id,
         &bulletin_jwt_signer.did_uri,
+        bulletin_metadata.issued_time,
         false,
     );
 
@@ -334,7 +337,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     let inline_reader_pk_bytes =
         CryptoSerialize::to_bytes(&inline_reader_pk).expect("serialize PRE reader public key");
     let inline_jwt_signer = authn::JwtSigner::new();
-    let (inline_token, _) = inline_jwt_signer
+    let (inline_token, inline_metadata) = inline_jwt_signer
         .create_pre_jwt(
             inline_reader_pk_bytes.clone(),
             &inline_object_id,
@@ -352,6 +355,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         NODE1_SIGNING_KEY_HEX,
         &inline_object_id,
         &inline_jwt_signer.did_uri,
+        inline_metadata.issued_time,
         true,
     );
     let inline_proto_document = InlineDocument {
@@ -397,4 +401,92 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         "node1 should have at least 2 demerits after the bulletin and inline unauthorized relay reports"
     );
     println!("node1 demerits after both reports: {node1_demerits}");
+}
+
+#[tokio::test]
+async fn relay_statement_preserves_jwt_issued_time() {
+    use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+    use crate::reporting::v0::{
+        validate_relay_request_binding, RelayRequestBinding, RelayRequestTimestampBinding,
+    };
+    use bulletin::r#trait::RingPayload;
+    use common::blockchain::verify_node_message;
+
+    let node_key = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    let ring = RingPayload {
+        ring_pk: "relay-test-ring-key".into(),
+        peer_node_keys: vec![node_key.into()],
+        threshold: 1,
+        ..Default::default()
+    };
+    let facts = RingStateFacts {
+        ring_pk: ring.ring_pk.clone(),
+        peer_node_keys: ring.peer_node_keys.clone(),
+        threshold: ring.threshold,
+        new_peer_node_keys: None,
+        new_threshold: None,
+        state_sha256: crate::reporting::v0::types::ring_state_sha256(&ring),
+    };
+    let signer = authn::JwtSigner::new();
+    let (pre_jwt, pre_metadata) = signer
+        .create_pre_jwt(vec![1, 2, 3], "object", None, None)
+        .expect("create PRE JWT");
+    let pre_token = authn::resolve_jwt_did::<authn::PreClaims>(
+        &pre_jwt,
+        current_unix_time_secs(),
+        MAX_TOKEN_LIFETIME_SECS,
+        MAX_JWT_BYTES,
+        JWT_CLOCK_SKEW_LEEWAY_SECS,
+    )
+    .expect("verify PRE JWT");
+    assert_eq!(pre_metadata.issued_time, pre_token.issued_time);
+
+    // Force the second-boundary race for both bulletin and inline documents.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    for document_inline in [false, true] {
+        let origin = "pre";
+        let issued_time = pre_metadata.issued_time;
+        let (statement, signature) = signed_unauthorized_relay_statement(
+            "chain".into(),
+            "ring",
+            &facts,
+            origin,
+            node_key,
+            NODE1_SIGNING_KEY_HEX,
+            "object",
+            &signer.did_uri,
+            issued_time,
+            document_inline,
+        );
+
+        assert!(
+            statement.signed_at > issued_time,
+            "test must cross a clock second"
+        );
+        verify_node_message(node_key, &statement.canonical_bytes(), &signature)
+            .expect("relay signature must verify");
+        validate_relay_request_binding(
+            &statement,
+            RelayRequestBinding {
+                ring: ring.clone(),
+                ring_id: "ring".into(),
+                protocol_version: network::V0.version,
+                chain_id: "chain".into(),
+                request_id: format!("unauthorized-relay-{origin}-object"),
+                origin_protocol: origin.into(),
+                actor_id: signer.did_uri.clone(),
+                object_id: "object".into(),
+                user_signed_at: issued_time,
+                valid_window: None,
+                timestamp: if origin == "sign" {
+                    RelayRequestTimestampBinding::SignPolicy
+                } else {
+                    RelayRequestTimestampBinding::Exact(None)
+                },
+                from_node_id: 1,
+                document_inline,
+            },
+        )
+        .expect("delayed relay must bind to the JWT's original issued_time");
+    }
 }

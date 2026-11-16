@@ -1,8 +1,8 @@
 //! Ownership of the native worker-key namespace: the only place in the
 //! repository that translates `NativeWorker`'s read/write callbacks into a
-//! `local-storage` operation. `NativeVeraClient::open` (this crate) and
-//! `vera-admin` (cli-tool) both call [`open_native_worker`] instead of each
-//! repeating the translation and key naming.
+//! `local-storage` operation. `bulletin::native`'s `NativeVeraClient::open`
+//! and `vera-admin` (cli-tool) both call [`open_native_worker`] instead of
+//! each repeating the translation and key naming.
 //!
 //! `local-storage` sees only an opaque namespace, an opaque name, and
 //! encrypted bytes — never that this is specifically a "native worker" key,
@@ -115,11 +115,11 @@ pub fn open_native_worker(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn test_key(
-    deployment_root: [u8; 32],
-    deployment_id: u64,
-    name: &str,
-) -> LocalStorageKeys {
+/// Exposed `pub` (not `#[cfg(test)]`) so a dependent crate's own test suite
+/// (`bulletin::native`'s tests) can derive the exact storage slot to exercise
+/// fail-closed recovery — `#[cfg(test)]` does not cross a crate boundary.
+/// Gated behind `test-helpers` to keep it out of ordinary production builds.
+#[cfg(feature = "test-helpers")]
+pub fn test_key(deployment_root: [u8; 32], deployment_id: u64, name: &str) -> LocalStorageKeys {
     scoped_key(deployment_root, deployment_id, name).expect("valid worker key name")
 }

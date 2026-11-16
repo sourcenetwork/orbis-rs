@@ -318,11 +318,19 @@ where
         // external check, just against the old PET key directly (PET's storage
         // key is `ring_id`, not a public-key string, so
         // `public_key_matches_storage_key` doesn't apply).
-        let old_pet_bundle =
-            RingShareBundle::load_by_pet_ring_key(&coord.app_state.local_storage, ring_id)
-                .map_err(|e| {
-                    DkgError::Storage(format!("Refresh PET: failed to load old PET bundle: {}", e))
-                })?;
+        let peer_node_keys = coord
+            .app_state
+            .dkg_session_state
+            .with_attempt_state(attempt, |state| state.routing.peer_node_keys.clone())
+            .await
+            .map_err(|error| attempt_state_error(attempt, error))?;
+        let old_pet_bundle = crate::dkg::v0::helpers::validate_refresh_pet_bundle_for_session(
+            &coord.app_state.local_storage,
+            ring_id,
+            session_id,
+            &peer_node_keys,
+            threshold as u32,
+        )?;
         let old_pet_poly_bytes = hex::decode(&old_pet_bundle.public_polynomial).map_err(|e| {
             DkgError::Deserialization(format!(
                 "Refresh PET: failed to decode old PET polynomial hex: {}",

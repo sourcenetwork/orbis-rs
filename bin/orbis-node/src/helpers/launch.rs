@@ -781,9 +781,9 @@ pub fn create_and_store_node_key(
     config: ChainConfig,
     runtime_base_path: &Path,
 ) -> Result<TxSigner, bulletin::startup::BulletinStartupError> {
-    #[cfg(feature = "integration-test")]
+    #[cfg(feature = "fixture-startup")]
     let initial_key = std::env::var("ORBIS_SIGNING_KEY").ok();
-    #[cfg(not(feature = "integration-test"))]
+    #[cfg(not(feature = "fixture-startup"))]
     let initial_key: Option<String> = None;
     bulletin::startup::cosmos::prepare_signer(
         &local_storage,

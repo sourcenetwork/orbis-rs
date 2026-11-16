@@ -8,7 +8,7 @@
 //! Fully backend-neutral — no `#[cfg]` split in this file. `NODE3_SIGNING_KEY_HEX`
 //! is node3's real signing key on *both* backends now (native's own node
 //! identities are deterministic too, matching Cosmos's `ORBIS_SIGNING_KEY`
-//! scheme — see `crates/bulletin/src/native/integration_startup.rs`), so
+//! scheme — see `crates/bulletin/src/native/fixture_startup.rs`), so
 //! forging evidence "as node3" needs no backend-specific key resolution.
 //! `NODE_KEY_OFFLINE` is only ever a never-acking placeholder identity in
 //! `new_peer_node_keys` (same reasoning as `report_reshare_stall_offline.rs`'s

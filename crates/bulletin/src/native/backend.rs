@@ -124,20 +124,13 @@ impl NativeBulletin {
         if maximum_age == 0 || timeout.is_zero() {
             return Err(error("invalid freshness bound or request timeout"));
         }
-        let first = reader
-            .read_finalized_revision(1, &writer.trusted)
-            .await
-            .map_err(error)?;
-        if first
-            .parent_hash
-            .strip_prefix("0x")
-            .unwrap_or(&first.parent_hash)
-            != hex::encode(writer.deployment_root)
-        {
-            return Err(error(
-                "consensus proof does not bind the configured deployment",
-            ));
-        }
+        common::blockchain::native::verify_deployment_root(
+            &reader,
+            &writer.trusted,
+            writer.deployment_root,
+        )
+        .await
+        .map_err(error)?;
         Ok(Self {
             namespace: writer.deployment_label(),
             trusted: writer.trusted,

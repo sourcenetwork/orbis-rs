@@ -1113,6 +1113,12 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
+    if ring.new_peer_node_keys.is_some() || ring.new_threshold.is_some() {
+        return Err(DkgError::InvalidState(format!(
+            "Refresh PET for ring {} is waiting for the announced reshare",
+            ring_id
+        )));
+    }
     if let Some(session_id) = state
         .dkg_session_state
         .active_ring_pss_session(&ring_id)
@@ -1125,8 +1131,7 @@ where
             ));
         }
     }
-    let bundle = RingShareBundle::load_by_pet_ring_key(&state.local_storage, &ring_id)
-        .map_err(|error| DkgError::Storage(error.to_string()))?;
+    let bundle = crate::dkg::v0::helpers::load_refresh_pet_bundle(&state.local_storage, &ring_id)?;
     let session_id = derive_refresh_pet_session_id(
         &ring_id,
         &ring.peer_node_keys,
@@ -1136,8 +1141,13 @@ where
     let _start_guard = lock_ceremony_start(&state, CeremonyId(session_id)).await;
     // Same re-read-under-singleflight reasoning as `coordinate_refresh` — this
     // clock is independent of the main key's, but the same completion race applies.
-    let current_bundle = RingShareBundle::load_by_pet_ring_key(&state.local_storage, &ring_id)
-        .map_err(|error| DkgError::Storage(error.to_string()))?;
+    let current_bundle = crate::dkg::v0::helpers::validate_refresh_pet_bundle_for_session(
+        &state.local_storage,
+        &ring_id,
+        session_id,
+        &ring.peer_node_keys,
+        ring.threshold,
+    )?;
     let now = current_unix_time().map_err(DkgError::SystemTime)?;
     let elapsed = now.saturating_sub(current_bundle.last_pss);
     if elapsed + PSS_GRACE_PERIOD_SECS < ring.pss_interval {
@@ -1337,8 +1347,7 @@ where
         .ok_or_else(|| {
             DkgError::InvalidState("canonical refresh PET leader route is missing".into())
         })?;
-    let bundle = RingShareBundle::load_by_pet_ring_key(&state.local_storage, &ring_id)
-        .map_err(|error| DkgError::Storage(error.to_string()))?;
+    let bundle = crate::dkg::v0::helpers::load_refresh_pet_bundle(&state.local_storage, &ring_id)?;
     let ceremony = CeremonyId(derive_refresh_pet_session_id(
         &ring_id,
         &ring.peer_node_keys,

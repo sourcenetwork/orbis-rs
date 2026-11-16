@@ -7,7 +7,7 @@ use crate::constants::{MAX_DKG_COMMITTEE_SIZE, PSS_GRACE_PERIOD_SECS};
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::protocol_version::read_ring_for_route;
-use crate::ring_state::{RingIndexEntry, RingShareBundle};
+use crate::ring_state::{PendingReshareBundle, RingIndexEntry, RingShareBundle};
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo, RingPayload};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
@@ -319,6 +319,53 @@ pub async fn validate_refresh_session_init_for_version<S: LocalStorage>(
     Ok(ring_payload)
 }
 
+/// A staged PET reshare still owns the next local generation after its transport
+/// attempt completes. Refresh must wait until paired promotion (or reconciliation)
+/// resolves that durable record; otherwise promotion can overwrite a fresh delta.
+pub fn load_refresh_pet_bundle(
+    local_storage: &impl LocalStorage,
+    ring_id: &str,
+) -> Result<RingShareBundle> {
+    if PendingReshareBundle::load_pet(local_storage, ring_id)
+        .map_err(DkgError::Storage)?
+        .is_some()
+    {
+        return Err(DkgError::InvalidState(format!(
+            "Refresh PET for ring {} is waiting for local reshare promotion",
+            ring_id
+        )));
+    }
+    RingShareBundle::load_by_pet_ring_key(local_storage, ring_id).map_err(DkgError::Storage)
+}
+
+/// Recheck this after taking the PET PSS claim: a reshare can stage or promote
+/// between initial Prepare validation and claim acquisition. The durable pending
+/// record is written before that reshare releases its claim and cleared only
+/// after promotion. If it was cleared in the meantime, the session ID must bind
+/// to the newly promoted polynomial instead of the old generation.
+pub fn validate_refresh_pet_bundle_for_session(
+    local_storage: &impl LocalStorage,
+    ring_id: &str,
+    session_id: u128,
+    peer_node_keys: &[String],
+    threshold: u32,
+) -> Result<RingShareBundle> {
+    let bundle = load_refresh_pet_bundle(local_storage, ring_id)?;
+    let expected = super::derive_refresh_pet_session_id(
+        ring_id,
+        peer_node_keys,
+        threshold,
+        &bundle.public_polynomial,
+    )?;
+    if session_id != expected {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh PET session_id mismatch for ring {}: expected {}, got {}",
+            ring_id, expected, session_id
+        )));
+    }
+    Ok(bundle)
+}
+
 /// Same as [`validate_refresh_session_init_for_version`], for a ring's independent PET
 /// checking key. Resolves the ring directly via `ring_id` (which *is* the bulletin post
 /// id, per `FreshPet`'s own resolution shape) rather than a `RingIndex` lookup by
@@ -355,6 +402,13 @@ pub async fn validate_refresh_pet_session_init_for_version<S: LocalStorage>(
         )));
     }
 
+    if ring_payload.new_peer_node_keys.is_some() || ring_payload.new_threshold.is_some() {
+        return Err(DkgError::InvalidState(format!(
+            "Refresh PET for ring {} is waiting for the announced reshare",
+            ring_id
+        )));
+    }
+
     // Verify enough time has elapsed since the last PET refresh/DKG — independent of
     // the main key's own `last_pss`.
     let pss_interval_secs = ring_payload.pss_interval;
@@ -362,13 +416,7 @@ pub async fn validate_refresh_pet_session_init_for_version<S: LocalStorage>(
         .duration_since(UNIX_EPOCH)
         .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
         .as_secs();
-    let last_refresh_secs = RingShareBundle::load_by_pet_ring_key(local_storage, ring_id)
-        .map(|b| b.last_pss)
-        .map_err(|_| {
-            DkgError::Unauthorized(
-                "PET ring has no refresh timestamp; cannot accept refresh".to_string(),
-            )
-        })?;
+    let last_refresh_secs = load_refresh_pet_bundle(local_storage, ring_id)?.last_pss;
     let elapsed = now_secs.saturating_sub(last_refresh_secs);
     if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
         return Err(DkgError::Unauthorized(format!(

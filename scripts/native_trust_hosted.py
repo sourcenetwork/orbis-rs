@@ -109,6 +109,7 @@ def _runtime_manifest_lines(content):
         'integration-test-cosmos',
         'integration-test-native',
         'native-test-fixture',
+        'fixture-startup',
         'unsafe-testing',
     }
     lines = []

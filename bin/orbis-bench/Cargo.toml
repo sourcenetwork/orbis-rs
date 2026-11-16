@@ -50,20 +50,8 @@ orbis-node = [
     "orbis-node/iroh",
     "orbis-node/harness",
 ]
-bls12-381 = [
-    "bulletin/bls12-381",
-    "cli-tool/bls12-381",
-    "common/bls12-381",
-    "crypto/bls12-381",
-    "orbis-node",
-]
-jubjub = [
-    "bulletin/jubjub",
-    "cli-tool/jubjub",
-    "common/jubjub",
-    "crypto/jubjub",
-    "orbis-node",
-]
+bls12-381 = ["cli-tool/bls12-381", "crypto/bls12-381", "orbis-node"]
+jubjub = ["cli-tool/jubjub", "crypto/jubjub", "orbis-node"]
 
 [[bin]]
 name = "orbis-bench"

@@ -14,5 +14,11 @@ prost = { workspace = true }
 tonic-build = { workspace = true }
 tonic-prost-build = { workspace = true }
 
+[features]
+default = []
+# Diagnostic RPC wire types. This only exposes generated client/server types;
+# the orbis-node service implementation has its own `unsafe-testing` gate.
+unsafe-testing = []
+
 [lints]
 workspace = true
