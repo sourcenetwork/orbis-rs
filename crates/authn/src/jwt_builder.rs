@@ -220,8 +220,20 @@ impl JwtSigner {
         derivation: Option<Vec<u8>>,
         salt: Option<String>,
     ) -> Result<(String, TokenMetadata)> {
+        self.create_pre_jwt_with_scope(rdr_pk, object_id, derivation, salt, None)
+    }
+
+    /// Bind a Shieldd release capability into the authenticated PRE request.
+    pub fn create_pre_jwt_with_scope(
+        &self,
+        rdr_pk: Vec<u8>,
+        object_id: &str,
+        derivation: Option<Vec<u8>>,
+        salt: Option<String>,
+        release_scope: Option<common::blockchain::orbis::ReleaseScope>,
+    ) -> Result<(String, TokenMetadata)> {
         let claims = PreClaims {
-            release_scope: None,
+            release_scope,
             rdr_pk,
             object_id: object_id.to_string(),
             derivation,
