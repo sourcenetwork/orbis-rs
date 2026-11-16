@@ -1,4 +1,4 @@
-//! Native authorization construction via `AuthzFactory`.
+//! Vera authorization construction via `AuthzFactory`.
 
 use super::VeraAuth;
 use crate::{
