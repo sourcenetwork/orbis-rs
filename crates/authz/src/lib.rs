@@ -1,10 +1,10 @@
 pub mod error;
-#[cfg(feature = "vera")]
-pub mod vera;
 pub mod request;
 #[cfg(feature = "startup")]
 pub mod startup;
 pub mod r#trait;
+#[cfg(feature = "vera")]
+pub mod vera;
 
 #[cfg(feature = "vera-go")]
 pub mod vera_go;

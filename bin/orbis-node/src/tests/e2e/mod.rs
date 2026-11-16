@@ -84,13 +84,13 @@ use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
 // Native Vera adapter. These modules provision state and perform chain
 // operations; they are not a second copy of the shared scenarios.
 #[cfg(feature = "vera")]
+mod policy_generations;
+#[cfg(feature = "vera")]
 mod vera_confirmation;
 #[cfg(feature = "vera")]
 mod vera_environment;
 #[cfg(feature = "vera")]
 mod vera_trust_gateway;
-#[cfg(feature = "vera")]
-mod policy_generations;
 // Share-bundle codec. Native reads a stopped node's store from disk; both
 // backends backdate a live store through the diagnostic RPC.
 #[allow(dead_code)]

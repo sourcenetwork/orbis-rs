@@ -26,7 +26,7 @@ use test_support::fixture::{
     TestEnvironment,
 };
 use test_support::node_readiness::wait_for_nodes_ready;
-use test_support::{VeraNetworkAdapter, VeraTestNetwork, NodeInfo};
+use test_support::{NodeInfo, VeraNetworkAdapter, VeraTestNetwork};
 use vera_client::{
     create_scoped_bearer_token,
     nodes::{
@@ -957,8 +957,7 @@ impl BulletinTestDriver for VeraTestEnvironment {
             .expect("certified ring read failed")
             .record
             .expect("ring must exist");
-        let payload =
-            bulletin::vera::ring_payload_from_record(&record).expect("build RingPayload");
+        let payload = bulletin::vera::ring_payload_from_record(&record).expect("build RingPayload");
         RingStateFacts {
             ring_pk: payload.ring_pk.clone(),
             peer_node_keys: payload.peer_node_keys.clone(),

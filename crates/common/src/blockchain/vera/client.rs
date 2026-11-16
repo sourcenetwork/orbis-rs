@@ -18,8 +18,8 @@ use vera_client::rings::{
     RingRead, RingRecord, RingReshareRequest, RingState, ThresholdScheme,
 };
 use vera_client::{
-    ClientError, ExecutionReceipt, NativeWorker, Secp256k1SigningKey as SigningKey, VeraClient as SdkVeraClient,
-    VERA_ADDRESS,
+    ClientError, ExecutionReceipt, NativeWorker, Secp256k1SigningKey as SigningKey,
+    VeraClient as SdkVeraClient, VERA_ADDRESS,
 };
 use vera_domain::{ConsensusPublicKey, NativeTx};
 use zeroize::Zeroizing;

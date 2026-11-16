@@ -42,8 +42,7 @@ impl<P: VeraStartupPolicy> BulletinFactory for VeraBulletinFactory<P> {
     type Prepared = PreparedVeraBulletin;
 
     fn validate(config: Self::Config) -> Result<Self::ValidatedConfig, BulletinStartupError> {
-        VeraConfig::try_from(config)
-            .map_err(|e| BulletinStartupError::Configuration(e.to_string()))
+        VeraConfig::try_from(config).map_err(|e| BulletinStartupError::Configuration(e.to_string()))
     }
 
     fn prepare(

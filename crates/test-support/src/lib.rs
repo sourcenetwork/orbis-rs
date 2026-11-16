@@ -38,9 +38,9 @@ pub use compose::{build_cli_tool_sidecar_image, run_sidecar_container};
 pub use environment::CosmosTestEnvironment;
 #[cfg(feature = "cosmos")]
 pub use network::CosmosNetwork;
+pub use network::NodeInfo;
 #[cfg(all(unix, feature = "vera"))]
 pub use network::VeraNetworkAdapter;
-pub use network::NodeInfo;
 
 #[cfg(feature = "cosmos")]
 mod vera_go_container;

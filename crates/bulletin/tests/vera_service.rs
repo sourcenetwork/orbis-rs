@@ -1,11 +1,11 @@
 use alloy_primitives::{Bytes, B256};
 use alloy_sol_types::SolCall;
 use bulletin::{
-    vera::{VeraBulletin, VeraClient, VeraClientExt},
     r#trait::{
         Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, KeyDerivation, NodeInfo,
         RingCancellationPayload, RingFinalizationPayload, RingPayload,
     },
+    vera::{VeraBulletin, VeraClient, VeraClientExt},
 };
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -400,8 +400,8 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
 #[tokio::test]
 #[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn native_report_and_reshare_recover_certified_completion() {
-    use bulletin::vera::{RingParticipantCommand, RingPublicKeys, RingUpdate};
     use bulletin::r#trait::BulletinReportSubmission;
+    use bulletin::vera::{RingParticipantCommand, RingPublicKeys, RingUpdate};
     use vera_client::rings::{CommitteeScope, NodeOffline, ReportEnvelope};
     let deployment = 9072;
     let trusted = *KeySet::builder()

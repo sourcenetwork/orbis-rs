@@ -12,17 +12,17 @@ pub mod bulletin;
 #[cfg(feature = "cosmos")]
 pub mod cosmos;
 mod error;
-#[cfg(feature = "vera")]
-pub mod vera;
 mod node_signing;
 pub mod orbis;
+#[cfg(feature = "vera")]
+pub mod vera;
 
 #[cfg(feature = "cosmos")]
 pub use cosmos::*;
 pub use error::{BlockchainError, Result};
+pub use node_signing::{sign_node_message_with_hex_key, verify_node_message};
 #[cfg(feature = "vera")]
 pub use vera::*;
-pub use node_signing::{sign_node_message_with_hex_key, verify_node_message};
 
 // Known test key for the "test" account created in docker-compose-vera-go-test.yml
 /// This corresponds to the mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"

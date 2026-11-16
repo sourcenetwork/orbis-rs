@@ -16,7 +16,7 @@ mod reshare_tests;
 pub mod startup;
 pub use backend::VeraBulletin;
 pub use common::blockchain::vera::{
-    decode_node_signing_key, VeraChainConfig, VeraConfig, VeraClient,
+    decode_node_signing_key, VeraChainConfig, VeraClient, VeraConfig,
 };
 
 use alloy_primitives::B256;

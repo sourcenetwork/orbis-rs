@@ -49,10 +49,11 @@ impl BenchmarkRunner {
             ))
             .await
             .ok();
-            manifest.vera_image =
-                image_digest(&crate::compose::vera_image_tag(&self.experiment.vera_go_ref))
-                    .await
-                    .ok();
+            manifest.vera_image = image_digest(&crate::compose::vera_image_tag(
+                &self.experiment.vera_go_ref,
+            ))
+            .await
+            .ok();
             store.update_manifest(manifest)?;
 
             eprintln!(

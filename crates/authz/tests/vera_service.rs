@@ -1,5 +1,5 @@
 use alloy_primitives::B256;
-use authz::{vera::VeraAuth, r#trait::Authz, request::AccessCheckRequest};
+use authz::{r#trait::Authz, request::AccessCheckRequest, vera::VeraAuth};
 use std::time::Duration;
 use vera_client::{BlsSigner, PermissionResponse, VeraClient};
 use vera_domain::ConsensusPublicKey;

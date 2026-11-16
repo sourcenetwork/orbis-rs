@@ -7,7 +7,9 @@
 //! erroring). Centralized here so each command only states what it wants to do.
 
 use anyhow::{anyhow, Result};
-use common::blockchain::{BroadcastResult, ChainConfig, ChainConfigBuilder, TxSigner, VeraGoClient};
+use common::blockchain::{
+    BroadcastResult, ChainConfig, ChainConfigBuilder, TxSigner, VeraGoClient,
+};
 
 /// Builds a `ChainConfigBuilder` from a resolved `ChainConfig`, for the bulletin
 /// client constructors (`VeraGoBulletin::new`/`with_signer`), which take a builder

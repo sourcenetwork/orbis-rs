@@ -199,14 +199,8 @@ impl VeraTestNetwork {
 
         let reuse_prebuilt = std::env::var_os("ORBIS_VERA_IMAGE").is_some();
         let env_vars: Vec<(String, String)> = [
-            (
-                "ORBIS_VERA_DEPLOYMENT".to_string(),
-                deployment.to_string(),
-            ),
-            (
-                "ORBIS_VERA_NETWORK_NAME".to_string(),
-                network_name.clone(),
-            ),
+            ("ORBIS_VERA_DEPLOYMENT".to_string(), deployment.to_string()),
+            ("ORBIS_VERA_NETWORK_NAME".to_string(), network_name.clone()),
             ("VERA_REF".to_string(), pinned_vera_ref()),
         ]
         .into_iter()
