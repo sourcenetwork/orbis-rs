@@ -321,12 +321,19 @@ pub(crate) async fn require_pre_proof_verification_failure(
             &statement.object_id,
             statement.timestamp,
         )?;
-        match (&evidence.shieldd, &statement.release_scope) {
-            (Some(document), Some(scope)) if scope.permission(document.purpose).is_some() => {}
-            (None, None) => {}
+        match context
+            .external_rings
+            .iter()
+            .find(|p| p.ring_id == statement.ring_id)
+        {
+            Some(profile)
+                if profile
+                    .permission(statement.pet_target.as_deref())
+                    .is_some() => {}
+            None if statement.pet_target.is_none() => {}
             _ => {
                 return Err(ReportingError::InvalidReport(
-                    "document/release scope mismatch".into(),
+                    "invalid release target mode".into(),
                 ))
             }
         }

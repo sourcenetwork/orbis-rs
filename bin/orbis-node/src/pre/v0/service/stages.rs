@@ -141,7 +141,7 @@ pub(super) fn validate_pre_request_size(
 pub(super) fn encode_pre_response(
     result: Vec<u8>,
     ciphertext_context: CiphertextContext,
-    release_scope: Option<common::blockchain::orbis::ReleaseScope>,
+    pet_target: Option<String>,
     created_at: i64,
 ) -> Result<StartPreResponse, PreError> {
     use crate::pre::v0::coordinator::{
@@ -161,7 +161,7 @@ pub(super) fn encode_pre_response(
         }
         PreResponse::Stored(stored) => PreReencryptResponse::Stored {
             manifest: Box::new(PreShareRetrievalManifest {
-                release_scope,
+                pet_target,
                 manifest_version: PRE_SHARE_MANIFEST_VERSION,
                 request_id: stored.request_id,
                 ring_id: stored.ring_id,
@@ -284,11 +284,10 @@ where
             object_id,
             self.routes.version,
             inline_document,
-            &self.state.shieldd_rings,
+            &self.state.external_rings,
         )
         .await?;
         let document_evidence = is_inline.then(|| ReportedDocumentEvidence {
-            shieldd: document_payload.shieldd.clone(),
             document: document_payload.document.clone(),
             proof: document_payload.proof.clone(),
             policy_id: document_payload.policy_id.clone(),
@@ -323,13 +322,33 @@ where
         authenticated: AuthenticatedPreRequest,
         bulletin_state: PreBulletinState,
     ) -> Result<AuthorizedPreRequest, PreError> {
+        crate::pre::v0::helpers::check_target(
+            &self.state.external_rings,
+            &bulletin_state.document_payload,
+            authenticated.token.claims.pet_target.as_ref(),
+            authenticated.audit_target_object_id.as_ref(),
+        )?;
+        if self
+            .state
+            .external_rings
+            .iter()
+            .any(|p| p.ring_id == bulletin_state.document_payload.ring_id)
+            && (authenticated.salt.is_some()
+                || authenticated.derivation.is_some()
+                || authenticated.valid_window.is_some())
+        {
+            return Err(PreError::InvalidInput(
+                "external request does not accept salt, derivation or window".into(),
+            ));
+        }
         check_policy_access(
             &*self.state.authz,
             &bulletin_state.document_payload,
             &authenticated.object_id,
             &bulletin_state.actor_id,
             authenticated.valid_window.clone(),
-            authenticated.token.claims.release_scope.as_ref(),
+            authenticated.token.claims.pet_target.as_ref(),
+            &self.state.external_rings,
         )
         .await?;
 
@@ -395,7 +414,7 @@ where
             bulletin_state.ring_payload.pet_pk.as_deref(),
         )?;
         if !crate::pre::v0::helpers::check_document_profile(
-            &self.state.shieldd_rings,
+            &self.state.external_rings,
             &bulletin_state.document_payload,
             &bulletin_state.ring_payload,
         )? {
@@ -461,7 +480,8 @@ where
         if !crate::pre::v0::helpers::requires_pet(
             &authorized.document_payload,
             &authorized.ring_payload,
-            authorized.token.claims.release_scope.as_ref(),
+            authorized.token.claims.pet_target.as_ref(),
+            &self.state.external_rings,
         )? {
             return Ok(None);
         }
@@ -533,7 +553,7 @@ where
             authorized.document_payload.timestamp,
             authorized.document_evidence,
         );
-        report_binding.release_scope = authorized.token.claims.release_scope.clone();
+        report_binding.pet_target = authorized.token.claims.pet_target.clone();
 
         // The relayer signs a record that it forwarded this request (after passing its
         // own ACP check above), so a peer whose re-check fails can attribute it via
@@ -543,7 +563,7 @@ where
         // never signed into the statement.
         let (relay_statement, relay_signature) = build_signed_relay_statement(
             RelayStatementInputs {
-                release_scope: authorized.token.claims.release_scope.clone(),
+                pet_target: authorized.token.claims.pet_target.clone(),
                 ring: authorized.ring_payload.clone(),
                 ring_id: authorized.document_payload.ring_id.clone(),
                 protocol_version: self.routes.version,

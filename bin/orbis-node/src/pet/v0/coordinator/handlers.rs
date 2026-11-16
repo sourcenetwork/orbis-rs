@@ -124,6 +124,7 @@ where
             &ctx,
             ring_payload.trusted_auth_relay_dids.as_deref(),
             current_time,
+            &self.app_state.external_rings,
         )
         .await?;
         let coordinator_node_key =
@@ -163,6 +164,7 @@ where
         let target_fingerprint = super::verification::target_fingerprint::<P>(
             &ctx.document,
             &ctx.audit_target_object_id,
+            &self.app_state.external_rings,
         )
         .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
 
@@ -264,6 +266,7 @@ where
             &ctx,
             ring_payload.trusted_auth_relay_dids.as_deref(),
             current_time,
+            &self.app_state.external_rings,
         )
         .await?;
         let coordinator_node_key =
@@ -364,6 +367,7 @@ where
         let target_fingerprint = super::verification::target_fingerprint::<P>(
             &ctx.document,
             &ctx.audit_target_object_id,
+            &self.app_state.external_rings,
         )
         .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
         let reply = P::prove_blinding_correctness(
@@ -458,6 +462,7 @@ where
             &ctx,
             ring_payload.trusted_auth_relay_dids.as_deref(),
             current_time,
+            &self.app_state.external_rings,
         )
         .await?;
         let coordinator_node_key =
@@ -484,6 +489,7 @@ where
         let target_fingerprint = super::verification::target_fingerprint::<P>(
             &ctx.document,
             &ctx.audit_target_object_id,
+            &self.app_state.external_rings,
         )
         .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
         let (aggregate_r, aggregate_diff) = build_and_verify_pet_blind_certificate::<D, P>(

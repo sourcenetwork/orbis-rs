@@ -64,7 +64,7 @@ pub(super) struct StoredShareParams<'a> {
     pub rdr_pk_bytes: &'a [u8],
     pub derivation: Option<&'a [u8]>,
     pub document_inline: bool,
-    pub release_scope: Option<common::blockchain::orbis::ReleaseScope>,
+    pub pet_target: Option<String>,
     pub timestamp: Option<u64>,
     pub pinned_public_polynomial: String,
     /// The one endpoint this call uploads to — callers pick one at random via
@@ -97,7 +97,7 @@ where
     let ring_id = params.ring_id.clone();
 
     let statement = PreReencryptResponseStatement {
-        release_scope: params.release_scope,
+        pet_target: params.pet_target,
         domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
         chain_id: params.chain_id,
         ring_id: params.ring_id,

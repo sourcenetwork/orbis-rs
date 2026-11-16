@@ -319,7 +319,7 @@ where
     D: Dkg + Clone + 'static,
 {
     /// Authority-controlled external-document profiles, fixed at startup.
-    pub shieldd_rings: Arc<Vec<common::blockchain::orbis::ShielddRing>>,
+    pub external_rings: Arc<Vec<common::blockchain::orbis::ExternalRing>>,
     /// Public key for this node's Vera signing key.
     pub node_key: String,
     /// Network for node-to-node communication
@@ -373,7 +373,7 @@ where
     ) -> Self {
         Self {
             node_key,
-            shieldd_rings: Arc::new(Vec::new()),
+            external_rings: Arc::new(Vec::new()),
             network,
             local_storage,
             dkg_session_state: Arc::new(SessionStateManager::new()),

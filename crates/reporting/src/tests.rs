@@ -27,7 +27,7 @@ fn envelope() -> ReportEnvelope {
 
 fn relay_request_statement() -> RelayRequestStatement {
     RelayRequestStatement {
-        release_scope: None,
+        pet_target: None,
         domain: RELAY_REQUEST_DOMAIN.to_string(),
         chain_id: "vera-test".to_string(),
         ring_id: "ring-1".to_string(),
@@ -113,7 +113,7 @@ fn offline_payload_round_trips() {
 
 fn pre_statement() -> PreReencryptResponseStatement {
     PreReencryptResponseStatement {
-        release_scope: None,
+        pet_target: None,
         domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
         chain_id: "vera-test".to_string(),
         ring_id: "ring-1".to_string(),
@@ -863,26 +863,14 @@ fn report_encoding_golden_vector() {
 }
 
 #[test]
-fn external_release_scope_is_signed_and_canonically_decoded() {
-    use common::blockchain::orbis::ReleaseScope;
+fn external_pet_target_is_signed_and_canonically_decoded() {
     let native = pre_statement();
     let native_bytes = native.canonical_bytes();
-    let scopes = [
-        ReleaseScope::AssetWide,
-        ReleaseScope::NamedPerson {
-            target: "alice".into(),
-        },
-        ReleaseScope::NamedPerson {
-            target: "bob".into(),
-        },
-        ReleaseScope::NoteRecovery {
-            target: "alice".into(),
-        },
-    ];
+    let targets = ["scalar:alice", "scalar:bob"];
     let mut encodings = std::collections::HashSet::new();
-    for scope in scopes {
+    for target in targets {
         let mut statement = native.clone();
-        statement.release_scope = Some(scope);
+        statement.pet_target = Some(target.into());
         let encoded = statement.canonical_bytes();
         assert_ne!(encoded, native_bytes);
         assert!(encodings.insert(encoded.clone()));

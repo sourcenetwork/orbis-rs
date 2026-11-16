@@ -275,7 +275,7 @@ where
         // boundary.
         let (relay_statement, relay_signature) = build_signed_relay_statement(
             RelayStatementInputs {
-                release_scope: None,
+                pet_target: None,
                 ring: authorized.ring_payload.clone(),
                 ring_id: authorized.key_derivation.ring_id.clone(),
                 protocol_version: self.routes.version,

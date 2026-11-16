@@ -71,7 +71,6 @@ fn other_ctx() -> CiphertextContext {
 /// derivation from the context rather than a separate parameter).
 fn test_reader_auth_context(derivation: Option<&[u8]>) -> ReaderAuthorizationContext {
     ReaderAuthorizationContext {
-        release_scope: None,
         chain_id: "pre-tests-chain".to_string(),
         ring_pk: b"pre-tests-ring-pk".to_vec(),
         jwt_issuer: "did:key:issuer".to_string(),
@@ -94,7 +93,6 @@ fn test_reader_auth_context(derivation: Option<&[u8]>) -> ReaderAuthorizationCon
 /// [`test_reader_auth_context`], for "wrong context" negative tests.
 fn other_reader_auth_context() -> ReaderAuthorizationContext {
     ReaderAuthorizationContext {
-        release_scope: None,
         chain_id: "other-chain".to_string(),
         ring_pk: b"a-different-ring-pk".to_vec(),
         jwt_issuer: "did:key:other-issuer".to_string(),
@@ -410,7 +408,6 @@ where
     let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     let correct = ReaderAuthorizationContext {
-        release_scope: None,
         chain_id: "vera-mainnet".to_string(),
         ring_pk: b"ring-pk-1".to_vec(),
         jwt_issuer: "did:key:issuer-1".to_string(),

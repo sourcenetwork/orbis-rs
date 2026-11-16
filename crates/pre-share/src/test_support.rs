@@ -11,7 +11,7 @@ pub(crate) const PUBLIC_KEY_HEX: &str =
 
 pub(crate) fn sample_statement() -> PreReencryptResponseStatement {
     PreReencryptResponseStatement {
-        release_scope: None,
+        pet_target: None,
         domain: "orbis-pre-reencrypt-response-v1".to_string(),
         chain_id: "test-chain".to_string(),
         ring_id: "ring-1".to_string(),

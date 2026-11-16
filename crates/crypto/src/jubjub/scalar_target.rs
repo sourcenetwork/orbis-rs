@@ -1,5 +1,5 @@
-//! Canonical scalar targets for externally admitted Shieldd PET documents.
-//! Shieldd and its authority compute Poseidon and full-width scalar reduction.
+//! Canonical scalar targets for externally admitted external PET documents.
+//! The application supplies the canonical scalar.
 use super::common::{Element, Fr};
 use crate::{
     error::{CryptoError, Result},
@@ -12,7 +12,7 @@ pub fn fingerprint(binding: &[u8; 32]) -> Result<Element> {
     let scalar = Fr::from_bytes(binding)?;
     if scalar == Fr::from(0u64) {
         return Err(CryptoError::ParseError(
-            "identity Shieldd fingerprint".into(),
+            "identity external fingerprint".into(),
         ));
     }
     Ok(Element::generator() * scalar)

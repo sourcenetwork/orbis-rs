@@ -197,38 +197,20 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    pub(super) fn read_release_scope(
-        &mut self,
-    ) -> Result<Option<common::blockchain::orbis::ReleaseScope>> {
-        use common::blockchain::orbis::ReleaseScope;
-        let scope = if self.is_empty() {
-            None
-        } else {
-            if self.read_string("release scope domain")? != "shieldd-release-scope-v1" {
-                return Err(crate::error::ReportingError::InvalidReport(
-                    "invalid release scope domain".into(),
-                ));
-            }
-            Some(match self.read_u8("release scope")? {
-                0 => ReleaseScope::AssetWide,
-                1 => ReleaseScope::NamedPerson {
-                    target: self.read_string("target")?,
-                },
-                2 => ReleaseScope::NoteRecovery {
-                    target: self.read_string("target")?,
-                },
-                _ => {
-                    return Err(crate::error::ReportingError::InvalidReport(
-                        "invalid release scope".into(),
-                    ))
-                }
-            })
-        };
-        Ok(scope)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.cursor == self.bytes.len()
+    pub(super) fn read_pet_target(&mut self) -> Result<Option<String>> {
+        if self.cursor == self.bytes.len() {
+            return Ok(None);
+        }
+        if self.read_string("target domain")? != "orbis/pet-target/v1" {
+            return Err(ReportingError::InvalidReport(
+                "invalid target domain".into(),
+            ));
+        }
+        let target = self.read_string("PET target")?;
+        if target.is_empty() {
+            return Err(ReportingError::InvalidReport("empty PET target".into()));
+        }
+        Ok(Some(target))
     }
 
     pub fn finish(&self) -> Result<()> {
@@ -241,24 +223,10 @@ impl<'a> Decoder<'a> {
     }
 }
 
-/// External-only suffix; native statement encodings remain unchanged.
-pub(super) fn write_release_scope(
-    out: &mut Vec<u8>,
-    scope: Option<&common::blockchain::orbis::ReleaseScope>,
-) {
-    use common::blockchain::orbis::ReleaseScope;
-    if let Some(scope) = scope {
-        write_string(out, "shieldd-release-scope-v1");
-        match scope {
-            ReleaseScope::AssetWide => out.push(0),
-            ReleaseScope::NamedPerson { target } => {
-                out.push(1);
-                write_string(out, target);
-            }
-            ReleaseScope::NoteRecovery { target } => {
-                out.push(2);
-                write_string(out, target);
-            }
-        }
+/// Native statements have no suffix and retain their existing encoding.
+pub(super) fn write_pet_target(out: &mut Vec<u8>, target: Option<&String>) {
+    if let Some(target) = target {
+        write_string(out, "orbis/pet-target/v1");
+        write_string(out, target);
     }
 }

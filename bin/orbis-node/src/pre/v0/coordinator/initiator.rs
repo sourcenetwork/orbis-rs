@@ -252,6 +252,7 @@ where
                 ctx.document.as_ref(),
                 &local_reader_auth_context,
                 ctx.valid_window.clone(),
+                &self.app_state.external_rings,
             )
             .await?;
             if let Some(share) = Self::compute_local_reencryption_share(
@@ -504,6 +505,7 @@ where
             ctx.document.as_ref(),
             local_reader_auth_context,
             ctx.valid_window.clone(),
+            &self.app_state.external_rings,
         )
         .await?;
         let reply = dealer
@@ -542,7 +544,7 @@ where
                 rdr_pk_bytes: &ctx.rdr_pk_bytes,
                 derivation: ctx.derivation.as_deref(),
                 document_inline: report_binding.inline_document.is_some(),
-                release_scope: report_binding.release_scope.clone(),
+                pet_target: report_binding.pet_target.clone(),
                 timestamp: report_binding.timestamp,
                 pinned_public_polynomial: ctx.pinned_public_polynomial.clone(),
                 endpoint,
@@ -1438,7 +1440,7 @@ struct StoredAckDrainArgs {
 /// timestamp is captured here.)
 #[derive(Clone)]
 pub struct PreReportBinding {
-    pub(crate) release_scope: Option<common::blockchain::orbis::ReleaseScope>,
+    pub(crate) pet_target: Option<String>,
     chain_id: String,
     ring_id: String,
     ring_pk: String,
@@ -1464,7 +1466,7 @@ impl PreReportBinding {
         inline_document: Option<ReportedDocumentEvidence>,
     ) -> Self {
         Self {
-            release_scope: None,
+            pet_target: None,
             chain_id,
             ring_id,
             ring_pk,
@@ -1508,7 +1510,7 @@ impl PreReportBinding {
         derivation: Option<Vec<u8>>,
     ) -> PreResponseReportContext {
         PreResponseReportContext {
-            release_scope: self.release_scope.clone(),
+            pet_target: self.pet_target.clone(),
             chain_id: self.chain_id.clone(),
             ring_id: self.ring_id.clone(),
             ring_pk: self.ring_pk.clone(),

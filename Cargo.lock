@@ -1456,7 +1456,6 @@ version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "bs58",
- "common",
  "ed25519-dalek 2.2.0",
  "jsonwebtoken",
  "pkcs8 0.10.2",
@@ -7483,7 +7482,6 @@ dependencies = [
 name = "orbis-reporting"
 version = "0.0.3"
 dependencies = [
- "common",
  "hex",
  "serde",
  "sha2 0.10.9",

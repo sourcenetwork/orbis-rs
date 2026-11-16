@@ -18,9 +18,10 @@ async fn signed_decrypt_fault_is_ring_scoped_and_preserves_bundle_validation() {
     let service = UnsafeTestingServiceImpl::with_app_state(state.clone(), control.clone());
     let coordinator = PetFaultCoordinator::new(coordinator, control);
     let context = authorized_pet_context(&fixture);
-    let actor = verify_pet_audit_authorization(&*state.authz, &context, None, current_unix_time())
-        .await
-        .unwrap();
+    let actor =
+        verify_pet_audit_authorization(&*state.authz, &context, None, current_unix_time(), &[])
+            .await
+            .unwrap();
     let blind = build_pet_blind_context(
         state.bulletin.chain_id(),
         &fixture.ring_payload,

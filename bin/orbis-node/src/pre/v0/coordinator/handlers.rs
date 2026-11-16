@@ -9,15 +9,15 @@ use crate::pre::v0::helpers::{
 };
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::types::{
-    PRE_REENCRYPT_RESPONSE_DOMAIN, PreReencryptResponseStatement, ReportedDocumentEvidence,
-    ring_state_sha256,
+    ring_state_sha256, PreReencryptResponseStatement, ReportedDocumentEvidence,
+    PRE_REENCRYPT_RESPONSE_DOMAIN,
 };
 use crate::reporting::v0::{
-    RelayRequestBinding, RelayRequestTimestampBinding, report_unauthorized_relay,
-    validate_relay_request_binding,
+    report_unauthorized_relay, validate_relay_request_binding, RelayRequestBinding,
+    RelayRequestTimestampBinding,
 };
 use crate::ring_state::RingShareBundle;
-use authn::{BearerToken, PreClaims, resolve_jwt_did};
+use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use authz::request::AccessCheckRequest;
 use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
@@ -185,11 +185,10 @@ where
             &ctx.object_id,
             self.routes.version,
             ctx.document.clone(),
-            &self.app_state.shieldd_rings,
+            &self.app_state.external_rings,
         )
         .await?;
         let document_evidence = ctx.document.as_ref().map(|doc| ReportedDocumentEvidence {
-            shieldd: doc.shieldd.clone(),
             document: doc.document.clone(),
             proof: doc.proof.clone(),
             policy_id: doc.policy_id.clone(),
@@ -217,6 +216,23 @@ where
         // call signed, independently of whatever the leader/relay claims — this node
         // verifies the reader's signature against its own resolution, never trusting a
         // coordinator-supplied context.
+        crate::pre::v0::helpers::check_target(
+            &self.app_state.external_rings,
+            &document_payload,
+            token.claims.pet_target.as_ref(),
+            ctx.audit_target_object_id.as_ref(),
+        )?;
+        if self
+            .app_state
+            .external_rings
+            .iter()
+            .any(|p| p.ring_id == document_payload.ring_id)
+            && (ctx.salt.is_some() || ctx.derivation.is_some() || ctx.valid_window.is_some())
+        {
+            return Err(PreError::InvalidInput(
+                "external request does not accept salt, derivation or window".into(),
+            ));
+        }
         let reader_auth_context = build_reader_authorization_context(
             self.app_state.bulletin.chain_id(),
             &ring_payload.ring_pk,
@@ -234,7 +250,7 @@ where
         // same request, so a relayer's signed statement binds identically to either failure —
         // built once and reused by `report_relay_if_bound` from whichever branch rejects.
         let relay_binding = RelayRequestBinding {
-            release_scope: token.claims.release_scope.clone(),
+            pet_target: token.claims.pet_target.clone(),
             ring: ring_payload.clone(),
             ring_id: document_payload.ring_id.clone(),
             protocol_version: self.routes.version,
@@ -258,11 +274,12 @@ where
             ctx.object_id.clone(),
             crate::pre::v0::helpers::document_permission(
                 &document_payload,
-                token.claims.release_scope.as_ref(),
+                token.claims.pet_target.as_ref(),
+                &self.app_state.external_rings,
             )?
             .to_string(),
             document_payload.tier.clone(),
-            crate::pre::v0::helpers::permission_timestamp(&document_payload),
+            document_payload.timestamp,
             ctx.valid_window.clone(),
         )
         .to_bytes()
@@ -274,7 +291,8 @@ where
             &ctx.object_id,
             &actor_id,
             ctx.valid_window.clone(),
-            token.claims.release_scope.as_ref(),
+            token.claims.pet_target.as_ref(),
+            &self.app_state.external_rings,
         )
         .await
         {
@@ -305,7 +323,8 @@ where
         if crate::pre::v0::helpers::requires_pet(
             &document_payload,
             &ring_payload,
-            token.claims.release_scope.as_ref(),
+            token.claims.pet_target.as_ref(),
+            &self.app_state.external_rings,
         )? {
             let audit_target_object_id = ctx.audit_target_object_id.clone().ok_or_else(|| {
                 PreError::Unauthorized(
@@ -433,7 +452,7 @@ where
         let dealer = T::new();
         // Check permission binding - verify proof before re-encryption
         if !crate::pre::v0::helpers::check_document_profile(
-            &self.app_state.shieldd_rings,
+            &self.app_state.external_rings,
             &document_payload,
             &ring_payload,
         )? {
@@ -448,6 +467,7 @@ where
             Some(&document_payload),
             &reader_auth_context,
             ctx.valid_window.clone(),
+            &self.app_state.external_rings,
         )
         .await?;
         let reply = dealer
@@ -479,7 +499,7 @@ where
                     rdr_pk_bytes: &ctx.rdr_pk_bytes,
                     derivation: ctx.derivation.as_deref(),
                     document_inline: document_evidence.is_some(),
-                    release_scope: token.claims.release_scope.clone(),
+                    pet_target: token.claims.pet_target.clone(),
                     timestamp: document_payload.timestamp,
                     pinned_public_polynomial: ctx.pinned_public_polynomial.clone(),
                     endpoint,
@@ -512,7 +532,7 @@ where
             .map_err(|e| PreError::SystemTime(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
         let statement = PreReencryptResponseStatement {
-            release_scope: token.claims.release_scope.clone(),
+            pet_target: token.claims.pet_target.clone(),
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: self.app_state.bulletin.chain_id(),
             ring_id: document_payload.ring_id.clone(),

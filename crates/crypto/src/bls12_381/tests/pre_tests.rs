@@ -118,7 +118,6 @@ fn test_reencrypt_rejects_reader_key_outside_prime_order_subgroup() {
     let dealer = ThresholdDealerNode::new();
 
     let reader_auth_context = ReaderAuthorizationContext {
-        release_scope: None,
         chain_id: "test-chain".to_string(),
         ring_pk: vec![9, 9, 9],
         jwt_issuer: "did:key:issuer".to_string(),
@@ -252,7 +251,6 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
     };
 
     let reader_ctx_a = ReaderAuthorizationContext {
-        release_scope: None,
         chain_id: "test-chain".to_string(),
         ring_pk: b"ring".to_vec(),
         jwt_issuer: "did:key:issuer".to_string(),

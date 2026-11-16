@@ -313,9 +313,8 @@ pub(super) fn require_inline_document_evidence<'a>(
                 .to_string(),
         )
     })?;
-    if let Some(external) = &evidence.shieldd {
+    if let Some(profile) = context.external_rings.iter().find(|p| p.ring_id == ring_id) {
         let document = bulletin::r#trait::DocumentPayload {
-            shieldd: Some(external.clone()),
             ring_id: ring_id.to_string(),
             document: evidence.document.clone(),
             proof: evidence.proof.clone(),
@@ -327,20 +326,17 @@ pub(super) fn require_inline_document_evidence<'a>(
             pet_tag: evidence.pet_tag.clone(),
             pet_tag_proof: evidence.pet_tag_proof.clone(),
         };
-        document
-            .shieldd_document()
-            .map_err(|e| ReportingError::InvalidReport(e.to_string()))?;
-        if external.profile != ::common::blockchain::orbis::SHIELDD_PROFILE
-            || !context
-                .shieldd_rings
-                .iter()
-                .any(|profile| profile.accepts(external))
-            || external.id() != object_id
-        {
+        if profile.document_policy_id != evidence.policy_id {
             return Err(ReportingError::InvalidReport(
-                "Shieldd evidence/profile mismatch".into(),
+                "external evidence policy mismatch".into(),
             ));
         }
+        crate::pre::v0::helpers::check_document_id_binding(
+            object_id,
+            &document,
+            &context.external_rings,
+        )
+        .map_err(|e| ReportingError::InvalidReport(e.to_string()))?;
         return Ok(evidence);
     }
     let expected_object_id = generate_document_id(

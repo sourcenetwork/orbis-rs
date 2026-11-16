@@ -140,7 +140,6 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
     };
 
     let reader_ctx_a = ReaderAuthorizationContext {
-        release_scope: None,
         chain_id: "test-chain".to_string(),
         ring_pk: b"ring".to_vec(),
         jwt_issuer: "did:key:issuer".to_string(),

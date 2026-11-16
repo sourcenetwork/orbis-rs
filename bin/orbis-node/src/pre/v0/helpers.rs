@@ -6,8 +6,8 @@ use crate::pre::v0::{
     response_state::PreResponseManager,
 };
 use authn::{BearerToken, PreClaims};
-use authz::request::{AccessCheckRequest, ValidWindow};
 use authz::r#trait::Authz;
+use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::orbis::generate_document_id;
 use crypto::context::{
@@ -52,13 +52,15 @@ async fn fetch_document_payload(
 /// honest PET responder would sign a statement claiming B's id for a proof it actually computed
 /// over A — false evidence a report validator (who loads B by that signed id) could use to accuse
 /// the honest responder.
-pub(crate) fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Result<()> {
-    if let Some(external) = document
-        .shieldd_document()
-        .map_err(|e| PreError::InvalidInput(e.to_string()))?
-    {
-        if external.id() != object_id {
-            return Err(PreError::Unauthorized("Shieldd object ID mismatch".into()));
+pub(crate) fn check_document_id_binding(
+    object_id: &str,
+    document: &DocumentPayload,
+    profiles: &[common::blockchain::orbis::ExternalRing],
+) -> Result<()> {
+    if profiles.iter().any(|p| p.ring_id == document.ring_id) {
+        let expected = external_document_id(document)?;
+        if expected != object_id {
+            return Err(PreError::Unauthorized("external object ID mismatch".into()));
         }
         return Ok(());
     }
@@ -100,7 +102,7 @@ pub async fn resolve_document_and_ring_payloads(
     object_id: &str,
     protocol_version: u64,
     inline_document: Option<DocumentPayload>,
-    profiles: &[common::blockchain::orbis::ShielddRing],
+    profiles: &[common::blockchain::orbis::ExternalRing],
 ) -> Result<(DocumentPayload, RingPayload)> {
     let inline = inline_document.is_some();
     let document_payload = match inline_document {
@@ -112,71 +114,114 @@ pub async fn resolve_document_and_ring_payloads(
         .await
         .map_err(PreError::ProtocolError)?;
 
-    check_document_id_binding(object_id, &document_payload)?;
-    if document_payload.shieldd.is_some() && !inline {
+    let external = check_document_profile(profiles, &document_payload, &ring_payload)?;
+    if external && !inline {
         return Err(PreError::InvalidInput(
-            "Shieldd documents are inline-only".into(),
+            "external documents are inline-only".into(),
         ));
     }
-    check_document_profile(profiles, &document_payload, &ring_payload)?;
+    check_document_id_binding(object_id, &document_payload, profiles)?;
 
     Ok((document_payload, ring_payload))
 }
 
 /// Validate the trusted deployment mode independently on every responder.
 /// Access to the exact object is checked separately through ACP.
+pub(crate) fn external_document_id(document: &DocumentPayload) -> Result<String> {
+    if !document.proof.is_empty()
+        || document.pet_tag_proof.is_some()
+        || document.resource != "document"
+        || document.permission != "read"
+        || document.tier.is_some()
+        || document.timestamp.is_some()
+    {
+        return Err(PreError::InvalidInput(
+            "invalid external document fields".into(),
+        ));
+    }
+    common::blockchain::orbis::generate_external_document_id(
+        &document.ring_id,
+        &document.policy_id,
+        &document.document,
+        document
+            .pet_tag
+            .as_deref()
+            .ok_or_else(|| PreError::InvalidInput("missing ownership tag".into()))?,
+    )
+    .map_err(|e| PreError::InvalidInput(e.to_string()))
+}
+
 pub(crate) fn check_document_profile(
-    profiles: &[common::blockchain::orbis::ShielddRing],
+    profiles: &[common::blockchain::orbis::ExternalRing],
     document: &DocumentPayload,
     ring: &RingPayload,
 ) -> Result<bool> {
-    let configured = profiles.iter().find(|p| p.ring_id == document.ring_id);
-    let external = document
-        .shieldd_document()
-        .map_err(|e| PreError::InvalidInput(e.to_string()))?;
-    match (configured, external) {
-        (None, None) => Ok(false),
-        (Some(profile), Some(external))
-            if profile.accepts(external)
-                && profile.profile == common::blockchain::orbis::SHIELDD_PROFILE =>
+    let Some(profile) = profiles.iter().find(|p| p.ring_id == document.ring_id) else {
+        if document.proof.is_empty() {
+            return Err(PreError::InvalidInput(
+                "native document requires opening proof".into(),
+            ));
+        }
+        return Ok(false);
+    };
+    external_document_id(document)?;
+    if profile.document_policy_id != document.policy_id || !ring.requires_pet {
+        return Err(PreError::InvalidInput(
+            "external ring policy/PET provisioning mismatch".into(),
+        ));
+    }
+    #[cfg(not(feature = "jubjub"))]
+    return Err(PreError::InvalidInput(
+        "external scalar PET requires Jubjub".into(),
+    ));
+    #[cfg(feature = "jubjub")]
+    {
+        let secret = deserialize_secret(&document.document)?;
+        let tag: crypto::r#trait::PetTag =
+            serde_json::from_str(document.pet_tag.as_deref().unwrap())
+                .map_err(|e| PreError::InvalidInput(e.to_string()))?;
+        let keys = [
+            hex::decode(&ring.ring_pk),
+            hex::decode(ring.pet_pk.as_deref().unwrap_or_default()),
+        ];
+        for bytes in keys
+            .into_iter()
+            .map(|v| v.map_err(|e| PreError::InvalidInput(e.to_string())))
+            .chain([
+                Ok(secret.enc_cmt),
+                Ok(tag.ephemeral_point),
+                Ok(tag.masked_fingerprint),
+            ])
         {
-            if hex::decode(&ring.ring_pk).ok().as_deref() != Some(external.ring_key.as_slice())
-                || ring
-                    .pet_pk
-                    .as_ref()
-                    .and_then(|pk| hex::decode(pk).ok())
-                    .as_deref()
-                    != Some(external.checking_key.as_slice())
-                || !ring.requires_pet
-            {
-                return Err(PreError::InvalidInput(
-                    "Shieldd ring key/provisioning mismatch".into(),
-                ));
-            }
-            #[cfg(not(feature = "jubjub"))]
-            return Err(PreError::InvalidInput("Shieldd requires Jubjub".into()));
-            #[cfg(feature = "jubjub")]
-            {
-                for bytes in [
-                    &external.ring_key,
-                    &external.checking_key,
-                    &external.epk,
-                    &external.tag.ephemeral_point,
-                    &external.tag.masked_fingerprint,
-                ] {
-                    let point = G1Affine::from_bytes(bytes)
-                        .map_err(|e| PreError::InvalidInput(e.to_string()))?;
-                    if point == G1Affine::default() {
-                        return Err(PreError::InvalidInput("identity Shieldd point".into()));
-                    }
-                }
-                Ok(true)
+            let point =
+                G1Affine::from_bytes(&bytes?).map_err(|e| PreError::InvalidInput(e.to_string()))?;
+            if point == G1Affine::default() {
+                return Err(PreError::InvalidInput("identity external point".into()));
             }
         }
-        _ => Err(PreError::InvalidInput(
-            "document does not match configured Shieldd profile".into(),
-        )),
+        Ok(true)
     }
+}
+
+/// Validate the signed target in both directions before ACP or protocol effects.
+pub(crate) fn check_target(
+    profiles: &[common::blockchain::orbis::ExternalRing],
+    document: &DocumentPayload,
+    claim: Option<&String>,
+    target: Option<&String>,
+) -> Result<()> {
+    if profiles.iter().any(|p| p.ring_id == document.ring_id) {
+        if claim != target || target.is_some_and(|t| t.is_empty()) {
+            return Err(PreError::Unauthorized(
+                "external JWT target mismatch".into(),
+            ));
+        }
+    } else if claim.is_some() {
+        return Err(PreError::Unauthorized(
+            "unexpected native JWT target".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Checks whether the token issuer has the required policy access for a document.
@@ -186,21 +231,26 @@ pub async fn check_policy_access(
     object_id: &str,
     issuer_id: &str,
     valid_window: Option<ValidWindow>,
-    scope: Option<&common::blockchain::orbis::ReleaseScope>,
+    target: Option<&String>,
+    profiles: &[common::blockchain::orbis::ExternalRing],
 ) -> Result<()> {
-    if document_payload.shieldd.is_some() && valid_window.is_some() {
+    if profiles
+        .iter()
+        .any(|p| p.ring_id == document_payload.ring_id)
+        && valid_window.is_some()
+    {
         return Err(PreError::Unauthorized(
             "external grants do not use caller-selected timestamp windows".into(),
         ));
     }
-    let required = document_permission(document_payload, scope)?;
+    let required = document_permission(document_payload, target, profiles)?;
     let permission = AccessCheckRequest::new(
         document_payload.policy_id.clone(),
         document_payload.resource.clone(),
         object_id.to_string(),
         required.to_string(),
         document_payload.tier.clone(),
-        permission_timestamp(document_payload),
+        document_payload.timestamp,
         valid_window,
     )
     .to_bytes()
@@ -220,44 +270,33 @@ pub async fn check_policy_access(
     Ok(())
 }
 
-/// Creation timestamps bind the external transcript, never grant validity.
-/// ACP evaluates current grants independently of the accepted creation time.
-pub(crate) fn permission_timestamp(document: &DocumentPayload) -> Option<u64> {
-    if document.shieldd.is_some() {
-        None
-    } else {
-        document.timestamp
-    }
-}
-
 pub(crate) fn document_permission<'a>(
     document: &'a DocumentPayload,
-    scope: Option<&common::blockchain::orbis::ReleaseScope>,
+    target: Option<&String>,
+    profiles: &[common::blockchain::orbis::ExternalRing],
 ) -> Result<&'a str> {
-    match (
-        document
-            .shieldd_document()
-            .map_err(|e| PreError::InvalidInput(e.to_string()))?,
-        scope,
-    ) {
-        (None, None) => Ok(&document.permission),
-        (Some(external), Some(scope)) => scope.permission(external.purpose).ok_or_else(|| {
-            PreError::Unauthorized("release scope does not match document purpose".into())
-        }),
+    match profiles.iter().find(|p| p.ring_id == document.ring_id) {
+        None if target.is_none() => Ok(&document.permission),
+        Some(p) if p.document_policy_id == document.policy_id => match target {
+            Some(t) if !t.is_empty() => Ok("read"),
+            None if p.allow_unconditional_read => Ok("read_all"),
+            _ => Err(PreError::Unauthorized(
+                "external release requires a target".into(),
+            )),
+        },
         _ => Err(PreError::Unauthorized(
-            "release scope does not match document mode".into(),
+            "document policy or target mode mismatch".into(),
         )),
     }
 }
 
-/// Only call after the exact-object ACP check for this authenticated scope.
 pub(crate) fn requires_pet(
     document: &DocumentPayload,
     ring: &RingPayload,
-    scope: Option<&common::blockchain::orbis::ReleaseScope>,
+    target: Option<&String>,
+    profiles: &[common::blockchain::orbis::ExternalRing],
 ) -> Result<bool> {
-    let permission = document_permission(document, scope)?;
-    Ok(ring.requires_pet && !(document.shieldd.is_some() && permission == "read_all"))
+    Ok(ring.requires_pet && document_permission(document, target, profiles)? != "read_all")
 }
 
 /// Refresh external document and target grants immediately before producing a
@@ -267,41 +306,24 @@ pub(crate) async fn refresh_external_access(
     document: Option<&DocumentPayload>,
     reader: &ReaderAuthorizationContext,
     window: Option<ValidWindow>,
+    profiles: &[common::blockchain::orbis::ExternalRing],
 ) -> Result<()> {
-    let Some(document) = document.filter(|d| d.shieldd.is_some()) else {
+    let Some(document) = document.filter(|d| profiles.iter().any(|p| p.ring_id == d.ring_id))
+    else {
         return Ok(());
     };
-    use common::blockchain::orbis::ReleaseScope;
-    use crypto::context::ReleaseScopeBinding;
-    let target = || {
-        reader
-            .audit_target_object_id
-            .clone()
-            .ok_or_else(|| PreError::Unauthorized("missing external release target".into()))
-    };
-    let scope = match reader.release_scope {
-        Some(ReleaseScopeBinding::AssetWide) if reader.audit_target_object_id.is_none() => {
-            ReleaseScope::AssetWide
-        }
-        Some(ReleaseScopeBinding::NamedPerson) => ReleaseScope::NamedPerson { target: target()? },
-        Some(ReleaseScopeBinding::NoteRecovery) => ReleaseScope::NoteRecovery { target: target()? },
-        _ => {
-            return Err(PreError::Unauthorized(
-                "invalid external release scope".into(),
-            ));
-        }
-    };
-    check_document_id_binding(&reader.object_id, document)?;
+    check_document_id_binding(&reader.object_id, document, profiles)?;
     check_policy_access(
         authz,
         document,
         &reader.object_id,
         &reader.resolved_actor,
         window.clone(),
-        Some(&scope),
+        reader.audit_target_object_id.as_ref(),
+        profiles,
     )
     .await?;
-    if let Some(target) = scope.target() {
+    if let Some(target) = reader.audit_target_object_id.as_ref() {
         crate::pet::v0::coordinator::verification::check_pet_permission(
             authz,
             document,
@@ -431,29 +453,7 @@ pub fn build_reader_authorization_context(
     let ring_pk = hex::decode(ring_pk_hex)
         .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
 
-    if let Some(scope) = &token.claims.release_scope {
-        if scope.target() != audit_target_object_id.as_deref() {
-            return Err(PreError::Unauthorized(
-                "release target differs from authenticated scope".into(),
-            ));
-        }
-    }
     Ok(ReaderAuthorizationContext {
-        release_scope: token
-            .claims
-            .release_scope
-            .as_ref()
-            .map(|scope| match scope {
-                common::blockchain::orbis::ReleaseScope::AssetWide => {
-                    crypto::context::ReleaseScopeBinding::AssetWide
-                }
-                common::blockchain::orbis::ReleaseScope::NamedPerson { .. } => {
-                    crypto::context::ReleaseScopeBinding::NamedPerson
-                }
-                common::blockchain::orbis::ReleaseScope::NoteRecovery { .. } => {
-                    crypto::context::ReleaseScopeBinding::NoteRecovery
-                }
-            }),
         chain_id,
         ring_pk,
         jwt_issuer: token.issuer_id.clone(),
@@ -579,7 +579,6 @@ mod tests {
 
     fn document_b() -> DocumentPayload {
         DocumentPayload {
-            shieldd: None,
             ring_id: "ring-1".to_string(),
             document: secret_json(11),
             proof: proof_json(22),
@@ -613,7 +612,7 @@ mod tests {
     fn check_document_id_binding_accepts_matching_document() {
         let document = document_b();
         let object_id = object_id_for(&document);
-        assert!(check_document_id_binding(&object_id, &document).is_ok());
+        assert!(check_document_id_binding(&object_id, &document, &[]).is_ok());
     }
 
     #[test]
@@ -668,7 +667,7 @@ mod tests {
             mutate(&mut tampered);
             assert!(
                 matches!(
-                    check_document_id_binding(&object_id, &tampered),
+                    check_document_id_binding(&object_id, &tampered, &[]),
                     Err(PreError::Unauthorized(_))
                 ),
                 "tampering '{field}' should have been rejected"
@@ -686,7 +685,6 @@ mod tests {
         let object_id_b = object_id_for(&document_b());
 
         let document_c = DocumentPayload {
-            shieldd: None,
             ring_id: "ring-1".to_string(),
             document: secret_json(33),
             proof: proof_json(44),
@@ -699,10 +697,10 @@ mod tests {
             pet_tag_proof: None,
         };
         // document_c is itself internally valid for its own object_id...
-        assert!(check_document_id_binding(&object_id_for(&document_c), &document_c).is_ok());
+        assert!(check_document_id_binding(&object_id_for(&document_c), &document_c, &[]).is_ok());
         // ...but cannot be smuggled in under B's object_id.
         assert!(matches!(
-            check_document_id_binding(&object_id_b, &document_c),
+            check_document_id_binding(&object_id_b, &document_c, &[]),
             Err(PreError::Unauthorized(_))
         ));
     }

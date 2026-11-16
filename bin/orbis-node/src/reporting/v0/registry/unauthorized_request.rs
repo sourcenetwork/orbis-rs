@@ -274,28 +274,26 @@ pub(super) async fn require_relayed_request_unauthorized(
                 (
                     evidence.policy_id.clone(),
                     evidence.resource.clone(),
-                    match (&evidence.shieldd, &statement.release_scope) {
-                        (Some(document), Some(scope)) => scope
-                            .permission(document.purpose)
+                    match context
+                        .external_rings
+                        .iter()
+                        .find(|p| p.ring_id == statement.ring_id)
+                    {
+                        Some(profile) => profile
+                            .permission(statement.pet_target.as_deref())
                             .ok_or_else(|| {
-                                ReportingError::InvalidReport(
-                                    "invalid external release scope".into(),
-                                )
+                                ReportingError::InvalidReport("invalid external target mode".into())
                             })?
                             .to_string(),
-                        (None, None) => evidence.permission.clone(),
+                        None if statement.pet_target.is_none() => evidence.permission.clone(),
                         _ => {
                             return Err(ReportingError::InvalidReport(
-                                "document/release scope mismatch".into(),
-                            ));
+                                "unexpected native target".into(),
+                            ))
                         }
                     },
                     evidence.tier.clone(),
-                    if evidence.shieldd.is_some() {
-                        None
-                    } else {
-                        statement.timestamp
-                    },
+                    statement.timestamp,
                 )
             } else {
                 reject_unexpected_inline_document_evidence(context)?;

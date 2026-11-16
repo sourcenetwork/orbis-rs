@@ -538,7 +538,6 @@ pub async fn pre_call(
     )?;
     let reader_pk_point = GroupAffine::from_bytes(&fixture.reader_pk)?;
     let reader_auth_context = crypto::context::ReaderAuthorizationContext {
-        release_scope: None,
         chain_id: fixture.chain_id.clone(),
         ring_pk: hex::decode(&fixture.ring_pk)?,
         jwt_issuer: signer.did_uri.clone(),

@@ -22,8 +22,6 @@ use super::{PetBlindContext, REPORT_DOMAIN, REPORT_TTL_SECS};
 /// `document_inline` bool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportedDocumentEvidence {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shieldd: Option<common::blockchain::orbis::ShielddDocument>,
     pub document: String,
     pub proof: String,
     pub policy_id: String,

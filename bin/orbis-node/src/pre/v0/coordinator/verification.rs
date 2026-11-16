@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) struct PreResponseReportContext {
-    pub release_scope: Option<common::blockchain::orbis::ReleaseScope>,
+    pub pet_target: Option<String>,
     pub chain_id: String,
     pub ring_id: String,
     pub ring_pk: String,
@@ -211,7 +211,7 @@ where
         }
 
         let statement = PreReencryptResponseStatement {
-            release_scope: report_context.release_scope.clone(),
+            pet_target: report_context.pet_target.clone(),
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: report_context.chain_id.clone(),
             ring_id: report_context.ring_id.clone(),
@@ -434,7 +434,7 @@ mod tests {
         let enc_cmt = <DkgImpl as Dkg>::PublicKey::from_bytes(&encrypted_secret.enc_cmt).unwrap();
         let (rdr_sk, rdr_pk) = PreImpl::generate_keypair();
         let reader_auth_context = crypto::context::ReaderAuthorizationContext {
-            release_scope: report_context.release_scope.clone(),
+            pet_target: report_context.pet_target.clone(),
             chain_id: "test-chain".to_string(),
             ring_pk: Vec::new(),
             jwt_issuer: "did:key:test".to_string(),
@@ -512,7 +512,7 @@ mod tests {
         signature_valid: bool,
     ) -> PreMessage {
         let statement = PreReencryptResponseStatement {
-            release_scope: None,
+            pet_target: None,
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: "chain".to_string(),
             ring_id: "ring".to_string(),
@@ -554,7 +554,7 @@ mod tests {
 
     fn report_context(fixture: &VerifyFixture, rdr_pk_bytes: &[u8]) -> PreResponseReportContext {
         PreResponseReportContext {
-            release_scope: None,
+            pet_target: None,
             chain_id: "chain".to_string(),
             ring_id: "ring".to_string(),
             ring_pk: "ring-pk".to_string(),
@@ -714,7 +714,6 @@ mod tests {
         let rdr_pk_bytes = CryptoSerialize::to_bytes(&fixture.rdr_pk).unwrap();
         let mut context = report_context(&fixture, &rdr_pk_bytes);
         let evidence = ReportedDocumentEvidence {
-            shieldd: None,
             document: "ciphertext-blob".to_string(),
             proof: "proof-blob".to_string(),
             policy_id: "policy-1".to_string(),
@@ -732,7 +731,7 @@ mod tests {
         // reconstructed statement inside `verify_peer_response` to match this signature.
         let signed_at = unix_now();
         let statement = PreReencryptResponseStatement {
-            release_scope: None,
+            pet_target: None,
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
             chain_id: "chain".to_string(),
             ring_id: "ring".to_string(),

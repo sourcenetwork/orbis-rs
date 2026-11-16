@@ -30,21 +30,21 @@ use crate::helpers::identity::{extract_node_part, node_key_for_id};
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::pet::v0::attestation::{
-    PetBlindEvidence, build_pet_blind_context, invalid_pet_blind_decrypt_observation,
-    invalid_pet_blind_reveal_observation,
+    build_pet_blind_context, invalid_pet_blind_decrypt_observation,
+    invalid_pet_blind_reveal_observation, PetBlindEvidence,
 };
 use crate::pet::v0::error::{PetError, Result};
 use crate::pet::v0::messages::PetCheckContext;
 use crate::reporting::v0::observation::InvalidCryptoResponseObservation;
 use crate::reporting::v0::types::{
+    pet_blind_commit_hash, pet_blind_proof_transcript_digest, pet_blind_selection_digest,
     PetBlindCertificate, PetBlindContext, PetBlindDecryptStatement, PetBlindRevealStatement,
-    PetBlindSignedReveal, ReportedDocumentEvidence, pet_blind_commit_hash,
-    pet_blind_proof_transcript_digest, pet_blind_selection_digest,
+    PetBlindSignedReveal, ReportedDocumentEvidence,
 };
 use crate::ring_state::RingShareBundle;
-use authn::{BearerToken, PreClaims, resolve_jwt_did};
-use authz::request::{AccessCheckRequest, ValidWindow};
+use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use authz::r#trait::Authz;
+use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::Bulletin;
 use common::blockchain::verify_node_message;
 use crypto::context::CiphertextContext;
@@ -80,7 +80,7 @@ pub(crate) async fn check_pet_permission(
         audit_target_object_id.to_string(),
         document.permission.clone(),
         document.tier.clone(),
-        crate::pre::v0::helpers::permission_timestamp(document),
+        document.timestamp,
         valid_window,
     )
     .to_bytes()
@@ -120,6 +120,7 @@ pub(crate) async fn verify_pet_audit_authorization(
     ctx: &PetCheckContext,
     trusted_auth_relay_dids: Option<&[String]>,
     current_time: u64,
+    profiles: &[common::blockchain::orbis::ExternalRing],
 ) -> Result<String> {
     let token: BearerToken<PreClaims> = resolve_jwt_did(
         &ctx.token_string,
@@ -145,23 +146,32 @@ pub(crate) async fn verify_pet_audit_authorization(
     let actor_id = crate::helpers::auth::request_actor(&token, trusted_auth_relay_dids)
         .map_err(PetError::InvalidInput)?;
 
-    if let Some(scope) = &token.claims.release_scope {
-        if scope.target() != Some(ctx.audit_target_object_id.as_str()) {
+    let external = profiles.iter().any(|p| p.ring_id == ctx.document.ring_id);
+    crate::pre::v0::helpers::check_target(
+        profiles,
+        &ctx.document,
+        token.claims.pet_target.as_ref(),
+        Some(&ctx.audit_target_object_id),
+    )
+    .map_err(|e| PetError::InvalidInput(e.to_string()))?;
+    if external {
+        if ctx.salt.is_some() || ctx.valid_window.is_some() || token.claims.derivation.is_some() {
             return Err(PetError::InvalidInput(
-                "PET target differs from authenticated scope".into(),
+                "unsupported external PET options".into(),
             ));
         }
+        crate::pre::v0::helpers::check_policy_access(
+            authz,
+            &ctx.document,
+            &ctx.object_id,
+            &actor_id,
+            None,
+            token.claims.pet_target.as_ref(),
+            profiles,
+        )
+        .await
+        .map_err(|e| PetError::Acp(e.to_string()))?;
     }
-    crate::pre::v0::helpers::check_policy_access(
-        authz,
-        &ctx.document,
-        &ctx.object_id,
-        &actor_id,
-        ctx.valid_window.clone(),
-        token.claims.release_scope.as_ref(),
-    )
-    .await
-    .map_err(|e| PetError::Acp(e.to_string()))?;
 
     check_pet_permission(
         authz,
@@ -740,9 +750,12 @@ where
         // wire — nothing upstream of this guarantees they actually describe
         // the same document. Without this check, a malicious initiator could
         // pair a genuine document A with a different document B's id.
-        crate::pre::v0::helpers::check_document_id_binding(&ctx.object_id, &ctx.document).map_err(
-            |e| PetError::InvalidInput(format!("document does not match object_id: {e}")),
-        )?;
+        crate::pre::v0::helpers::check_document_id_binding(
+            &ctx.object_id,
+            &ctx.document,
+            &self.app_state.external_rings,
+        )
+        .map_err(|e| PetError::InvalidInput(format!("document does not match object_id: {e}")))?;
 
         let pet_pk_hex = ring_payload.pet_pk.clone().ok_or_else(|| {
             PetError::InvalidState(format!(
@@ -757,25 +770,25 @@ where
             PetError::InvalidInput("document has no pet_tag but ring requires PET".to_string())
         })?;
         let external = crate::pre::v0::helpers::check_document_profile(
-            &self.app_state.shieldd_rings,
+            &self.app_state.external_rings,
             &ctx.document,
             &ring_payload,
         )
         .map_err(|e| PetError::InvalidInput(e.to_string()))?;
         if external {
-            if ctx.salt.is_some() {
+            if ctx.salt.is_some() || ctx.valid_window.is_some() || !ctx.document_inline {
                 return Err(PetError::InvalidInput(
-                    "Shieldd PET does not accept capability salt".into(),
+                    "external PET requires inline document without options".into(),
                 ));
             }
             let tag = PetTag::try_from(tag_json.to_string())
                 .map_err(|e| PetError::Deserialization(e.to_string()))?;
-            let document = ctx
-                .document
-                .shieldd
-                .as_ref()
-                .expect("validated external mode");
-            return Ok((tag, pet_pk_hex, document.pet_digest(), ring_payload));
+            return Ok((
+                tag,
+                pet_pk_hex,
+                common::blockchain::orbis::external_pet_digest(&ctx.object_id),
+                ring_payload,
+            ));
         }
         let tag_proof_json = ctx.document.pet_tag_proof.as_deref().ok_or_else(|| {
             PetError::InvalidInput(
@@ -895,8 +908,12 @@ where
             return Err(PetError::Mismatch);
         }
 
-        let target_fingerprint = target_fingerprint::<P>(document, audit_target_object_id)
-            .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
+        let target_fingerprint = target_fingerprint::<P>(
+            document,
+            audit_target_object_id,
+            &self.app_state.external_rings,
+        )
+        .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
 
         let (aggregate_r, aggregate_diff) = build_and_verify_pet_blind_certificate::<D, P>(
             &evidence.certificate,
@@ -1276,40 +1293,36 @@ where
 mod tests;
 
 /// The authority authenticates the address-to-target association. Native rings
-/// retain Orbis's original fingerprint; Shieldd profiles decode a canonical subgroup scalar.
+/// retain Orbis's original fingerprint; external profiles decode a canonical subgroup scalar.
 pub(crate) fn target_fingerprint<P: Pet>(
     document: &bulletin::r#trait::DocumentPayload,
     target: &str,
+    profiles: &[common::blockchain::orbis::ExternalRing],
 ) -> crypto::error::Result<P::PublicKey> {
-    if let Some(external) = &document.shieldd {
-        if external.profile != common::blockchain::orbis::SHIELDD_PROFILE {
-            return Err(crypto::error::CryptoError::ParseError(
-                "unsupported Shieldd profile".into(),
-            ));
-        }
+    if profiles.iter().any(|p| p.ring_id == document.ring_id) {
         #[cfg(feature = "jubjub")]
         {
             use crypto::CryptoSerialize;
-            let encoded = target.strip_prefix("shieldd:").ok_or_else(|| {
-                crypto::error::CryptoError::ParseError("invalid Shieldd target prefix".into())
+            let encoded = target.strip_prefix("scalar:").ok_or_else(|| {
+                crypto::error::CryptoError::ParseError("invalid external target prefix".into())
             })?;
             let bytes = hex::decode(encoded)
                 .map_err(|e| crypto::error::CryptoError::ParseError(e.to_string()))?;
             if hex::encode(&bytes) != encoded {
                 return Err(crypto::error::CryptoError::ParseError(
-                    "noncanonical Shieldd target".into(),
+                    "noncanonical external target".into(),
                 ));
             }
             let field: [u8; 32] = bytes.try_into().map_err(|_| {
-                crypto::error::CryptoError::ParseError("invalid Shieldd target size".into())
+                crypto::error::CryptoError::ParseError("invalid external target size".into())
             })?;
             return P::PublicKey::from_bytes(
-                &crypto::jubjub::shieldd::fingerprint(&field)?.to_bytes()?,
+                &crypto::jubjub::scalar_target::fingerprint(&field)?.to_bytes()?,
             );
         }
         #[cfg(not(feature = "jubjub"))]
         return Err(crypto::error::CryptoError::ParseError(
-            "Shieldd requires Jubjub".into(),
+            "external requires Jubjub".into(),
         ));
     }
     P::owner_fingerprint(target.as_bytes())

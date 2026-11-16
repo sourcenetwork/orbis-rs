@@ -353,11 +353,12 @@ where
         let node_id_to_peer_id = node_id_to_peer_id_from_routes(&resolved, &node_id_assignments)
             .map_err(PetError::ProtocolError)?;
 
-        let target_fingerprint =
-            super::verification::target_fingerprint::<P>(&ctx.document, &audit_target_object_id)
-                .map_err(|e| {
-                    PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e))
-                })?;
+        let target_fingerprint = super::verification::target_fingerprint::<P>(
+            &ctx.document,
+            &audit_target_object_id,
+            &self.app_state.external_rings,
+        )
+        .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
 
         // ===================== Round 1 — Commit =====================
         let mut commitments: Vec<(u32, [u8; 32])> = Vec::with_capacity(committee_size);

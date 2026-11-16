@@ -95,9 +95,9 @@ pub fn validate_relay_issuer(issuer_id: &str) -> Result<()> {
 /// Claims for PRE (Proxy Re-Encryption) endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PreClaims {
-    /// Required for Shieldd external documents; absent on native PRE requests.
+    /// Authenticated target for external PET; absent on unconditional/native requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release_scope: Option<common::blockchain::orbis::ReleaseScope>,
+    pub pet_target: Option<String>,
     /// Reader's public key (compressed G1 point bytes)
     pub rdr_pk: Vec<u8>,
     /// Secret object Id to re-encrypt

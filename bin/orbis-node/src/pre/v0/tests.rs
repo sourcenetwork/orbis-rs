@@ -172,7 +172,6 @@ fn plain_reader_auth_context_and_signature(
     reader_pk: &crypto::GroupAffine,
 ) -> (ReaderAuthorizationContext, ReaderAuthorizationSignature) {
     let context = ReaderAuthorizationContext {
-        release_scope: None,
         chain_id: "test-chain".to_string(),
         ring_pk: Vec::new(),
         jwt_issuer: "did:key:test".to_string(),
@@ -355,7 +354,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
         .sign_for_actor(
             actor_id.to_string(),
             PreClaims {
-                release_scope: None,
+                pet_target: None,
                 rdr_pk: bob_pk_bytes.clone(),
                 object_id: object_id.clone(),
                 derivation: None,
@@ -495,7 +494,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
         .sign_for_actor(
             actor_id.to_string(),
             PreClaims {
-                release_scope: None,
+                pet_target: None,
                 rdr_pk: bob_pk_bytes.clone(),
                 object_id: second_object_id.clone(),
                 derivation: None,
@@ -688,7 +687,6 @@ async fn test_pre_with_inline_document_end_to_end() {
     // Built the same way `setup_document_in_bulletin` would, but never posted anywhere —
     // object_id is computed locally instead of coming back from a bulletin write.
     let document = DocumentPayload {
-        shieldd: None,
         ring_id: ring_post.id.clone(),
         document: String::from_utf8(secret_bytes.clone())
             .unwrap_or_else(|_| hex::encode(&secret_bytes)),
@@ -715,7 +713,6 @@ async fn test_pre_with_inline_document_end_to_end() {
     )
     .expect("generate object_id");
     let document_evidence = ReportedDocumentEvidence {
-        shieldd: None,
         document: document.document.clone(),
         proof: document.proof.clone(),
         policy_id: document.policy_id.clone(),
@@ -752,7 +749,7 @@ async fn test_pre_with_inline_document_end_to_end() {
         .sign_for_actor(
             actor_id.to_string(),
             PreClaims {
-                release_scope: None,
+                pet_target: None,
                 rdr_pk: bob_pk_bytes.clone(),
                 object_id: object_id.clone(),
                 derivation: None,
@@ -2481,7 +2478,7 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
     }
 
     let manifest = pre_share::PreShareRetrievalManifest {
-        release_scope: None,
+        pet_target: None,
         manifest_version: pre_share::PRE_SHARE_MANIFEST_VERSION,
         request_id: stored.request_id.clone(),
         ring_id: stored.ring_id.clone(),
@@ -2684,7 +2681,6 @@ async fn test_check_policy_access_enforces_authz_denial() {
     }
 
     let document_payload = DocumentPayload {
-        shieldd: None,
         ring_id: "ring-1".to_string(),
         document: "{}".to_string(),
         proof: "".to_string(),
@@ -2704,6 +2700,7 @@ async fn test_check_policy_access_enforces_authz_denial() {
         "did:key:test",
         None,
         None,
+        &[],
     )
     .await;
 

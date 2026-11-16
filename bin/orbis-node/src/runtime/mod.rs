@@ -288,20 +288,19 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         config.authz,
         config.bulletin,
     );
-    if let Some(path) = &config.args.shieldd_rings {
-        let rings: Vec<common::blockchain::orbis::ShielddRing> =
+    if let Some(path) = &config.args.external_rings {
+        let rings: Vec<common::blockchain::orbis::ExternalRing> =
             serde_json::from_slice(&std::fs::read(path)?)?;
         let mut ids = std::collections::HashSet::new();
         for ring in &rings {
-            if ring.profile != common::blockchain::orbis::SHIELDD_PROFILE
-                || ring.ring_id.is_empty()
-                || ring.policy_id.is_empty()
+            if ring.ring_id.is_empty()
+                || ring.document_policy_id.is_empty()
                 || !ids.insert(&ring.ring_id)
             {
-                return Err("invalid or duplicate Shieldd ring configuration".into());
+                return Err("invalid or duplicate external ring configuration".into());
             }
         }
-        app_state.shieldd_rings = Arc::new(rings);
+        app_state.external_rings = Arc::new(rings);
     }
     let app_state_arc = Arc::new(app_state);
 

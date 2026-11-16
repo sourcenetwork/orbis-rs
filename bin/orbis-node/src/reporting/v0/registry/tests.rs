@@ -85,7 +85,7 @@ fn pre_invalid_observation() -> InvalidCryptoResponseObservation {
         pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::Pre {
             statement: PreReencryptResponseStatement {
-                release_scope: None,
+                pet_target: None,
                 domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
                 chain_id: "chain".to_string(),
                 ring_id: "ring".to_string(),
@@ -154,7 +154,7 @@ fn relay_request_statement(
     signed_at: u64,
 ) -> RelayRequestStatement {
     RelayRequestStatement {
-        release_scope: None,
+        pet_target: None,
         domain: RELAY_REQUEST_DOMAIN.to_string(),
         chain_id,
         ring_id: "ring".to_string(),
@@ -201,7 +201,7 @@ fn validation_context(
     now: u64,
 ) -> ReportValidationContext {
     ReportValidationContext {
-        shieldd_rings: Arc::new(Vec::new()),
+        external_rings: Arc::new(Vec::new()),
         local_node_key: app_state.node_key.clone(),
         requester_peer_id: None,
         network: app_state.network.clone(),
@@ -530,7 +530,6 @@ async fn relayed_request_refutation_rejects_evidence_capture_time_drift() {
     let statement = relay_request_statement(&ring, app_state.bulletin.chain_id(), 1000);
     let bulletin = std::sync::Arc::new(DummyBulletin::default());
     let document = DocumentPayload {
-        shieldd: None,
         ring_id: "ring".to_string(),
         document: "{}".to_string(),
         proof: String::new(),
@@ -573,7 +572,6 @@ async fn relayed_request_refutation_rejects_authorized_request() {
     let bulletin = std::sync::Arc::new(DummyBulletin::default());
 
     let document = DocumentPayload {
-        shieldd: None,
         ring_id: "ring".to_string(),
         document: "{}".to_string(),
         proof: String::new(),
@@ -643,7 +641,6 @@ const TEST_PROOF_JSON: &str = r#"{"challenge":[7,8],"response":[9,10]}"#;
 
 fn matching_document_evidence() -> ReportedDocumentEvidence {
     ReportedDocumentEvidence {
-        shieldd: None,
         document: TEST_SECRET_JSON.to_string(),
         proof: TEST_PROOF_JSON.to_string(),
         policy_id: "policy".to_string(),
@@ -790,7 +787,6 @@ async fn pre_proof_refutation_rejects_mismatched_inline_document() {
     let base_context = validation_context(&app_state, 10);
     let context = ReportValidationContext {
         inline_document: Some(ReportedDocumentEvidence {
-            shieldd: None,
             document: TEST_SECRET_JSON.to_string(),
             proof: TEST_PROOF_JSON.to_string(),
             policy_id: "policy".to_string(),
@@ -804,7 +800,7 @@ async fn pre_proof_refutation_rejects_mismatched_inline_document() {
     };
 
     let statement = PreReencryptResponseStatement {
-        release_scope: None,
+        pet_target: None,
         domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
         chain_id: "chain".to_string(),
         ring_id: "ring".to_string(),
@@ -885,7 +881,7 @@ async fn pre_proof_refutation_accepts_matching_inline_document() {
     .expect("generate object_id");
 
     let statement = PreReencryptResponseStatement {
-        release_scope: None,
+        pet_target: None,
         domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
         chain_id: "chain".to_string(),
         ring_id: "ring".to_string(),
@@ -1015,7 +1011,7 @@ async fn dkg_share_shape_rejects_wrong_origin() {
         &statement,
         &[9; 64],
         &ReportValidationContext {
-            shieldd_rings: Arc::new(Vec::new()),
+            external_rings: Arc::new(Vec::new()),
             local_node_key: app_state.node_key.clone(),
             requester_peer_id: None,
             network: app_state.network.clone(),
@@ -1108,7 +1104,7 @@ async fn validate_equivocation_commitment_shape_accepts_bound_and_rejects_bad_or
         chain_id.clone(),
     );
     let context = ReportValidationContext {
-        shieldd_rings: Arc::new(Vec::new()),
+        external_rings: Arc::new(Vec::new()),
         local_node_key: app_state.node_key.clone(),
         requester_peer_id: None,
         network: app_state.network.clone(),
@@ -1220,7 +1216,7 @@ async fn validate_refresh_commitment_shape_accepts_and_rejects_wrong_origin() {
         chain_id.clone(),
     );
     let context = ReportValidationContext {
-        shieldd_rings: Arc::new(Vec::new()),
+        external_rings: Arc::new(Vec::new()),
         local_node_key: app_state.node_key.clone(),
         requester_peer_id: None,
         network: app_state.network.clone(),

@@ -2,7 +2,6 @@ use super::*;
 
 fn document_fixture() -> DocumentPayload {
     DocumentPayload {
-        shieldd: None,
         ring_id: "ring-1".into(),
         document:
             r#"{"enc_cmt":[1,2,3],"encrypted_data":[4,5,6],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#

@@ -320,11 +320,6 @@ impl NativeBulletin {
             }
             BulletinWriteKind::Document | BulletinWriteKind::KeyDerivation => {
                 let object = if kind == BulletinWriteKind::Document {
-                    let document: crate::r#trait::DocumentPayload =
-                        serde_json::from_slice(payload).map_err(error)?;
-                    if document.shieldd.is_some() {
-                        return Err(error("Shieldd external documents are inline only"));
-                    }
                     ThresholdObject::Document(serde_json::from_slice(payload).map_err(error)?)
                 } else {
                     ThresholdObject::KeyDerivation(serde_json::from_slice(payload).map_err(error)?)

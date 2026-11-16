@@ -16,13 +16,13 @@
 //! `common::blockchain::orbis::<Item>` rather than reaching into a submodule directly.
 
 mod decode;
+mod external;
 mod ids;
-mod shieldd;
 mod types;
 
 pub use decode::*;
+pub use external::*;
 pub use ids::*;
-pub use shieldd::*;
 pub use types::*;
 
 #[cfg(test)]

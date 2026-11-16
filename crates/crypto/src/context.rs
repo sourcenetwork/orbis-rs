@@ -232,19 +232,8 @@ fn put_opt_valid_window(out: &mut Vec<u8>, value: Option<&ValidWindowBinding>) {
 /// `ring_id` is similarly excluded: it's immutable per `object_id` and
 /// independently, authoritatively resolved by the server regardless of any
 /// client input, so binding `object_id` already implies it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReleaseScopeBinding {
-    AssetWide,
-    NamedPerson,
-    NoteRecovery,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReaderAuthorizationContext {
-    /// The target is bound separately by `audit_target_object_id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release_scope: Option<ReleaseScopeBinding>,
     /// Vera chain id — static per deployment.
     pub chain_id: String,
     /// Authoritative ring / DKG aggregate public key (compressed point
@@ -301,14 +290,6 @@ pub fn canonical_encode_reader_authorization(ctx: &ReaderAuthorizationContext) -
     put_opt_str(&mut out, ctx.salt.as_deref());
     put_opt_valid_window(&mut out, ctx.valid_window.as_ref());
     put_opt_str(&mut out, ctx.audit_target_object_id.as_deref());
-    if let Some(scope) = ctx.release_scope {
-        put_bytes(&mut out, b"orbis/shieldd-release-scope/v1");
-        out.push(match scope {
-            ReleaseScopeBinding::AssetWide => 0,
-            ReleaseScopeBinding::NamedPerson => 1,
-            ReleaseScopeBinding::NoteRecovery => 2,
-        });
-    }
     out
 }
 
@@ -437,7 +418,6 @@ mod tests {
 
     fn sample_reader_auth_context() -> ReaderAuthorizationContext {
         ReaderAuthorizationContext {
-            release_scope: None,
             chain_id: "vera-test".into(),
             ring_pk: vec![1, 2, 3, 4],
             jwt_issuer: "did:key:issuer".into(),
@@ -515,17 +495,6 @@ mod tests {
     fn reader_authorization_context_digest_binds_every_field() {
         let base = sample_reader_auth_context();
         let base_digest = reader_authorization_context_digest(&base);
-
-        let mut scoped = base.clone();
-        let mut digests = std::collections::HashSet::from([base_digest]);
-        for scope in [
-            ReleaseScopeBinding::AssetWide,
-            ReleaseScopeBinding::NamedPerson,
-            ReleaseScopeBinding::NoteRecovery,
-        ] {
-            scoped.release_scope = Some(scope);
-            assert!(digests.insert(reader_authorization_context_digest(&scoped)));
-        }
 
         let mut different_chain = base.clone();
         different_chain.chain_id = "vera-other".into();

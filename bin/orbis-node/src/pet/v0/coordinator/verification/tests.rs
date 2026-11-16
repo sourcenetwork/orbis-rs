@@ -145,7 +145,6 @@ fn build_fixture(committee_size: usize, threshold: u32, target: &str) -> TagFixt
         response: vec![12, 13],
     };
     let mut document = DocumentPayload {
-        shieldd: None,
         ring_id: RING_ID.to_string(),
         document: serde_json::to_string(&secret).expect("serialize secret"),
         proof: String::try_from(EncryptionProof {
@@ -764,7 +763,6 @@ async fn verify_pet_check_request_rejects_a_document_object_id_mismatch() {
 fn audit_authz_fixture() -> (TestKeyPair, DocumentPayload, String) {
     let signer = TestKeyPair::new();
     let document = DocumentPayload {
-        shieldd: None,
         ring_id: "audit-authz-ring".to_string(),
         document: String::new(),
         proof: String::new(),
@@ -830,7 +828,7 @@ async fn verify_pet_audit_authorization_rejects_a_garbage_token() {
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time(), &[]).await;
     assert!(
         matches!(result, Err(PetError::InvalidInput(_))),
         "a garbage token must be rejected: {:?}",
@@ -856,7 +854,7 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_object_i
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time(), &[]).await;
     assert!(
         matches!(result, Err(PetError::InvalidInput(_))),
         "a token authorizing a different object_id must be rejected: {:?}",
@@ -887,7 +885,7 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_salt() {
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time(), &[]).await;
     assert!(
         matches!(result, Err(PetError::InvalidInput(_))),
         "a token authorizing a different salt must be rejected: {:?}",
@@ -913,7 +911,7 @@ async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_token() {
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time(), &[]).await;
     assert!(
         result.is_ok(),
         "a genuinely matching, valid token must be accepted: {:?}",

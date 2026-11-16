@@ -132,17 +132,12 @@ pub struct BulletinPost {
 /// Payload for storing a secret on bulletin document_id => payload
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct DocumentPayload {
-    /// Authority-admitted inline Shieldd variant. Native proof fields must be
-    /// absent; consumers validate the projection with `shieldd_document`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shieldd: Option<common::blockchain::orbis::ShielddDocument>,
     /// Id of the Ring to find other information about the ring
     pub ring_id: String,
     /// Encrypted document (JSON of the crypto `Secret`: enc_cmt, ciphertext, nonce)
     pub document: String,
     /// Encryption proof: a Schnorr PoK of the encryption randomness, bound to the
     /// policy/ring context and the ciphertext. JSON of `EncryptionProof`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub proof: String,
     /// Id of the policy associated with document
     pub policy_id: String,
@@ -164,51 +159,6 @@ pub struct DocumentPayload {
     /// `pet_tag`. JSON of the crypto crate's `TagKnowledgeProof` (`challenge`,
     /// `response`).
     pub pet_tag_proof: Option<String>,
-}
-
-impl DocumentPayload {
-    /// Check that every field consumed by the native PRE/PET machinery is the
-    /// exact projection of the authority-admitted document. This is not ACP.
-    pub fn shieldd_document(&self) -> Result<Option<&common::blockchain::orbis::ShielddDocument>> {
-        let Some(external) = &self.shieldd else {
-            return Ok(None);
-        };
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Secret {
-            enc_cmt: Vec<u8>,
-            encrypted_data: Vec<u8>,
-            nonce: Vec<u8>,
-        }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Tag {
-            ephemeral_point: Vec<u8>,
-            masked_fingerprint: Vec<u8>,
-        }
-        let invalid =
-            || BulletinError::ParseError("inconsistent Shieldd document projection".into());
-        let secret: Secret = serde_json::from_str(&self.document).map_err(|_| invalid())?;
-        let tag: Tag = serde_json::from_str(self.pet_tag.as_deref().ok_or_else(invalid)?)
-            .map_err(|_| invalid())?;
-        if !self.proof.is_empty()
-            || self.pet_tag_proof.is_some()
-            || self.ring_id != external.ring_id
-            || self.policy_id != external.policy_id
-            || self.resource != "document"
-            || self.permission != "read"
-            || self.tier.as_deref() != Some(external.purpose.tier())
-            || self.timestamp != Some(external.timestamp)
-            || secret.enc_cmt != external.epk
-            || secret.encrypted_data != external.payload_commitment
-            || secret.nonce != [0; 12]
-            || tag.ephemeral_point != external.tag.ephemeral_point
-            || tag.masked_fingerprint != external.tag.masked_fingerprint
-        {
-            return Err(invalid());
-        }
-        Ok(Some(external))
-    }
 }
 /// Payload for ring information ring_id => payload
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
