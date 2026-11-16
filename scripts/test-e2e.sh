@@ -64,10 +64,8 @@ run_backend() {
 
   case "$selected" in
     cosmos)
-      features="integration-test,authz-vera-go,bulletin-vera-go,fault-injection,$crypto"
-      if [[ "$crypto" == jubjub ]]; then
-        default_flags=(--no-default-features)
-      fi
+      features="integration-test,authz-vera-go,bulletin-vera-go,fault-injection,redb,iroh,$crypto"
+      default_flags=(--no-default-features)
       ;;
     vera)
       features="integration-test,vera,redb,iroh,$crypto"

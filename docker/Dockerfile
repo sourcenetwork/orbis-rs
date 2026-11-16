@@ -58,9 +58,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 #
 # `-p orbis-node` (not just `--bin orbis-node`) matters here: without it, Cargo
 # scopes feature resolution to every workspace default-member, including
-# orbis-bench, which pins its own `orbis-node` dev-dependency to
-# `authz-vera-go`/`bulletin-vera-go` unconditionally — unifying those into this same
-# `orbis-node` crate instance and conflicting with a `vera`-selected build.
+# orbis-bench, which pins its own `orbis-node` dependency to
+# `authz-vera`/`bulletin-vera` unconditionally — unifying those into this same
+# `orbis-node` crate instance and conflicting with a `vera-go`-selected build.
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --release --locked -p orbis-node --bin orbis-node --no-default-features \

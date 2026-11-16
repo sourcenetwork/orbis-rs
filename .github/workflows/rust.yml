@@ -114,7 +114,7 @@ jobs:
       matrix:
         include:
           - crypto: bls12-381
-            cargo_flags: --features=integration-test,cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=bls12-381,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,iroh,fault-injection,scale-testing
           - crypto: jubjub
             cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,fault-injection,scale-testing
     steps:
@@ -256,7 +256,7 @@ jobs:
         include:
           - backend: cosmos
             crypto: bls12-381
-            cargo_flags: --features=integration-test,cosmos,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=bls12-381,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,iroh,test-support/cosmos,fault-injection,scale-testing
             extra_flags: ""
           - backend: cosmos
             crypto: jubjub
@@ -289,11 +289,9 @@ jobs:
         tool: cargo-nextest
     - name: Compile test binaries (${{ matrix.backend }}, ${{ matrix.crypto }})
       # `-p orbis-node` on Vera cells only: an unscoped `cargo nextest run`
-      # unifies features across the workspace. `orbis-bench`'s `bls12-381` and
-      # `jubjub` features enable its optional node dependency with
-      # `authz-vera-go`/`bulletin-vera-go` (`select-vera-go`), which cannot unify with
-      # native `select-vera`. Cosmos cells stay workspace-wide on purpose:
-      # `DOCKER_TESTS` spans `authz`'s/`bulletin`'s own `vera_go::tests::`
+      # unifies features across the workspace. Cosmos cells pass
+      # `authz-vera-go`/`bulletin-vera-go` explicitly and stay workspace-wide
+      # because `DOCKER_TESTS` spans `authz`'s/`bulletin`'s own `vera_go::tests::`
       # binaries too, not just orbis-node's.
       run: cargo nextest run --no-run --profile ci ${{ matrix.backend == 'vera' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
     - name: Verify shared E2E inventory (${{ matrix.backend }}, ${{ matrix.crypto }})
@@ -314,7 +312,7 @@ jobs:
       matrix:
         include:
           - crypto: bls12-381
-            cargo_flags: --features=integration-test,cosmos,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=bls12-381,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,iroh,test-support/cosmos,fault-injection,scale-testing
           - crypto: jubjub
             cargo_flags: --no-default-features --features=jubjub,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,test-support/cosmos,fault-injection,scale-testing
     steps:
@@ -397,7 +395,7 @@ jobs:
         include:
           - backend: cosmos
             crypto: bls12-381
-            cargo_flags: --features=integration-test,cosmos,test-support/cosmos,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=bls12-381,redb,integration-test,cosmos,authz-vera-go,bulletin-vera-go,iroh,test-support/cosmos,fault-injection,scale-testing
             extra_flags: ""
           - backend: cosmos
             crypto: jubjub

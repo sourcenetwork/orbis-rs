@@ -33,8 +33,10 @@ Defined in [`Cargo.toml`](Cargo.toml):
 | `jubjub` | no | Jubjub / FROST path — mutually exclusive with `bls12-381` |
 | `redb` | yes | Persistent local storage (`local-storage/redb`) |
 | `memory` | no | In-memory local storage (`local-storage/memory`) |
-| `authz-vera-go` | yes | `authz/vera` |
-| `bulletin-vera-go` | yes | `bulletin/vera` |
+| `authz-vera` | yes | Commonware authorization (`authz/select-vera`) |
+| `bulletin-vera` | yes | Commonware bulletin (`bulletin/select-vera`) |
+| `authz-vera-go` | no | Go chain authorization (`authz/select-vera-go`) |
+| `bulletin-vera-go` | no | Go chain bulletin (`bulletin/select-vera-go`) |
 | `iroh` | yes | `network/iroh` |
 | `integration-test` | no | Shared E2E driver, diagnostic RPC client types, and deterministic fixture startup |
 | `fixture-startup` | no | Deterministic test identity and devnet funding; does not expose diagnostic RPCs |
@@ -217,7 +219,7 @@ consensus-key provisioning.
 Build a Vera-only node with:
 
 ```sh
-cargo build --locked -p orbis-node --no-default-features --features vera,bls12-381,iroh --bin orbis-node
+cargo build --locked -p orbis-node --bin orbis-node
 ```
 
 The Vera backend supports signing, ordinary PRE and PET-backed PRE on BLS12-381
@@ -233,10 +235,10 @@ Select `jubjub` instead of `bls12-381` for the Jubjub crypto implementation. Sta
 The configuration selects Vera authorization and bulletin operations through the
 existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap
 handoff, node initialization, request handlers and shutdown path. Backend setup
-provides the identity and service adapters. This build excludes the Cosmos SDK and
-CometBFT transport dependencies. Default builds retain the existing backend; adding
-`--features vera` to a default build is invalid because each trait selects exactly
-one implementation. Vera-only startup requires `--services-config` and reports a
+provides the identity and service adapters. This is the default `orbis-node`
+build, and it excludes the Cosmos SDK and CometBFT transport dependencies.
+Adding `authz-vera-go` or `bulletin-vera-go` to that build is invalid because
+each trait selects exactly one implementation. Vera startup requires `--services-config` and reports a
 missing or invalid configuration before prompting for storage credentials or opening
 node state.
 The separate `harness` and `integration-test` features retain the dependencies used
