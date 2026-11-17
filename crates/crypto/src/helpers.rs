@@ -26,13 +26,13 @@ pub(crate) fn sample_nonzero<F: Zero>(mut sample: impl FnMut() -> F) -> F {
 /// Exposed so a caller holding a secret scalar from elsewhere (e.g. a
 /// `--reader-sk-override` debug flag) can derive its matching public key
 /// without duplicating curve-specific generator-multiplication code; also
-/// used internally by [`generate_keypair`].
+/// used internally by [`generate_keypair`]. `sk` is secret — constant-time.
 #[cfg(feature = "bls12-381")]
 pub fn public_key_from_secret(sk: &crate::ScalarField) -> Result<crate::GroupAffine> {
-    use ark_bls12_381::G1Projective;
+    use ark_bls12_381::{G1Affine, G1Projective};
     use ark_ec::Group;
 
-    Ok((G1Projective::generator() * sk).into())
+    crate::bls12_381::ct::ct_mul_g1(&G1Affine::from(G1Projective::generator()), sk)
 }
 
 /// Compute `pk = sk * G` where `G` is the generator of the selected curve.
