@@ -23,6 +23,28 @@ network message
 PRE is a bounded one-round request/response protocol. It should stay simpler
 than DKG: split by responsibility, not by a long-lived state machine.
 
+## Client Recipient-Key Lifetime
+
+For both BLS12-381 and Jubjub, clients **MUST generate a fresh, independent
+ephemeral reader keypair for each new PRE operation**. All committee members in
+that operation use its public key. Never reuse the keypair across requests or
+documents, and never use a long-lived identity/authentication key as `rdr_pk`.
+Retain the private key only until that operation's decryption completes or is
+abandoned, then erase and discard it.
+
+Without derivation, the combined response is `sR + rP`, where `P = sG` is the
+ring key, `R` is the recipient key, and `r` is the document's encryption
+randomness. A public nonzero derivation factor gives `d(sR + rP)`, which can be
+scaled by `d^-1`. Reusing `R` under the same ring key therefore repeats a
+recoverable recipient mask. A coordinator that authored one document can
+subtract its known `rP` from the unscaled response, then remove the recovered
+mask from another unscaled response to the same recipient key. Distinct
+request-bound signatures and JWT IDs do not change that algebra.
+
+The CLI generates fresh keys automatically. Custom clients are responsible for
+this lifetime: the service checks authorization and token replay but does not
+enforce recipient-key non-reuse. See the [deployment security contract](../../../../SECURITY.md#pre-recipient-keys-are-disposable).
+
 ## Directory Map
 
 ```text
