@@ -67,7 +67,7 @@ pub fn digest(bytes: &[u8]) -> [u8; 32] {
         for (round, constants) in p.ark.iter().enumerate() {
             for (i, value) in state.iter_mut().enumerate() {
                 *value += constants[i];
-                if round < 4 || round >= 61 || i == 0 {
+                if !(4..61).contains(&round) || i == 0 {
                     *value = value.square().square() * *value;
                 }
             }
