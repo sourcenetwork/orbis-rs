@@ -76,6 +76,30 @@ traffic, but cannot extract key material or forge a signature — FROST nonce
 state is single-use and message content is bound to the caller's JWT / an
 on-chain record. Equivocation attribution is deliberate future work.
 
+### PRE recipient keys are disposable
+
+For both BLS12-381 and Jubjub, clients **MUST generate a fresh, independent
+ephemeral reader keypair for each new PRE operation**. Never reuse it across
+requests or documents, and never use a long-lived identity/authentication key
+as the PRE recipient key. Keep the private key only while completing that
+operation's decryption, then erase and discard it when the operation completes
+or is abandoned.
+
+This is a confidentiality requirement. Without derivation, a combined PRE
+response is `sR + rP`, where `P = sG` is the ring public key, `R` is the
+recipient public key, and `rP` is the document's KEM secret. With a public
+nonzero derivation factor `d`, the response is `d(sR + rP)` and can be scaled
+by `d^-1`. Reusing `R` under the same ring key therefore repeats a recoverable
+recipient mask. A coordinator that knows one document's encryption randomness
+and observes both PRE responses can isolate that mask and derive the other
+document's encryption key. Separate reader-authorization signatures and fresh
+JWT IDs do not make reuse safe.
+
+The bundled CLI generates a fresh keypair for each request. Custom clients
+must implement the same lifetime; the crypto API and node admission checks do
+not enforce recipient-key non-reuse. These disposable keys are distinct from
+the client's DID/JWT authentication key.
+
 ### Client requests are authenticated with bearer JWTs over a trusted transport
 
 gRPC requests carry a DID-signed JWT whose claims are bound to the specific

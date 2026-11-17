@@ -292,6 +292,8 @@ func (x *InlineDocument) GetPetTag() *PetTagAttachment {
 // rdr_pk, cannot be redirected toward an unrelated ciphertext by submitting a
 // difference of two published commitments as rdr_pk, and so a valid
 // signature from one request cannot be replayed into a different request.
+// Separate valid signatures do not make recipient-key reuse safe: the
+// StartPreRequest.rdr_pk lifetime requirement still applies.
 //
 // This signature itself is the only part carried on the wire, as
 // StartPreRequest.rdr_pk_signature. The transcript it signs is not: every
@@ -353,7 +355,15 @@ func (x *ReaderAuthorizationSignature) GetResponse() []byte {
 
 type StartPreRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// reader public key
+	// Ephemeral recipient public key for this PRE operation, on either backend.
+	// Clients MUST generate a fresh, independent keypair for each new operation;
+	// never reuse it across requests/documents or supply a long-lived identity key.
+	// Keep the private key only until this operation's decryption is complete or
+	// abandoned, then erase and discard it. Reuse under the same ring key can
+	// expose another document's encryption key to a coordinator that knows one
+	// document's encryption randomness and observes both PRE responses. Fresh JWT
+	// IDs and request signatures do not prevent this. The service does not enforce
+	// key non-reuse.
 	RdrPk []byte `protobuf:"bytes,1,opt,name=rdr_pk,json=rdrPk,proto3" json:"rdr_pk,omitempty"`
 	// Object Id should be the only one not on bulletin but passed in here
 	ObjectId string `protobuf:"bytes,2,opt,name=object_id,json=objectId,proto3" json:"object_id,omitempty"`

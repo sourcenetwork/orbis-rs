@@ -4,7 +4,22 @@ use super::types::{EncryptionProof, PubShare, ReaderAuthorizationSignature};
 use crate::context::{CiphertextContext, ReaderAuthorizationContext};
 use crate::error::Result;
 
-/// Trait for PRE
+/// Threshold proxy re-encryption and its client-side operations.
+///
+/// # Recipient-key lifetime
+///
+/// On both backends, clients MUST generate a fresh, independent ephemeral
+/// `(rdr_sk, rdr_pk)` keypair for each new PRE operation. Never reuse it across
+/// requests or documents, or use a long-lived identity/authentication key here.
+/// Keep `rdr_sk` only while completing that operation's decryption, then erase
+/// and discard it when the operation completes or is abandoned.
+///
+/// Reusing `rdr_pk` under the same ring key exposes a repeated recipient mask.
+/// A coordinator that knows one document's encryption randomness and observes
+/// both responses can remove that mask and derive the other document's
+/// encryption key. Separate request signatures, JWT IDs, and public derivation
+/// factors do not remove this requirement. The API
+/// verifies reader-authorization signatures but does not enforce key non-reuse.
 pub trait ThresholdDealer {
     type DistKeyShare;
     type Secret;
@@ -17,6 +32,10 @@ pub trait ThresholdDealer {
     fn name() -> String;
 
     /// Re-encrypt a secret share using the receiver's public key.
+    ///
+    /// `rdr_pk` MUST belong to a fresh ephemeral keypair for this PRE operation;
+    /// see the trait's recipient-key lifetime contract. All participants in the
+    /// same threshold operation use that operation's key.
     ///
     /// `signature` must be a valid [`ReaderAuthorizationSignature`] of knowledge
     /// of `rdr_pk`'s discrete log, over `context` (see
@@ -43,7 +62,7 @@ pub trait ThresholdDealer {
     /// Input:
     ///   dist_key_share - Private share of secret key of DKG.
     ///   scrt           - The encrypted secret (contains enc_cmt = rG).
-    ///   rdr_pk  (xG)   - Public key of the reader.
+    ///   rdr_pk  (xG)   - Ephemeral public key for this PRE operation.
     ///   context        - The request-bound transcript the signature covers.
     ///   signature      - Signature proving the caller knows rdr_pk's discrete
     ///                    log and authorizes exactly this request.
@@ -62,6 +81,9 @@ pub trait ThresholdDealer {
     ) -> Result<Self::ReencryptReply>;
 
     /// Sign knowledge of `rdr_sk` for `rdr_pk = rdr_sk*G`, over `context`.
+    ///
+    /// Use a fresh ephemeral keypair for this PRE operation. Signing a new
+    /// context with a previously used recipient key does not make reuse safe.
     ///
     /// Called by the reader when building a PRE request, never by a node. The
     /// resulting [`ReaderAuthorizationSignature`] travels alongside `rdr_pk` on
@@ -161,6 +183,10 @@ pub trait ThresholdDealer {
     ) -> Result<()>;
 
     /// Decrypt a secret using the reader's secret key.
+    ///
+    /// `rdr_sk` is this PRE operation's ephemeral secret. The caller must erase
+    /// and discard it after completing or abandoning the operation; this method
+    /// borrows it and does not perform that cleanup for the caller.
     ///
     /// Input:
     ///   effective_pk       - The public key used for decryption:
