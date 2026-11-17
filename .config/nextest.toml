@@ -26,13 +26,13 @@ final-status-level = "flaky"
 [profile.ci.junit]
 path = "junit.xml"
 
-[profile.native-soak]
+[profile.vera-soak]
 fail-fast = false
 retries = 0
 slow-timeout = { period = "120s", terminate-after = 18 }
 failure-output = "immediate-final"
 
-[profile.native-soak.junit]
+[profile.vera-soak.junit]
 path = "junit.xml"
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ filter = 'package(network) & test(/^iroh::tests::/)'
 test-group = 'serial'
 
 [[profile.default.overrides]]
-filter = '(package(authz) | package(bulletin)) & test(/^vera::tests::/)'
+filter = '(package(authz) | package(bulletin)) & test(/^vera_go::tests::/)'
 test-group = 'serial'
 
 [[profile.default.overrides]]
@@ -74,7 +74,7 @@ filter = 'package(network) & test(/^iroh::tests::/)'
 test-group = 'serial'
 
 [[profile.ci.overrides]]
-filter = '(package(authz) | package(bulletin)) & test(/^vera::tests::/)'
+filter = '(package(authz) | package(bulletin)) & test(/^vera_go::tests::/)'
 test-group = 'serial'
 
 [[profile.ci.overrides]]
@@ -84,7 +84,7 @@ test-group = 'serial'
 # `upgrade::test_v0_services_rejected_after_ring_upgrade` schedules its
 # ring upgrade live rather than genesis-seeding it, so it's bound by both
 # backends' real, unavoidable 600s minimum schedule-upgrade lead (Cosmos's
-# `ScheduleRingUpgradeByAcp`/native's `RingUpdate::ScheduleUpgrade`, not a
+# `ScheduleRingUpgradeByAcp`/Vera's `RingUpdate::ScheduleUpgrade`, not a
 # test-harness choice) plus DKG/setup/verification overhead — comfortably
 # over the suite's normal 720s kill threshold. Give it its own, longer one
 # rather than loosening the ceiling for every other test.

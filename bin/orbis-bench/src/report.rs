@@ -388,7 +388,7 @@ fn render_report(
         "Vera image digest",
         manifest.vera_image.as_deref().unwrap_or("not recorded"),
     );
-    definition(&mut html, "Vera ref", &manifest.vera_ref);
+    definition(&mut html, "Vera ref", &manifest.vera_go_ref);
     definition(
         &mut html,
         "P2P messages (counter delta)",

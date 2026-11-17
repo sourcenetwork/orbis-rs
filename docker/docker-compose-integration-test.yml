@@ -10,11 +10,11 @@
 # fixtures only. Production deployments should inject secrets from a secret
 # manager or read-only mounted files; see bin/orbis-node/README.md.
 services:
-  vera:
-    image: orbis-vera-integration
+  vera-go:
+    image: orbis-vera-go-integration
     build:
       context: .
-      dockerfile: Dockerfile.vera-integration
+      dockerfile: Dockerfile.vera-go-integration
     entrypoint: ["/bin/sh", "-c"]
     volumes:
       - ${GENESIS_PATCH_FILE:-/dev/null}:/tmp/genesis-patch.json:ro
@@ -93,14 +93,14 @@ services:
     # peer address before `connect()` uses it.
     command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     volumes:
-      - ./services-config-vera.json:/etc/orbis/services.json:ro
+      - ./services-config-vera-go.json:/etc/orbis/services.json:ro
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
-      vera:
+      vera-go:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
@@ -131,14 +131,14 @@ services:
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     volumes:
-      - ./services-config-vera.json:/etc/orbis/services.json:ro
+      - ./services-config-vera-go.json:/etc/orbis/services.json:ro
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
-      vera:
+      vera-go:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
@@ -169,14 +169,14 @@ services:
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     volumes:
-      - ./services-config-vera.json:/etc/orbis/services.json:ro
+      - ./services-config-vera-go.json:/etc/orbis/services.json:ro
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
-      vera:
+      vera-go:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
@@ -208,14 +208,14 @@ services:
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     volumes:
-      - ./services-config-vera.json:/etc/orbis/services.json:ro
+      - ./services-config-vera-go.json:/etc/orbis/services.json:ro
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
-      vera:
+      vera-go:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]

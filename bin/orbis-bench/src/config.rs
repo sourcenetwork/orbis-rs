@@ -10,12 +10,12 @@ pub const MAX_LOCAL_RINGS_PER_NODE: usize = 256;
 /// intervals must exceed it so due-to-start and ceremony time remain separable.
 pub const PSS_GRACE_PERIOD_SECS: u64 = 10;
 /// Vera commit every example config, `Experiment::single`/sweep-built
-/// experiment, and (via `docker/Dockerfile.vera-integration`'s own
+/// experiment, and (via `docker/Dockerfile.vera-go-integration`'s own
 /// fallback read of the same file) every raw `docker-compose-*.yml` that
-/// doesn't pass `VERA_REF` explicitly all pin by default. Single source
-/// of truth across both Rust and Docker — bump `docker/VERA_REF` to
+/// doesn't pass `VERA_GO_REF` explicitly all pin by default. Single source
+/// of truth across both Rust and Docker — bump `docker/VERA_GO_REF` to
 /// move every default-using caller at once instead of hunting down each copy.
-pub const DEFAULT_VERA_REF: &str = include_str!("../../../docker/VERA_REF");
+pub const DEFAULT_VERA_GO_REF: &str = include_str!("../../../docker/VERA_GO_REF");
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -232,8 +232,8 @@ fn default_seed() -> u64 {
 fn default_output_dir() -> PathBuf {
     PathBuf::from("bench-results")
 }
-fn default_vera_ref() -> String {
-    DEFAULT_VERA_REF.to_string()
+fn default_vera_go_ref() -> String {
+    DEFAULT_VERA_GO_REF.to_string()
 }
 fn default_vera_replicas() -> usize {
     1
@@ -275,8 +275,8 @@ pub struct Experiment {
     pub resources: ResourceLimits,
     #[serde(default = "default_output_dir")]
     pub output_dir: PathBuf,
-    #[serde(default = "default_vera_ref")]
-    pub vera_ref: String,
+    #[serde(default = "default_vera_go_ref")]
+    pub vera_go_ref: String,
     /// Number of Vera Docker services to run. Index 0 is the sole
     /// validator (genesis init + gentx); the rest are non-validating full
     /// nodes that sync via P2P and independently serve REST/RPC reads and tx
@@ -332,7 +332,7 @@ impl Experiment {
             timeouts: TimeoutConfig::default(),
             resources: ResourceLimits::default(),
             output_dir: default_output_dir(),
-            vera_ref: default_vera_ref(),
+            vera_go_ref: default_vera_go_ref(),
             vera_replicas: default_vera_replicas(),
             setup_batch_size: default_batch_size(),
             pss_interval_secs: default_pss_interval(),

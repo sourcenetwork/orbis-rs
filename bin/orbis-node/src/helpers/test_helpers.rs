@@ -56,7 +56,7 @@ use local_storage::{
 use network::{NetworkImpl, Router};
 #[cfg(any(
     all(feature = "integration-test", feature = "cosmos"),
-    all(feature = "integration-test", feature = "native")
+    all(feature = "integration-test", feature = "vera")
 ))]
 use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
@@ -810,7 +810,7 @@ pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
 // became the first native caller.
 #[cfg(any(
     all(feature = "integration-test", feature = "cosmos"),
-    all(feature = "integration-test", feature = "native")
+    all(feature = "integration-test", feature = "vera")
 ))]
 async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
     let node_info = cli_tool::query_node_info(endpoint.to_string())
@@ -854,7 +854,7 @@ async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
 // Backend-neutral — see `check_full_grpc_ready`'s own updated comment.
 #[cfg(any(
     all(feature = "integration-test", feature = "cosmos"),
-    all(feature = "integration-test", feature = "native")
+    all(feature = "integration-test", feature = "vera")
 ))]
 pub async fn wait_for_nodes_ready(
     endpoints: &[&str],

@@ -40,9 +40,9 @@ require authenticated chain-state reads. The ACP verdict itself is computed Go
 logic with no Merkle proof, so a light client alone would not make it verifiable;
 that would also require capability materialization or client-side evaluation.
 
-### Native Vera reads require independently configured consensus trust
+### Vera reads require independently configured consensus trust
 
-Native mode verifies finality against its configured consensus key and checks the
+Vera mode verifies finality against its configured consensus key and checks the
 configured deployment root before serving requests. Authorization evaluates ACP
 locally from authenticated policy and relationship evidence at one revision.
 Current relation identities and target-object incarnations are authenticated with
@@ -59,8 +59,8 @@ certified state within the current-read freshness window. Availability and the
 chosen window remain operational considerations. Protect the provisioned
 consensus key and deployment root.
 
-Native validators, clients and verifiers must use the same ACP storage/proof
-format. Native relationship keys use `relationship/v5/` with `v3` suffixes and
+Vera validators, clients and verifiers must use the same ACP storage/proof
+format. Vera relationship keys use `relationship/v5/` with `v3` suffixes and
 mandatory incarnation stamps; owner records always use incarnation zero.
 Specialized relationship proofs require an `objects` witness array for every
 non-owner target. A certified absent state point means initial incarnation zero;

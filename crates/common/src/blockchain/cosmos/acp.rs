@@ -1,10 +1,10 @@
-//! `VeraClient` extension methods for x/acp: policy transactions and queries.
+//! `VeraGoClient` extension methods for x/acp: policy transactions and queries.
 
 use crate::blockchain::acp::*;
-use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
+use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraGoClient};
 use prost::Message;
 
-impl VeraClient {
+impl VeraGoClient {
     // ========================================================================
     // ACP Queries
     // ========================================================================

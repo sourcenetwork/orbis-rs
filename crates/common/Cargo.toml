@@ -58,9 +58,9 @@ cosmos = [
     "dep:tokio-tungstenite",
 ]
 # Chain configuration, deployment-trust bootstrap, and the worker-key store
-# for the native (Commonware / vera.rs) backend, shared by `authz::native`
-# and `bulletin::native`.
-native = [
+# for the native (Commonware / vera.rs) backend, shared by `authz::vera`
+# and `bulletin::vera`.
+vera = [
     "dep:vera-client",
     "dep:vera-domain",
     "dep:vera-crypto",
@@ -76,7 +76,7 @@ startup = ["dep:local-storage"]
 # enabling it never selects Cosmos by itself.
 funding = []
 # Test-only helpers that must be `pub` (not `#[cfg(test)]`) to be reachable
-# from a dependent crate's own test suite, e.g. `blockchain::native::test_key`.
+# from a dependent crate's own test suite, e.g. `blockchain::vera::test_key`.
 test-helpers = []
 
 [dev-dependencies]

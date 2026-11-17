@@ -12,7 +12,7 @@ COPY . .
 ARG CRYPTO_FEATURE=bls12-381
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --release -p orbis-bench --bin orbis-upgrade-driver \
-        --no-default-features --features "${CRYPTO_FEATURE}" \
+        --no-default-features --features "${CRYPTO_FEATURE},upgrade-driver" \
     && cp /app/target/release/orbis-upgrade-driver /orbis-upgrade-driver
 
 FROM debian:bookworm-slim

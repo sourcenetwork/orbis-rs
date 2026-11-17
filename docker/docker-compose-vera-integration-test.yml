@@ -1,0 +1,404 @@
+# Docker Compose for native-Vera-backend integration tests
+# Spins up a 4-validator native Vera devnet + 3 orbis nodes (native backend),
+# all on service-name networking (no network_mode: host) with health checks.
+#
+# Unlike docker-compose-integration-test.yml (the Cosmos/SourceHub backend),
+# every port here is a FIXED container-internal port: each service runs in its
+# own network namespace (bridge networking), so there is no shared port space
+# to avoid collisions in — unlike the old ContainerNode-per-validator harness,
+# which used `network_mode: host` and therefore needed unique ephemeral ports
+# reserved up front. Host-side access (for the test process) still goes
+# through Docker's own ephemeral published-port mapping, same as the Cosmos
+# file.
+#
+# To use the pinned native Vera chain revision:
+#   VERA_REF=$(cat docker/VERA_REF) ORBIS_INTEGRATION_CRYPTO=jubjub \
+#     docker compose -f docker/docker-compose-vera-integration-test.yml up --build -d
+# The test harness reads docker/VERA_REF and sets VERA_REF explicitly.
+#
+# `ORBIS_VERA{1..4}_DIR` / `ORBIS_VERA_NODE{1..4}_DIR` / `ORBIS_VERA_DEPLOYMENT`
+# are set by crates/test-support/src/vera_network.rs before bringing the
+# stack up; they point at host directories the driver populates with
+# genesis/config/peers (validators) or services.json/password (orbis nodes).
+#
+# Validators are addressed by IP, not Compose service-name DNS: `verad`'s
+# peers.json parses bootstrapper addresses with Rust's strict
+# `SocketAddr::parse` (crates/vera-node/src/config.rs's `load_peers`) — no DNS
+# resolution, so a hostname there is a hard parse error at validator startup.
+# crates/test-support/src/vera_network.rs creates the 4 validator
+# containers first (assigning them IPs on Docker's own auto-allocated,
+# per-project network — no fixed subnet here, so parallel test runs never
+# collide), discovers those IPs, writes genesis.json/peers.json referencing
+# them, and only then starts the containers.
+services:
+  vera1:
+    user: "${ORBIS_VERA1_USER:-0:0}"
+    image: ${ORBIS_VERA_IMAGE:-orbis-vera:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.vera-integration
+      args:
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/VERA_REF}
+    entrypoint: ["verad"]
+    working_dir: /data
+    command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_VERA_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
+    volumes:
+      - ${ORBIS_VERA1_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::8645"
+    networks:
+      orbis-vera-integration-network:
+        ipv4_address: ${ORBIS_VERA1_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8645 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  vera2:
+    user: "${ORBIS_VERA2_USER:-0:0}"
+    image: ${ORBIS_VERA_IMAGE:-orbis-vera:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.vera-integration
+      args:
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/VERA_REF}
+    entrypoint: ["verad"]
+    working_dir: /data
+    command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_VERA_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
+    volumes:
+      - ${ORBIS_VERA2_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::8645"
+    networks:
+      orbis-vera-integration-network:
+        ipv4_address: ${ORBIS_VERA2_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8645 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  vera3:
+    user: "${ORBIS_VERA3_USER:-0:0}"
+    image: ${ORBIS_VERA_IMAGE:-orbis-vera:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.vera-integration
+      args:
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/VERA_REF}
+    entrypoint: ["verad"]
+    working_dir: /data
+    command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_VERA_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
+    volumes:
+      - ${ORBIS_VERA3_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::8645"
+    networks:
+      orbis-vera-integration-network:
+        ipv4_address: ${ORBIS_VERA3_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8645 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  vera4:
+    user: "${ORBIS_VERA4_USER:-0:0}"
+    image: ${ORBIS_VERA_IMAGE:-orbis-vera:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.vera-integration
+      args:
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/VERA_REF}
+    entrypoint: ["verad"]
+    working_dir: /data
+    command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_VERA_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
+    volumes:
+      - ${ORBIS_VERA4_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::8645"
+    networks:
+      orbis-vera-integration-network:
+        ipv4_address: ${ORBIS_VERA4_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8645 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node1:
+    user: "${ORBIS_VERA_NODE1_USER:-0:0}"
+    image: ${ORBIS_VERA_NODE_IMAGE:-orbis-node-vera:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BACKEND: vera
+        ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
+        CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+        # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
+        # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
+        # on at least ARM64 hosts this makes the built orbis-node binary
+        # unable to execute in its own runtime image ("GLIBC_2.38 not
+        # found"). CI's `image` job already pins this exact tag for the
+        # native backend for the same reason (.github/workflows/rust.yml);
+        # this applies the same pin here so local Trust gateway and shared native
+        # runs don't hit it too.
+        RUST_IMAGE: "${ORBIS_VERA_RUST_IMAGE:-rust:1.99.1-bookworm}"
+    working_dir: /data
+    environment:
+      - ORBIS_PASSWORD_FILE=password
+      - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001
+      - RUST_LOG=info
+      # The ordinary fixture image compiles deterministic startup only. This
+      # runtime switch has an effect only when the harness selects the separate
+      # diagnostic image, which explicitly compiles `unsafe-testing`.
+      - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_VERA_ENABLE_UNSAFE_TESTING:-false}
+    # `${ORBIS_VERA_RESHARE_INTERVAL:-5}`: `VeraNetworkAdapter`'s plain
+    # bring-up (no scenario wiring) doesn't care about this value and leaves
+    # it at the default; the Trust gateway fixture sets
+    # it to `1` to match pre-migration behavior (`Node::start_configured`'s
+    # old hardcoded `--reshare-interval-secs 1`).
+    command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_VERA_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
+    volumes:
+      - ${ORBIS_VERA_NODE1_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::50051"
+    networks:
+      orbis-vera-integration-network:
+        ipv4_address: ${ORBIS_VERA_NODE1_IP}
+    depends_on:
+      vera1:
+        condition: service_healthy
+      vera2:
+        condition: service_healthy
+      vera3:
+        condition: service_healthy
+      vera4:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node2:
+    user: "${ORBIS_VERA_NODE2_USER:-0:0}"
+    image: ${ORBIS_VERA_NODE_IMAGE:-orbis-node-vera:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BACKEND: vera
+        ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
+        CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+        # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
+        # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
+        # on at least ARM64 hosts this makes the built orbis-node binary
+        # unable to execute in its own runtime image ("GLIBC_2.38 not
+        # found"). CI's `image` job already pins this exact tag for the
+        # native backend for the same reason (.github/workflows/rust.yml);
+        # this applies the same pin here so local Trust gateway and shared native
+        # runs don't hit it too.
+        RUST_IMAGE: "${ORBIS_VERA_RUST_IMAGE:-rust:1.99.1-bookworm}"
+    working_dir: /data
+    environment:
+      - ORBIS_PASSWORD_FILE=password
+      - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000002
+      - RUST_LOG=info
+      # The ordinary fixture image compiles deterministic startup only. This
+      # runtime switch has an effect only when the harness selects the separate
+      # diagnostic image, which explicitly compiles `unsafe-testing`.
+      - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_VERA_ENABLE_UNSAFE_TESTING:-false}
+    # `${ORBIS_VERA_RESHARE_INTERVAL:-5}`: `VeraNetworkAdapter`'s plain
+    # bring-up (no scenario wiring) doesn't care about this value and leaves
+    # it at the default; the Trust gateway fixture sets
+    # it to `1` to match pre-migration behavior (`Node::start_configured`'s
+    # old hardcoded `--reshare-interval-secs 1`).
+    command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_VERA_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
+    volumes:
+      - ${ORBIS_VERA_NODE2_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::50051"
+    networks:
+      orbis-vera-integration-network:
+        ipv4_address: ${ORBIS_VERA_NODE2_IP}
+    depends_on:
+      vera1:
+        condition: service_healthy
+      vera2:
+        condition: service_healthy
+      vera3:
+        condition: service_healthy
+      vera4:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node3:
+    user: "${ORBIS_VERA_NODE3_USER:-0:0}"
+    image: ${ORBIS_VERA_NODE_IMAGE:-orbis-node-vera:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BACKEND: vera
+        ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
+        CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+        # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
+        # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
+        # on at least ARM64 hosts this makes the built orbis-node binary
+        # unable to execute in its own runtime image ("GLIBC_2.38 not
+        # found"). CI's `image` job already pins this exact tag for the
+        # native backend for the same reason (.github/workflows/rust.yml);
+        # this applies the same pin here so local Trust gateway and shared native
+        # runs don't hit it too.
+        RUST_IMAGE: "${ORBIS_VERA_RUST_IMAGE:-rust:1.99.1-bookworm}"
+    working_dir: /data
+    environment:
+      - ORBIS_PASSWORD_FILE=password
+      - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000003
+      - RUST_LOG=info
+      # The ordinary fixture image compiles deterministic startup only. This
+      # runtime switch has an effect only when the harness selects the separate
+      # diagnostic image, which explicitly compiles `unsafe-testing`.
+      - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_VERA_ENABLE_UNSAFE_TESTING:-false}
+    # `${ORBIS_VERA_RESHARE_INTERVAL:-5}`: `VeraNetworkAdapter`'s plain
+    # bring-up (no scenario wiring) doesn't care about this value and leaves
+    # it at the default; the Trust gateway fixture sets
+    # it to `1` to match pre-migration behavior (`Node::start_configured`'s
+    # old hardcoded `--reshare-interval-secs 1`).
+    command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_VERA_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
+    volumes:
+      - ${ORBIS_VERA_NODE3_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::50051"
+    networks:
+      orbis-vera-integration-network:
+        ipv4_address: ${ORBIS_VERA_NODE3_IP}
+    depends_on:
+      vera1:
+        condition: service_healthy
+      vera2:
+        condition: service_healthy
+      vera3:
+        condition: service_healthy
+      vera4:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node4:
+    user: "${ORBIS_VERA_NODE4_USER:-0:0}"
+    profiles: ["node4"]
+    image: ${ORBIS_VERA_NODE_IMAGE:-orbis-node-vera:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BACKEND: vera
+        ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
+        CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+        # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
+        # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
+        # on at least ARM64 hosts this makes the built orbis-node binary
+        # unable to execute in its own runtime image ("GLIBC_2.38 not
+        # found"). CI's `image` job already pins this exact tag for the
+        # native backend for the same reason (.github/workflows/rust.yml);
+        # this applies the same pin here so local Trust gateway and shared native
+        # runs don't hit it too.
+        RUST_IMAGE: "${ORBIS_VERA_RUST_IMAGE:-rust:1.99.1-bookworm}"
+    working_dir: /data
+    environment:
+      - ORBIS_PASSWORD_FILE=password
+      - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000004
+      - RUST_LOG=info
+      # The ordinary fixture image compiles deterministic startup only. This
+      # runtime switch has an effect only when the harness selects the separate
+      # diagnostic image, which explicitly compiles `unsafe-testing`.
+      - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_VERA_ENABLE_UNSAFE_TESTING:-false}
+    # `${ORBIS_VERA_RESHARE_INTERVAL:-5}`: `VeraNetworkAdapter`'s plain
+    # bring-up (no scenario wiring) doesn't care about this value and leaves
+    # it at the default; the Trust gateway fixture sets
+    # it to `1` to match pre-migration behavior (`Node::start_configured`'s
+    # old hardcoded `--reshare-interval-secs 1`).
+    command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_VERA_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
+    volumes:
+      - ${ORBIS_VERA_NODE4_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::50051"
+    networks:
+      orbis-vera-integration-network:
+        ipv4_address: ${ORBIS_VERA_NODE4_IP}
+    depends_on:
+      vera1:
+        condition: service_healthy
+      vera2:
+        condition: service_healthy
+      vera3:
+        condition: service_healthy
+      vera4:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Defra-backed PRE share storage (ring `pre_share_endpoints`). Opt-in: only
+  # brought up when `VeraNetworkAdapter::start_configured`'s `defra` flag
+  # is set, which adds it to the explicit `docker compose up -d` service
+  # list — there is no profile gate here (unlike the Cosmos compose file's
+  # `--profile defra`) since nothing else in this file declares a profile
+  # either; native's own services are always named explicitly.
+  defra:
+    image: ${DEFRA_INTEGRATION_IMAGE:-orbis-defra-integration:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.defra-integration
+      args:
+        DEFRA_REF: ${DEFRA_REF:-main}
+    # `--workers 2 --worker-priority nice:10`: see the Cosmos compose file's
+    # own `defra` service comment for why -- same fix, same reason, both
+    # backends.
+    command: ["--rootdir", "/data", "--url", "0.0.0.0:9181", "--no-keyring=true", "start", "--store", "memory", "--no-p2p=true", "--workers", "2", "--worker-priority", "nice:10"]
+    ports:
+      - "127.0.0.1::9181"
+    networks:
+      orbis-vera-integration-network:
+        # Statically assigned (see `host_ip`/`VeraTestNetwork::defra_ip`),
+        # unlike the Cosmos compose file's Defra service, which discovers its
+        # address via the bridge network's auto-assigned gateway IP — this
+        # network's addresses are all pre-assigned instead, so the same
+        # address is known before this container even starts.
+        ipv4_address: ${ORBIS_VERA_DEFRA_IP}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9181/health-check"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+networks:
+  # Pre-created by crates/test-support/src/vera_network.rs (plain `docker
+  # network create`, letting Docker pick a non-colliding subnet) so validator
+  # IPs are known before any container exists — see that file's module doc
+  # comment. Compose only joins it; it never creates or removes it.
+  orbis-vera-integration-network:
+    external: true
+    name: ${ORBIS_VERA_NETWORK_NAME}

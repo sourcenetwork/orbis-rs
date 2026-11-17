@@ -27,7 +27,7 @@
 //! for SIGN, a `KeyDerivation` record — the latter posted directly to the
 //! shared bulletin by [`HarnessNetwork::post_key_derivation`] below, since
 //! `cli_tool::post_key_derivation_with_config` unconditionally builds a real
-//! `VeraBulletin` client and can't be reused here.
+//! `VeraGoBulletin` client and can't be reused here.
 
 use crate::protocol::{DirectClients, NodeEndpoint};
 use anyhow::{Context, Result};
@@ -198,7 +198,7 @@ impl HarnessNetwork {
     /// record directly to the shared bulletin via the same `Bulletin::post`
     /// path a real node's `StoreSecretService`/key-derivation handler uses —
     /// no chain client involved, unlike the Docker-only cli-tool function
-    /// (which unconditionally builds a `VeraBulletin`). Returns
+    /// (which unconditionally builds a `VeraGoBulletin`). Returns
     /// `(derivation_id, derived_public_key_hex)`.
     pub async fn post_key_derivation(
         &self,

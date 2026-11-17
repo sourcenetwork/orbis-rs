@@ -8,7 +8,7 @@ use common::blockchain::{
     },
     bank::{Coin, MsgSend},
     orbis::{DemeritConfig, MsgUpdateNodePeerId, ReportingConfig},
-    VeraClient,
+    VeraGoClient,
 };
 use cosmrs::Any;
 use prost::Message;
@@ -70,7 +70,7 @@ pub struct BatchFailure {
 }
 
 pub async fn broadcast_bounded(
-    client: &VeraClient,
+    client: &VeraGoClient,
     messages: Vec<SetupMessage>,
     maximum_batch_size: usize,
 ) -> Result<BatchOutcome> {
@@ -139,7 +139,7 @@ where
 }
 
 pub async fn fund_nodes(
-    client: &VeraClient,
+    client: &VeraGoClient,
     nodes: &[NodeIdentity],
     maximum_batch_size: usize,
 ) -> Result<BatchOutcome> {
@@ -169,7 +169,7 @@ pub async fn fund_nodes(
 }
 
 pub async fn update_peer_addresses(
-    client: &VeraClient,
+    client: &VeraGoClient,
     nodes: &[NodeIdentity],
     maximum_batch_size: usize,
 ) -> Result<BatchOutcome> {
@@ -198,7 +198,7 @@ pub async fn update_peer_addresses(
 /// its ID, so unlike `fund_nodes`/`update_peer_addresses` these can't be
 /// folded into `broadcast_bounded`'s batching).
 pub async fn create_rings_on_chain<'a>(
-    client: &VeraClient,
+    client: &VeraGoClient,
     rings: impl Iterator<Item = &'a mut RingDefinition>,
     protocol_version: u64,
 ) -> Result<()> {
@@ -252,7 +252,7 @@ pub async fn create_rings_on_chain<'a>(
 /// already exist. Returns the chain-assigned policy ID, which is expected to
 /// equal `RING_GOVERNANCE_POLICY_ID` since this is always the first policy
 /// created on a fresh chain (see that constant's doc comment).
-pub async fn create_ring_governance_policy(client: &VeraClient) -> Result<String> {
+pub async fn create_ring_governance_policy(client: &VeraGoClient) -> Result<String> {
     let existing: HashSet<String> = client
         .acp_list_policy_ids()
         .await?
@@ -303,7 +303,7 @@ pub async fn create_ring_governance_policy(client: &VeraClient) -> Result<String
 /// governance policy must already exist (via
 /// `create_ring_governance_policy`) before calling this.
 pub async fn register_ring_governance(
-    client: &VeraClient,
+    client: &VeraGoClient,
     rings: &[RingDefinition],
     maximum_batch_size: usize,
 ) -> Result<BatchOutcome> {

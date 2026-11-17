@@ -1,5 +1,5 @@
-//! Docker Compose subprocess helpers shared by [`super::VeraTestContainer`],
-//! [`super::CosmosNetwork`], and [`super::NativeNetworkAdapter`].
+//! Docker Compose subprocess helpers shared by [`super::VeraGoTestContainer`],
+//! [`super::CosmosNetwork`], and [`super::VeraNetworkAdapter`].
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,22 +22,22 @@ pub(super) fn compose_command(compose_file: &str, project_name: &str) -> Command
             compose_file,
         ])
         .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..");
-    #[cfg(all(unix, feature = "native"))]
-    if compose_file == crate::native_network::NATIVE_COMPOSE_FILE {
+    #[cfg(all(unix, feature = "vera"))]
+    if compose_file == crate::vera_network::VERA_COMPOSE_FILE {
         let revision = std::env::var("VERA_REF")
             .ok()
             .filter(|revision| !revision.is_empty())
-            .unwrap_or_else(crate::native_network::native_vera_ref);
+            .unwrap_or_else(crate::vera_network::pinned_vera_ref);
         command.env("VERA_REF", revision);
     }
     command
 }
 
 // `published_port`/`localhost_url`/`report_compose_failure`/`stop_compose`
-// are shared by `CosmosNetwork`/`VeraTestContainer` (Cosmos) and
-// `NativeTestNetwork`/`NativeNetworkAdapter` (native, Phase B of the
+// are shared by `CosmosNetwork`/`VeraGoTestContainer` (Cosmos) and
+// `VeraTestNetwork`/`VeraNetworkAdapter` (native, Phase B of the
 // harness-unification plan) — both drive a real multi-service Compose file.
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 fn parse_published_port(output: &str) -> Option<u16> {
     output
         .lines()
@@ -46,7 +46,7 @@ fn parse_published_port(output: &str) -> Option<u16> {
         .and_then(|(_, port)| port.parse().ok())
 }
 
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 pub(super) fn published_port(
     compose_file: &str,
     project_name: &str,
@@ -60,7 +60,7 @@ pub(super) fn published_port(
 /// Compose project. Native fixtures use interpolated network, address, image,
 /// and bind-mount values, so even a read-only `compose port` command must see
 /// the same values as the original `compose up`.
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 pub(super) fn published_port_with_env(
     compose_file: &str,
     project_name: &str,
@@ -92,12 +92,12 @@ pub(super) fn published_port_with_env(
     })
 }
 
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 pub(super) fn localhost_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 pub(super) fn report_compose_failure(compose_file: &str, project_name: &str) {
     eprintln!("Docker Compose diagnostics for project {project_name}:");
     let _ = diagnostic_output(
@@ -140,7 +140,7 @@ pub(super) fn report_compose_failure(compose_file: &str, project_name: &str) {
 /// Re-emit child output on the test thread so libtest captures it alongside
 /// the failure. A failed diagnostic must remain visible without hiding the
 /// original panic or preventing the remaining diagnostics and cleanup.
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 fn diagnostic_output(label: &str, command: &mut Command) -> Option<std::process::Output> {
     match command.output() {
         Ok(output) => {
@@ -164,7 +164,7 @@ fn diagnostic_output(label: &str, command: &mut Command) -> Option<std::process:
     }
 }
 
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 pub(super) fn stop_compose(compose_file: &str, project_name: &str) {
     // `--profile node4`/`--profile defra` are harmless no-ops when that
     // profile was never used in `up` — passed unconditionally so `down`
@@ -196,7 +196,7 @@ pub(super) fn stop_compose(compose_file: &str, project_name: &str) {
 /// process can't reach on Docker Desktop (macOS/Windows); see that test's
 /// own module doc comment. Idempotent: Docker's own build cache makes a
 /// repeat call with the same `crypto_feature` a fast no-op after the first.
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 pub fn build_cli_tool_sidecar_image(crypto_feature: &str) -> Result<String, String> {
     let tag = format!("orbis-cli-tool-sidecar:{crypto_feature}");
     let status = Command::new("docker")
@@ -224,7 +224,7 @@ pub fn build_cli_tool_sidecar_image(crypto_feature: &str) -> Result<String, Stri
 /// Run a one-off `image` container joined to `network`, passing `args` to
 /// its entrypoint, and return its captured stdout. `--rm`: never left
 /// behind, regardless of exit status.
-#[cfg(any(feature = "cosmos", feature = "native"))]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 pub fn run_sidecar_container(image: &str, network: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new("docker")
         .args(["run", "--rm", "--network", network, image])
@@ -245,7 +245,7 @@ pub fn run_sidecar_container(image: &str, network: &str, args: &[&str]) -> Resul
 mod tests {
     use super::unique_project_name;
 
-    #[cfg(any(feature = "cosmos", feature = "native"))]
+    #[cfg(any(feature = "cosmos", feature = "vera"))]
     #[test]
     fn parses_compose_port_output() {
         assert_eq!(
@@ -254,17 +254,17 @@ mod tests {
         );
     }
 
-    #[cfg(all(unix, feature = "native"))]
+    #[cfg(all(unix, feature = "vera"))]
     #[test]
     fn native_compose_commands_supply_the_vera_revision() {
-        let command = super::compose_command(crate::native_network::NATIVE_COMPOSE_FILE, "test");
+        let command = super::compose_command(crate::vera_network::VERA_COMPOSE_FILE, "test");
         let value = command
             .get_envs()
             .find_map(|(key, value)| (key == "VERA_REF").then_some(value).flatten());
         let expected = std::env::var("VERA_REF")
             .ok()
             .filter(|revision| !revision.is_empty())
-            .unwrap_or_else(crate::native_network::native_vera_ref);
+            .unwrap_or_else(crate::vera_network::pinned_vera_ref);
         assert_eq!(
             value.and_then(|value| value.to_str()),
             Some(expected.as_str())

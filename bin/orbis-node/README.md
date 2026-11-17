@@ -33,8 +33,10 @@ Defined in [`Cargo.toml`](Cargo.toml):
 | `jubjub` | no | Jubjub / FROST path — mutually exclusive with `bls12-381` |
 | `redb` | yes | Persistent local storage (`local-storage/redb`) |
 | `memory` | no | In-memory local storage (`local-storage/memory`) |
-| `authz-vera` | yes | `authz/vera` |
-| `bulletin-vera` | yes | `bulletin/vera` |
+| `authz-vera` | yes | Commonware authorization (`authz/select-vera`) |
+| `bulletin-vera` | yes | Commonware bulletin (`bulletin/select-vera`) |
+| `authz-vera-go` | no | Go chain authorization (`authz/select-vera-go`) |
+| `bulletin-vera-go` | no | Go chain bulletin (`bulletin/select-vera-go`) |
 | `iroh` | yes | `network/iroh` |
 | `integration-test` | no | Shared E2E driver, diagnostic RPC client types, and deterministic fixture startup |
 | `fixture-startup` | no | Deterministic test identity and devnet funding; does not expose diagnostic RPCs |
@@ -192,9 +194,9 @@ cargo test -p orbis-node
 
 Integration tests may require Docker (see **`common`** crate **`IntegrationTestNetwork`**). **`fault-injection`** tests exercise blocked peers.
 
-## Native Vera service
+## Vera service
 
-The native integration is under qualification. Vera verifies the selected BLS or
+The Vera integration is under qualification. Vera verifies the selected BLS or
 Jubjub signature scheme; Defra uses Orbis's augmented BLS suite. Legacy basic-BLS
 signature types and verification paths are removed. Shared fixtures cover the
 backend-neutral scenarios listed below. Defra-specific assertions and several
@@ -203,7 +205,7 @@ tracked in [deferred E2E coverage](../../docs/e2e-deferred-coverage.md). Deploym
 qualification still requires sustained load, multi-host networks, crash/power-loss
 recovery, and operational security review.
 
-Native ACP uses `relationship/v5/` keys with `v3` incarnation-qualified suffixes.
+Vera ACP uses `relationship/v5/` keys with `v3` incarnation-qualified suffixes.
 Deploy the matching Vera validator and proof consumers together. Policy catalogs,
 relation identities and target-object incarnations are authenticated at the same
 revision. Archiving retires existing non-owner grants; unarchiving does not revive
@@ -211,18 +213,18 @@ them. Owners retain incarnation zero. Specialized relationship proofs require
 same-root object-state witnesses for non-owner rows: certified absence means
 initial incarnation zero, while missing evidence is an error. This is a fresh-state
 cutover without older namespace or proof-shape fallback. See
-[security assumptions](../../SECURITY.md) for native proof freshness and
+[security assumptions](../../SECURITY.md) for Vera proof freshness and
 consensus-key provisioning.
 
-Build a native-only node with:
+Build a Vera-only node with:
 
 ```sh
-cargo build --locked -p orbis-node --no-default-features --features native,bls12-381,iroh --bin orbis-node
+cargo build --locked -p orbis-node --bin orbis-node
 ```
 
-The native backend supports signing, ordinary PRE and PET-backed PRE on BLS12-381
+The Vera backend supports signing, ordinary PRE and PET-backed PRE on BLS12-381
 and Jubjub rings. PET rings preserve their main/PET key pair and document tag/proof
-attachments through native Vera. `requires_pet` is mandatory and immutable. Deploy
+attachments through Vera. `requires_pet` is mandatory and immutable. Deploy
 the pinned Vera validator, SDK consumers and PET v2 participants together on fresh
 state with a new deployment root; old ring state, pending worker journals and
 signed requests cannot be reused. Encrypting clients and node verifiers must use
@@ -230,20 +232,20 @@ matching ciphertext-context encoding.
 
 Select `jubjub` instead of `bls12-381` for the Jubjub crypto implementation. Start with
 `--services-config /path/to/services.json --node-controller-key <compressed-secp256k1-public-key>`.
-The configuration selects native authorization and bulletin operations through the
+The configuration selects Vera authorization and bulletin operations through the
 existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap
 handoff, node initialization, request handlers and shutdown path. Backend setup
-provides the identity and service adapters. This build excludes the Cosmos SDK and
-CometBFT transport dependencies. Default builds retain the existing backend; adding
-`--features native` to a default build is invalid because each trait selects exactly
-one implementation. Native-only startup requires `--services-config` and reports a
+provides the identity and service adapters. This is the default `orbis-node`
+build, and it excludes the Cosmos SDK and CometBFT transport dependencies.
+Adding `authz-vera-go` or `bulletin-vera-go` to that build is invalid because
+each trait selects exactly one implementation. Vera startup requires `--services-config` and reports a
 missing or invalid configuration before prompting for storage credentials or opening
 node state.
 The separate `harness` and `integration-test` features retain the dependencies used
 by their existing test identities and fixtures.
 
 Supply the controller public key as 33 hex-encoded bytes. Authz and bulletin are
-configured independently even when both select the native implementation:
+configured independently even when both select the Vera implementation:
 
 ```json
 {
@@ -275,19 +277,19 @@ reject unknown and duplicate fields and the complete services file is limited to
 Use `--runtime-base-path` for persistent node state and `ORBIS_PASSWORD_FILE` for the
 file holding its encryption password. Node signing keys use 64 hex characters in
 the encrypted key slot. Startup preserves existing keys and rejects raw, prefixed
-or invalid key bytes without replacing them. New keys are generated once. Keep the encrypted database and its `native-vera/<deployment-root>`
-worker journal together when backing up or restoring a node. Native worker keys use
+or invalid key bytes without replacing them. New keys are generated once. Keep the encrypted database and its `vera/<deployment-root>`
+worker journal together when backing up or restoring a node. Vera worker keys use
 their own storage slots; ring history and pending reshare records retain their existing
 slots. The journal retains
 uncertain submissions for recovery on the next write.
 
-Native startup registers the node with Vera or verifies the existing controller and
+Startup registers the node with Vera or verifies the existing controller and
 peer identity. Controller-owned allow-list changes require explicit authenticated
 updates. Startup does not wait for funding. `public_key.txt` and the info service's
-`public_address` field contain the compressed node public key in native mode.
+`public_address` field contain the compressed node public key in Vera mode.
 
 Shared scenarios cover restart, member replacement, a due refresh that survives
-restart, and the production Argon2id header on a stopped native store. Native
+restart, and the production Argon2id header on a stopped Vera store. Vera
 container fixtures require Linux host networking; build the images described
 below first. Migration of existing ring and encrypted-record identifiers requires
 a separate migration plan.
@@ -301,10 +303,10 @@ authenticated controller update. Binding an interface does not configure NAT
 forwarding or make a private address reachable from other networks.
 
 Shared DKG, PRE, signing, restart, member replacement, scheduled refresh, and
-fault-report scenarios run through the same driver on Cosmos and native. The
-native adapter starts ordinary scenarios with the production image. A scenario
+fault-report scenarios run through the same driver on Cosmos and Vera. The
+Vera adapter starts ordinary scenarios with the production image. A scenario
 must explicitly declare that it needs the unsafe testing service before the
-adapter selects `ORBIS_NATIVE_DIAGNOSTIC_IMAGE`. A stopped native store is
+adapter selects `ORBIS_VERA_DIAGNOSTIC_IMAGE`. A stopped Vera store is
 checked for the production KDF header: 262,144 KiB, three passes, one lane, and
 version 0x13.
 
@@ -320,20 +322,20 @@ Both curve variants cover fresh ordinary rings, abrupt restart, member replaceme
 offline reports and live policy checks. Power-loss recovery and other fault
 evidence types require their own checks.
 
-The **Rust** workflow builds Cosmos, normal native and diagnostic native images
+The **Rust** workflow builds Cosmos, normal Vera and diagnostic Vera images
 through the existing Docker build. For each curve, one `cargo nextest` invocation
-selects the shared `tests::e2e` scenarios. The native run provides both image
+selects the shared `tests::e2e` scenarios. The Vera run provides both image
 names; the fixture capability selects the diagnostic image only for scenarios
 that call the unsafe testing service, while all other scenarios qualify the
 normal image compiled without `unsafe-testing`. It excludes the hosted
 Trust-gateway scenario, which has its own gateway job. `test-support` owns the
-Compose lifecycle, native genesis and private stores. The Cosmos integration
+Compose lifecycle, Vera genesis and private stores. The Cosmos integration
 shards retain their existing features and tests; tests that call Cosmos
-transaction APIs are not compiled as native scenarios.
+transaction APIs are not compiled as Vera scenarios.
 
-The native node image uses normal release features without testing services.
+The Vera node image uses normal release features without testing services.
 Its dependency graph rejects Cosmos transport packages. The Vera image revision
-must match every native SDK manifest. Runtime images are built before the test
+must match every Vera SDK manifest. Runtime images are built before the test
 harness, with production Argon2 defaults and normal deadlines. The test harness
 gets a fresh build target; only dependency downloads are cached.
 
@@ -342,31 +344,31 @@ image pair, then run the same CI command:
 
 ```sh
 curve=bls12-381 # or jubjub
-vera_ref=$(cat docker/NATIVE_VERA_REF)
-docker build -f docker/Dockerfile.native-vera-integration \
-  --build-arg VERA_REF="$vera_ref" -t orbis-vera-native:local .
-docker build -f docker/Dockerfile --build-arg BACKEND=native \
+vera_ref=$(cat docker/VERA_REF)
+docker build -f docker/Dockerfile.vera-integration \
+  --build-arg VERA_REF="$vera_ref" -t orbis-vera:local .
+docker build -f docker/Dockerfile --build-arg BACKEND=vera \
   --build-arg RUST_IMAGE=rust:1.99.1-bookworm --build-arg CRYPTO_FEATURE="$curve" \
-  -t orbis-node-native:local .
-docker build -f docker/Dockerfile --target native-diagnostic \
-  --build-arg BACKEND=native --build-arg RUST_IMAGE=rust:1.99.1-bookworm \
-  --build-arg CRYPTO_FEATURE="$curve" -t orbis-node-native-diagnostic:local .
+  -t orbis-node-vera:local .
+docker build -f docker/Dockerfile --target vera-diagnostic \
+  --build-arg BACKEND=vera --build-arg RUST_IMAGE=rust:1.99.1-bookworm \
+  --build-arg CRYPTO_FEATURE="$curve" -t orbis-node-vera-diagnostic:local .
 cargo +1.99.1 nextest run --profile ci --release --locked --build-jobs 2 \
   --retries 0 \
   -p orbis-node --no-default-features \
-  --features "integration-test,native,redb,iroh,$curve" \
+  --features "integration-test,vera,redb,iroh,$curve" \
   --lib \
-  -E "(test(/^tests::e2e::/) & not test(=tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg)) | test(/^tests::node::/)"
+  -E "(test(/^tests::e2e::/) & not test(=tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg)) | test(/^tests::node::/)"
 ```
 
-The `native-diagnostic` target reuses the normal native builder and adds
-`unsafe-testing`. It uses the `orbis-node-native-diagnostic:local` tag. The
-shared native scenarios that declare an unsafe-testing requirement select it
-through `ORBIS_NATIVE_DIAGNOSTIC_IMAGE`; ordinary scenarios continue using
-`ORBIS_NATIVE_IMAGE`. `ORBIS_NATIVE_VERA_IMAGE` overrides the Vera tag. Build
+The `vera-diagnostic` target reuses the normal Vera builder and adds
+`unsafe-testing`. It uses the `orbis-node-vera-diagnostic:local` tag. The
+shared Vera scenarios that declare an unsafe-testing requirement select it
+through `ORBIS_VERA_DIAGNOSTIC_IMAGE`; ordinary scenarios continue using
+`ORBIS_VERA_NODE_IMAGE`. `ORBIS_VERA_IMAGE` overrides the Vera tag. Build
 the matching curve before each run.
 
-The native CI command runs the shared scenarios serially without retries.
+The Vera CI command runs the shared scenarios serially without retries.
 Command logs and Vera/Orbis stores remain private under `RUNNER_TEMP`; Compose
 control files remain in private temporary directories. No runtime evidence is
 uploaded. CI emits only allowlisted numeric diagnostics, fixed phase/file labels

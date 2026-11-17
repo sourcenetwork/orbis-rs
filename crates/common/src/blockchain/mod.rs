@@ -1,8 +1,8 @@
 //! Shared Orbis wire types, object IDs, and node message signatures.
 //!
-//! The default `cosmos` feature also provides `ChainConfig`, `VeraClient`,
+//! The default `cosmos` feature also provides `ChainConfig`, `VeraGoClient`,
 //! `TxSigner`, and Cosmos SDK / CometBFT queries, transactions, and subscriptions.
-//! The `native` feature provides `NativeConfig` and deployment-trust
+//! The `vera` feature provides `VeraConfig` and deployment-trust
 //! bootstrap for the Commonware / vera.rs backend.
 //! Disable default features to use the shared encodings without chain transport.
 
@@ -12,19 +12,19 @@ pub mod bulletin;
 #[cfg(feature = "cosmos")]
 pub mod cosmos;
 mod error;
-#[cfg(feature = "native")]
-pub mod native;
 mod node_signing;
 pub mod orbis;
+#[cfg(feature = "vera")]
+pub mod vera;
 
 #[cfg(feature = "cosmos")]
 pub use cosmos::*;
 pub use error::{BlockchainError, Result};
-#[cfg(feature = "native")]
-pub use native::*;
 pub use node_signing::{sign_node_message_with_hex_key, verify_node_message};
+#[cfg(feature = "vera")]
+pub use vera::*;
 
-// Known test key for the "test" account created in docker-compose-vera-test.yml
+// Known test key for the "test" account created in docker-compose-vera-go-test.yml
 /// This corresponds to the mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 /// with Cosmos HD path m/44'/118'/0'/0/0
 pub const TEST_ACCOUNT_HEX_KEY: &str =

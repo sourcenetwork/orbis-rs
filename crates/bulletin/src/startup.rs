@@ -48,7 +48,7 @@ pub struct NodeRegistration {
 /// [`NodeServicesConfig`]). `validate` is side-effect free; `prepare` may
 /// initialize the local identity after every selected service has validated.
 pub trait BulletinFactory {
-    /// Diagnostics name (logging/tracing), e.g. `"bulletin/native"`.
+    /// Diagnostics name (logging/tracing), e.g. `"bulletin/vera"`.
     const NAME: &'static str;
     type Config: DeserializeOwned;
     type ValidatedConfig;
@@ -98,10 +98,10 @@ pub enum BulletinStartupError {
         #[source]
         source: std::io::Error,
     },
-    #[cfg(any(feature = "cosmos-identity", feature = "native"))]
+    #[cfg(any(feature = "cosmos-identity", feature = "vera"))]
     #[error("signing identity storage failed")]
     Storage(#[from] local_storage::error::LocalStorageError),
-    #[cfg(any(feature = "cosmos-identity", feature = "native"))]
+    #[cfg(any(feature = "cosmos-identity", feature = "vera"))]
     #[error("signing identity entropy failed")]
     Entropy(#[from] getrandom::Error),
     #[cfg(feature = "cosmos-identity")]
@@ -110,7 +110,7 @@ pub enum BulletinStartupError {
     #[cfg(feature = "cosmos-identity")]
     #[error("chain signing identity failed")]
     Signer(#[from] common::blockchain::BlockchainError),
-    #[cfg(feature = "native")]
+    #[cfg(feature = "vera")]
     #[error("native worker initialization failed")]
     NativeWorker(#[from] vera_client::ClientError),
     #[error("node signing identity is missing")]

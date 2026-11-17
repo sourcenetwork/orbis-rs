@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use authn::{create_authenticated_request, JwtSigner};
-use common::blockchain::VeraClient;
+use common::blockchain::VeraGoClient;
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, GroupAffine, PreImpl, ScalarField, SignImpl};
 use proto::info_service::{
@@ -337,7 +337,7 @@ impl DirectClients {
 
     pub async fn wait_ring_finalized_everywhere(
         &self,
-        vera: &VeraClient,
+        vera: &VeraGoClient,
         ring_id: &str,
         members: &[usize],
         deadline: Duration,

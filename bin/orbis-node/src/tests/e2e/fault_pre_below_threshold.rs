@@ -21,7 +21,7 @@ use tokio::time::Duration;
 
 #[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use crate::constants::PRE_COLLECTION_TIMEOUT;
-#[cfg(all(feature = "integration-test", feature = "native"))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 use crate::constants::PRE_COLLECTION_TIMEOUT;
 
 #[tokio::test]

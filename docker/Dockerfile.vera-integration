@@ -1,24 +1,21 @@
-FROM golang:1.26.2 AS builder
-# No literal default: falls back to the VERA_REF file below (the same
-# single source of truth bin/orbis-bench/src/config.rs's DEFAULT_VERA_REF
-# reads via include_str!) so every caller that doesn't pass --build-arg
-# VERA_REF stays in sync with one file instead of a hardcoded default
-# that could drift from it. Explicit --build-arg / compose `args:` overrides
-# (e.g. orbis-bench's per-experiment vera_ref) still take precedence.
-ARG VERA_REF
-COPY VERA_REF /tmp/VERA_REF
-RUN git init /app \
-    && cd /app \
-    && git remote add origin https://github.com/sourcenetwork/vera.git \
-    && git fetch --depth 1 origin "${VERA_REF:-$(cat /tmp/VERA_REF)}" \
-    && git checkout --detach FETCH_HEAD
-WORKDIR /app
-RUN --mount=type=cache,target=/root/.cache \
-    go build -o /app/build/verad ./cmd/verad
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends jq ca-certificates \
+# syntax=docker/dockerfile:1
+FROM rust:1.99.1-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler git \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/build/verad /usr/local/bin/verad
-RUN useradd --create-home --home-dir /home/node node
-USER node
+ARG VERA_REF
+RUN test "${#VERA_REF}" = 40 && \
+    git init /source && git -C /source remote add origin https://github.com/sourcenetwork/vera.rs.git && \
+    git -C /source fetch --depth 1 origin "$VERA_REF" && \
+    git -C /source checkout --detach FETCH_HEAD && \
+    test "$(git -C /source rev-parse HEAD)" = "$VERA_REF"
+WORKDIR /source
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo build --release --locked -j2 -p verad --bin verad
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /source/target/release/verad /usr/local/bin/verad
+ARG VERA_REF
+LABEL org.opencontainers.image.revision=$VERA_REF
+ENTRYPOINT ["verad"]

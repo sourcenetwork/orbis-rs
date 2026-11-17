@@ -12,9 +12,9 @@ CRYPTO=both
 OUTPUT=
 KEEP_ON_FAILURE=0
 DRY_RUN=0
-# auto: enable when the target's docker/VERA_REF differs from the baseline's.
+# auto: enable when the target's docker/VERA_GO_REF differs from the baseline's.
 FRESH_TARGET_CHAIN=auto
-TO_VERA_REF_OVERRIDE=
+TO_VERA_GO_REF_OVERRIDE=
 TEMP_ROOT=
 FROM_CONTEXT=
 TO_CONTEXT=
@@ -35,11 +35,11 @@ Options:
   --keep-on-failure                   Leave the failed Compose project running
   --dry-run                           Resolve inputs without building or starting Docker
   --fresh-target-chain               Rebuild SourceHub from the target revision's
-                                     docker/VERA_REF and re-run `prepare` on the
+                                     docker/VERA_GO_REF and re-run `prepare` on the
                                      target stack (no chain-state migration).
   --no-fresh-target-chain            Force the Orbis-only cutover even when the
-                                     baseline and target docker/VERA_REF differ.
-  --to-vera-ref <git-ref>            Explicit target SourceHub ref; implies
+                                     baseline and target docker/VERA_GO_REF differ.
+  --to-vera-go-ref <git-ref>            Explicit target SourceHub ref; implies
                                      --fresh-target-chain.
   -h, --help                          Show this help
 
@@ -50,7 +50,7 @@ DKG and cannot be tested as an upgrade of an existing ring.
 
 By default the shared SourceHub container is never recreated during the
 cutover, so the target Orbis nodes are exercised against the baseline chain.
-When docker/VERA_REF differs between the two revisions the baseline chain
+When docker/VERA_GO_REF differs between the two revisions the baseline chain
 cannot verify the target's threshold signatures; --fresh-target-chain (the
 default in that case) tears the whole stack down, brings SourceHub up on the
 target ref, and re-runs `prepare` before `verify`. This does not test that
@@ -105,9 +105,9 @@ while [[ $# -gt 0 ]]; do
       FRESH_TARGET_CHAIN=0
       shift
       ;;
-    --to-vera-ref)
-      [[ $# -ge 2 ]] || die "--to-vera-ref requires a value"
-      TO_VERA_REF_OVERRIDE=$2
+    --to-vera-go-ref)
+      [[ $# -ge 2 ]] || die "--to-vera-go-ref requires a value"
+      TO_VERA_GO_REF_OVERRIDE=$2
       FRESH_TARGET_CHAIN=1
       shift 2
       ;;
@@ -298,42 +298,42 @@ require_contract() {
 require_contract "$FROM_CONTEXT" baseline
 require_contract "$TO_CONTEXT" target
 
-VERA_REF=$(tr -d '[:space:]' <"$FROM_CONTEXT/docker/VERA_REF")
-[[ -n "$VERA_REF" ]] || die "baseline docker/VERA_REF is empty"
-VERA_TAG_HASH=$(printf '%s' "$VERA_REF" | shasum -a 256 | awk '{print $1}')
-VERA_IMAGE="orbis-upgrade-sourcehub:${VERA_TAG_HASH:0:12}"
+VERA_GO_REF=$(tr -d '[:space:]' <"$FROM_CONTEXT/docker/VERA_GO_REF")
+[[ -n "$VERA_GO_REF" ]] || die "baseline docker/VERA_GO_REF is empty"
+VERA_GO_TAG_HASH=$(printf '%s' "$VERA_GO_REF" | shasum -a 256 | awk '{print $1}')
+VERA_IMAGE="orbis-upgrade-sourcehub:${VERA_GO_TAG_HASH:0:12}"
 
 # Resolve the target SourceHub ref. Default the mode to "fresh target chain"
 # whenever it differs from the baseline, since the baseline chain then cannot
 # verify the target's threshold signatures.
-if [[ -n "$TO_VERA_REF_OVERRIDE" ]]; then
-  TARGET_VERA_REF_INPUT=$TO_VERA_REF_OVERRIDE
-elif [[ -f "$TO_CONTEXT/docker/VERA_REF" ]]; then
-  TARGET_VERA_REF_INPUT=$(tr -d '[:space:]' <"$TO_CONTEXT/docker/VERA_REF")
+if [[ -n "$TO_VERA_GO_REF_OVERRIDE" ]]; then
+  TARGET_VERA_GO_REF_INPUT=$TO_VERA_GO_REF_OVERRIDE
+elif [[ -f "$TO_CONTEXT/docker/VERA_GO_REF" ]]; then
+  TARGET_VERA_GO_REF_INPUT=$(tr -d '[:space:]' <"$TO_CONTEXT/docker/VERA_GO_REF")
 else
-  TARGET_VERA_REF_INPUT=
+  TARGET_VERA_GO_REF_INPUT=
 fi
 
 if [[ "$FRESH_TARGET_CHAIN" == auto ]]; then
-  if [[ -n "$TARGET_VERA_REF_INPUT" && "$TARGET_VERA_REF_INPUT" != "$VERA_REF" ]]; then
+  if [[ -n "$TARGET_VERA_GO_REF_INPUT" && "$TARGET_VERA_GO_REF_INPUT" != "$VERA_GO_REF" ]]; then
     FRESH_TARGET_CHAIN=1
-    echo "note: docker/VERA_REF differs (baseline=$VERA_REF target=$TARGET_VERA_REF_INPUT);" \
+    echo "note: docker/VERA_GO_REF differs (baseline=$VERA_GO_REF target=$TARGET_VERA_GO_REF_INPUT);" \
       "enabling --fresh-target-chain" >&2
   else
     FRESH_TARGET_CHAIN=0
   fi
 fi
 
-TO_VERA_REF=$VERA_REF
+TO_VERA_GO_REF=$VERA_GO_REF
 TO_VERA_IMAGE=$VERA_IMAGE
 if [[ "$FRESH_TARGET_CHAIN" -eq 1 ]]; then
-  [[ -n "$TARGET_VERA_REF_INPUT" ]] \
-    || die "fresh target chain requested but target has no docker/VERA_REF (pass --to-vera-ref)"
-  [[ -f "$TO_CONTEXT/docker/Dockerfile.vera-integration" ]] \
-    || die "target revision does not contain docker/Dockerfile.vera-integration"
-  TO_VERA_REF=$TARGET_VERA_REF_INPUT
-  TO_VERA_TAG_HASH=$(printf '%s' "$TO_VERA_REF" | shasum -a 256 | awk '{print $1}')
-  TO_VERA_IMAGE="orbis-upgrade-sourcehub:${TO_VERA_TAG_HASH:0:12}"
+  [[ -n "$TARGET_VERA_GO_REF_INPUT" ]] \
+    || die "fresh target chain requested but target has no docker/VERA_GO_REF (pass --to-vera-go-ref)"
+  [[ -f "$TO_CONTEXT/docker/Dockerfile.vera-go-integration" ]] \
+    || die "target revision does not contain docker/Dockerfile.vera-go-integration"
+  TO_VERA_GO_REF=$TARGET_VERA_GO_REF_INPUT
+  TO_VERA_GO_TAG_HASH=$(printf '%s' "$TO_VERA_GO_REF" | shasum -a 256 | awk '{print $1}')
+  TO_VERA_IMAGE="orbis-upgrade-sourcehub:${TO_VERA_GO_TAG_HASH:0:12}"
 fi
 
 run_phase() {
@@ -358,17 +358,17 @@ VERA_BUILD_OUTPUT="$OUTPUT/sourcehub-build"
 mkdir -p "$VERA_BUILD_OUTPUT"
 CURRENT_OUTPUT=$VERA_BUILD_OUTPUT
 run_phase build-sourcehub docker build \
-  --file "$FROM_CONTEXT/docker/Dockerfile.vera-integration" \
+  --file "$FROM_CONTEXT/docker/Dockerfile.vera-go-integration" \
   --tag "$VERA_IMAGE" \
-  --build-arg "VERA_REF=$VERA_REF" \
+  --build-arg "VERA_GO_REF=$VERA_GO_REF" \
   "$FROM_CONTEXT/docker"
 docker image inspect --format '{{.Id}}' "$VERA_IMAGE" \
   >"$VERA_BUILD_OUTPUT/image-id.txt"
 if [[ "$FRESH_TARGET_CHAIN" -eq 1 && "$TO_VERA_IMAGE" != "$VERA_IMAGE" ]]; then
   run_phase build-sourcehub-target docker build \
-    --file "$TO_CONTEXT/docker/Dockerfile.vera-integration" \
+    --file "$TO_CONTEXT/docker/Dockerfile.vera-go-integration" \
     --tag "$TO_VERA_IMAGE" \
-    --build-arg "VERA_REF=$TO_VERA_REF" \
+    --build-arg "VERA_GO_REF=$TO_VERA_GO_REF" \
     "$TO_CONTEXT/docker"
   docker image inspect --format '{{.Id}}' "$TO_VERA_IMAGE" \
     >"$VERA_BUILD_OUTPUT/target-image-id.txt"
@@ -393,10 +393,10 @@ run_crypto_upgrade() {
     printf 'TO_SHA=%q\n' "$TO_SHA"
     printf 'TO_FINGERPRINT=%q\n' "$TO_FINGERPRINT"
     printf 'CRYPTO=%q\n' "$crypto"
-    printf 'VERA_REF=%q\n' "$VERA_REF"
+    printf 'VERA_GO_REF=%q\n' "$VERA_GO_REF"
     printf 'VERA_IMAGE=%q\n' "$VERA_IMAGE"
     printf 'FRESH_TARGET_CHAIN=%q\n' "$FRESH_TARGET_CHAIN"
-    printf 'TO_VERA_REF=%q\n' "$TO_VERA_REF"
+    printf 'TO_VERA_GO_REF=%q\n' "$TO_VERA_GO_REF"
     printf 'TO_VERA_IMAGE=%q\n' "$TO_VERA_IMAGE"
     printf 'BASELINE_IMAGE=%q\n' "$from_image"
     printf 'TARGET_IMAGE=%q\n' "$to_image"
@@ -420,7 +420,7 @@ run_crypto_upgrade() {
     printf 'TARGET_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$to_image")"
   } >>"$CURRENT_OUTPUT/resolved-refs.env"
 
-  export ORBIS_UPGRADE_VERA_IMAGE=$VERA_IMAGE
+  export ORBIS_UPGRADE_VERA_GO_IMAGE=$VERA_IMAGE
   export ORBIS_UPGRADE_IMAGE=$from_image
   export ORBIS_UPGRADE_OUTPUT=$CURRENT_OUTPUT
   compose config >"$CURRENT_OUTPUT/compose-rendered-baseline.yaml"
@@ -441,7 +441,7 @@ run_crypto_upgrade() {
     --manifest /artifacts/fixture-v1.json \
     --baseline-sha "$FROM_SHA" \
     --crypto "$crypto" \
-    --sourcehub-ref "$VERA_REF"
+    --sourcehub-ref "$VERA_GO_REF"
 
   run_phase stop-baseline compose stop --timeout 30 "${NODE_SERVICES[@]}"
   assert_nodes_stopped_cleanly baseline
@@ -457,7 +457,7 @@ run_crypto_upgrade() {
     # describe target-chain state before `verify` exercises the reshare.
     cp "$CURRENT_OUTPUT/fixture-v1.json" \
       "$CURRENT_OUTPUT/fixture-v1.baseline.json" 2>/dev/null || true
-    export ORBIS_UPGRADE_VERA_IMAGE=$TO_VERA_IMAGE
+    export ORBIS_UPGRADE_VERA_GO_IMAGE=$TO_VERA_IMAGE
     run_phase teardown-baseline-stack \
       compose --profile driver down --volumes --remove-orphans
     compose config >"$CURRENT_OUTPUT/compose-rendered-target.yaml"
@@ -479,7 +479,7 @@ run_crypto_upgrade() {
       --manifest /artifacts/fixture-v1.json \
       --baseline-sha "$TO_SHA" \
       --crypto "$crypto" \
-      --sourcehub-ref "$TO_VERA_REF"
+      --sourcehub-ref "$TO_VERA_GO_REF"
   else
     compose config >"$CURRENT_OUTPUT/compose-rendered-target.yaml"
     run_phase start-target compose up --detach --no-deps --force-recreate \

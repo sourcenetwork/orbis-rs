@@ -1,10 +1,10 @@
-//! `VeraClient` extension methods for x/bulletin: post/namespace transactions and queries.
+//! `VeraGoClient` extension methods for x/bulletin: post/namespace transactions and queries.
 
 use crate::blockchain::bulletin::*;
-use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
+use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraGoClient};
 use prost::Message;
 
-impl VeraClient {
+impl VeraGoClient {
     // ========================================================================
     // Bulletin Queries (ABCI/gRPC)
     // ========================================================================

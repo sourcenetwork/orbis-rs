@@ -29,14 +29,14 @@ getrandom = { version = "0.2", features = ["std"], optional = true }
 zeroize = { workspace = true, optional = true }
 
 [features]
-default = ["vera"]
-vera = ["cosmos-identity"]
+default = ["vera-go"]
+vera-go = ["cosmos-identity"]
 cosmos-identity = ["common/cosmos", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
 # Selects deterministic identity and devnet-funding startup for whichever
 # production backend is selected. This is deliberately separate from the
 # node's dangerous `unsafe-testing` diagnostic surface.
 fixture-startup = ["common/funding"]
-native = ["common/native", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
+vera = ["common/vera", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
 # Compiles the in-memory mock type without selecting it as the production
 # implementation. Used by in-process tests and benchmarks.
 dummy-type = []
@@ -48,12 +48,12 @@ dummy-type = []
 startup = ["common/startup", "authz/startup"]
 # Select the corresponding `BulletinFactoryImpl`. Implies `startup` since
 # selecting one *is* constructing a factory.
-select-native = ["native", "startup"]
 select-vera = ["vera", "startup"]
+select-vera-go = ["vera-go", "startup"]
 
 [[test]]
-name = "native_service"
-required-features = ["native"]
+name = "vera_service"
+required-features = ["vera"]
 
 [dev-dependencies]
 common = { path = "../common", default-features = false, features = ["test-helpers"] }
@@ -66,7 +66,7 @@ commonware-math = "=2026.10.0"
 tempfile.workspace = true
 serial_test = "3.2.0"
 tokio = { workspace = true, features = ["full", "process"] }
-# Vera-backend tests use the Docker integration harness (VeraTestContainer).
+# Vera-backend tests use the Docker integration harness (VeraGoTestContainer).
 test-support = { path = "../test-support" }
 local-storage = { path = "../local-storage", features = ["redb"] }
 [lints]

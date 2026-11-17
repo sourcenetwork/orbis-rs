@@ -74,9 +74,9 @@ readonly -a one_of_crypto_variant_tests=(
 # inventory is expected and not checked here.
 #   - `tests::e2e::fault_injection::*` — Cosmos-only fault-injection harness
 #     (gated on the `fault-injection` feature, only wired for Cosmos cells).
-#   - `tests::e2e::native_lifecycle::*`/`tests::e2e::native_trust_gateway::*`
-#     — native-only; `native_trust_gateway_ring_dkg` itself is `#[ignore]`d
-#     (needs a real native Docker image + compiled Trust gateway contract
+#   - `tests::e2e::vera_lifecycle::*`/`tests::e2e::vera_trust_gateway::*`
+#     — Vera-only; `vera_trust_gateway_ring_dkg` itself is `#[ignore]`d
+#     (needs a real Vera Docker image + compiled Trust gateway contract
 #     artifacts not built in CI).
 
 cd "$repository_root"

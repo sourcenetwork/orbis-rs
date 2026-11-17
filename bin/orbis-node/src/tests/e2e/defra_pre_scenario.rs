@@ -5,7 +5,7 @@
 //! `BulletinTestDriver::register_ring`/`RingSpec` path (extended with a
 //! `pre_share_endpoints` field — see that struct's own doc comment) rather
 //! than a per-backend escape hatch: `CosmosAdmin::register_ring` and
-//! `NativeTestEnvironment::register_ring` each hide their own backend's
+//! `VeraTestEnvironment::register_ring` each hide their own backend's
 //! ring-policy registration/node-authorization mechanics behind the same
 //! method signature. `environment.defra_url()`/`defra_container_url()`/
 //! `sidecar_network_name()` go through the shared `DefraTestDriver` trait.

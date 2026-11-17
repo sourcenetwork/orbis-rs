@@ -1,6 +1,6 @@
 //! Cosmos fixtures must publish live transport routes before ring creation and after restart.
 
-use common::blockchain::{TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY};
+use common::blockchain::{TxSigner, VeraGoClient, TEST_ACCOUNT_HEX_KEY};
 use test_support::fixture::{
     FixtureId, NetworkTestDriver, NodeFixture, NodeRole, ScenarioFixture, TestEnvironment,
 };
@@ -25,7 +25,7 @@ async fn publishes_peer_routes_without_preseeded_rings() {
     .await;
     assert!(environment.fixture().rings.is_empty());
 
-    let client = VeraClient::with_signer(
+    let client = VeraGoClient::with_signer(
         environment.chain_config(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, environment.chain_config())
             .expect("test controller signer"),
@@ -53,7 +53,7 @@ async fn publishes_peer_routes_without_preseeded_rings() {
     assert_live_routes(&environment, &client, &[0, 1, 2]).await;
 }
 
-async fn stale_route(environment: &CosmosTestEnvironment, client: &VeraClient, index: usize) {
+async fn stale_route(environment: &CosmosTestEnvironment, client: &VeraGoClient, index: usize) {
     assert!(
         !environment.node_udp_listen_ports(index).contains(&1),
         "test requires UDP port 1 to be unused by the node"
@@ -76,7 +76,7 @@ async fn stale_route(environment: &CosmosTestEnvironment, client: &VeraClient, i
 
 async fn assert_live_routes(
     environment: &CosmosTestEnvironment,
-    client: &VeraClient,
+    client: &VeraGoClient,
     indices: &[usize],
 ) {
     for &index in indices {
