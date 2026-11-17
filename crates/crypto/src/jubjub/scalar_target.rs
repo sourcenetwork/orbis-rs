@@ -52,7 +52,7 @@ mod tests {
             1044189607433056169,
         ];
         let mut bytes = [0; 32];
-        for (chunk, limb) in bytes.chunks_exact_mut(8).zip(order) {
+        for (chunk, limb) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(order) {
             chunk.copy_from_slice(&limb.to_le_bytes());
         }
         assert!(fingerprint(&bytes).is_err());
