@@ -366,11 +366,13 @@ jobs:
   # cells run the `-p orbis-node --lib` subset matched by `DOCKER_TESTS`;
   # Vera cells run the same library test tree (minus the
   # gateway-only fixture test, which needs the separate Trust-ring artifact
-  # pipeline — `scope == 'gateway'`). Sharded 3-way on both sides now —
-  # Vera's suite has grown substantially through the harness-unification
-  # migration (PRs 4-6 moved dozens of dual-backend tests into the
-  # `tests::e2e` module), so it benefits from the same partitioning Cosmos's
-  # side already used. Previously two separately-shaped jobs
+  # pipeline — `scope == 'gateway'`). Sharded 7-way on both sides, via
+  # nextest's `hash:` partitioning rather than `count:` — Cosmos's total
+  # suite runtime is ~2x Vera's, so sizing shard count to Cosmos leaves Vera
+  # shards shorter (no wall-clock cost: all cells run in parallel, gated by
+  # the slowest), and `hash:` avoids `count:`'s failure mode where a cluster
+  # of slow tests lands in the same shard (observed as one Vera shard running
+  # ~2x its siblings). Previously two separately-shaped jobs
   # (`integration`, Cosmos-only; `vera-lifecycle`, Vera-only,
   # unsharded, its own narrower dependency-download-only cache) — merged
   # here now that both read backend/crypto from one matrix instead of
@@ -380,7 +382,7 @@ jobs:
   # invocation shape.
   integration:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'vera'
-    name: Integration (${{ matrix.backend }}, ${{ matrix.crypto }}, shard ${{ matrix.shard }}/3)
+    name: Integration (${{ matrix.backend }}, ${{ matrix.crypto }}, shard ${{ matrix.shard }}/7)
     needs: [compile, image, vera-image]
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-integration-${{ strategy.job-index }}/spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     timeout-minutes: 120
@@ -391,7 +393,7 @@ jobs:
       matrix:
         backend: [cosmos, vera]
         crypto: [bls12-381, jubjub]
-        shard: ["1", "2", "3"]
+        shard: ["1", "2", "3", "4", "5", "6", "7"]
         include:
           - backend: cosmos
             crypto: bls12-381
@@ -452,7 +454,7 @@ jobs:
           echo "ORBIS_VERA_DIAGNOSTIC_IMAGE=$INTEG_IMAGE:${{ github.sha }}-vera-diagnostic-${{ matrix.crypto }}"
           echo "ORBIS_VERA_IMAGE=ghcr.io/${{ github.repository }}/vera:${{ github.sha }}"
         } >> "$GITHUB_ENV"
-    - name: Integration tests (${{ matrix.backend }}, ${{ matrix.crypto }}, shard ${{ matrix.shard }}/3)
+    - name: Integration tests (${{ matrix.backend }}, ${{ matrix.crypto }}, shard ${{ matrix.shard }}/7)
       # `-p orbis-node` on Vera cells only — see `compile`'s identical note
       # above; same workspace-wide feature-unification conflict, same fix,
       # same reason Cosmos stays unscoped (DOCKER_TESTS needs authz/bulletin
@@ -460,7 +462,7 @@ jobs:
       run: >-
         cargo nextest run --profile ci --retries 0 --no-tests fail ${{ matrix.backend == 'vera' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
         -E "${{ matrix.backend == 'vera' && '(test(/^tests::e2e::/) & not test(=tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg)) | test(/^tests::node::/)' || env.DOCKER_TESTS }}"
-        --partition count:${{ matrix.shard }}/3
+        --partition hash:${{ matrix.shard }}/7
 
   sign-peer-recovery:
     name: Signing peer recovery (${{ matrix.crypto }})
