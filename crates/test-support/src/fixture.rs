@@ -442,10 +442,10 @@ pub trait BulletinTestDriver {
     /// Make a share refresh due the next time `members` start.
     ///
     /// Call this only while those processes are stopped, so a live scheduler
-    /// cannot finish the refresh before the restart under test. A backend
-    /// whose configured interval is already inside the scheduler's grace
-    /// window needs nothing here. Native cannot persist an interval that
-    /// short, so that adapter backdates the stopped bundles instead.
+    /// cannot finish the refresh before the restart under test.
+    /// Cosmos waits out the configured interval with all members stopped.
+    /// Native backdates the stopped bundles instead of waiting its enforced
+    /// production minimum.
     async fn arm_refresh_for_next_start(
         &self,
         _ring: &RingId,

@@ -1,10 +1,8 @@
 //! A share refresh that is already due still completes after every member
 //! restarts.
 //!
-//! The fixture interval is short enough that a backend which honors it finds
-//! the refresh due on the scheduler's next tick. `arm_refresh_for_next_start`
-//! covers a backend that cannot persist an interval that short: it records
-//! the due state while the members are stopped, and the restarted processes
+//! Setup finishes before the refresh is due. `arm_refresh_for_next_start`
+//! makes it due while all members are stopped, and the restarted processes
 //! perform the refresh. The certified ring stays the same, and PRE and
 //! signing still succeed on the new shares.
 
@@ -49,10 +47,9 @@ async fn test_due_refresh_completes_after_restart() {
                 NodeRef::Running(2),
             ],
             threshold: 2,
-            // Short enough to be due immediately on a backend that stores
-            // this value. The arming step below handles a backend that
-            // raises it to the production minimum.
-            pss_interval: Duration::from_secs(5),
+            // Keep setup outside the scheduler grace window; a continuously
+            // due ring can begin another ceremony during shutdown.
+            pss_interval: Duration::from_secs(300),
             requires_pet: false,
             policy: ring_policy,
             reporting: Default::default(),
@@ -71,6 +68,14 @@ async fn test_due_refresh_completes_after_restart() {
         .await
         .expect("ring must exist before the scheduled refresh");
     assert_eq!(baselines.len(), environment.nodes().len());
+    let settled = pre_scenario::wait_for_polynomials(
+        environment.nodes(),
+        &keys.main,
+        None,
+        Duration::from_secs(30),
+    )
+    .await;
+    assert_eq!(settled, baselines, "refresh must not run during setup");
 
     for index in 0..environment.nodes().len() {
         environment.stop_node(index).await;
