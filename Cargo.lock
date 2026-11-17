@@ -6220,7 +6220,6 @@ dependencies = [
  "bincode",
  "criterion 0.5.1",
  "project-root",
- "rand 0.9.5",
  "rand_core 0.6.4",
  "redb",
  "serde",
