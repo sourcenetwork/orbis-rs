@@ -355,6 +355,76 @@ pub async fn store_response(
         == ResponseStoreOutcome::Stored
 }
 
+/// A named request always runs PET. General access uses the existing read_all
+/// privilege on the same immutable document; the normal read check is mandatory.
+pub(crate) async fn requires_pet(
+    authz: &(dyn Authz + Send + Sync),
+    ring: &RingPayload,
+    document: &DocumentPayload,
+    object_id: &str,
+    actor: &str,
+    window: Option<ValidWindow>,
+    target: Option<&str>,
+) -> Result<bool> {
+    if !ring.requires_pet {
+        return Ok(false);
+    }
+    if target.is_some() {
+        return Ok(true);
+    }
+    let request = AccessCheckRequest::new(
+        document.policy_id.clone(),
+        document.resource.clone(),
+        object_id.into(),
+        "read_all".into(),
+        document.tier.clone(),
+        document.timestamp,
+        window,
+    )
+    .to_bytes()
+    .map_err(|e| PreError::AuthZ(e.to_string()))?;
+    Ok(!authz
+        .check(request, actor)
+        .await
+        .map_err(|e| PreError::AuthZ(e.to_string()))?)
+}
+
+/// PET exemption never exempts the document's tag-knowledge proof.
+pub(crate) fn verify_tag_binding(
+    context: &CiphertextContext,
+    secret: &Secret,
+    document: &DocumentPayload,
+) -> Result<()> {
+    use crypto::r#trait::{Pet, PetTag, TagKnowledgeProof};
+    let Some(binding) = &context.pet_tag else {
+        return Ok(());
+    };
+    let tag = PetTag {
+        ephemeral_point: binding.ephemeral_point.clone(),
+        masked_fingerprint: binding.masked_fingerprint.clone(),
+    };
+    let proof = TagKnowledgeProof::try_from(
+        document
+            .pet_tag_proof
+            .clone()
+            .ok_or_else(|| PreError::InvalidInput("missing tag proof".into()))?,
+    )
+    .map_err(|e| PreError::Deserialization(e.to_string()))?;
+    let payload = EncryptionProof::try_from(document.proof.clone())
+        .map_err(|e| PreError::Deserialization(e.to_string()))?;
+    let digest = crypto::pet_context::tag_proof_digest(
+        &tag.ephemeral_point,
+        &tag.masked_fingerprint,
+        &binding.pet_pk,
+        &binding.ring_id,
+        context,
+        secret,
+        &payload,
+    );
+    crypto::PetImpl::verify_tag_knowledge(&tag, &proof, &digest)
+        .map_err(|e| PreError::Crypto(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,74 +672,4 @@ mod tests {
             Err(PreError::Unauthorized(_))
         ));
     }
-}
-
-/// A named request always runs PET. General access uses the existing read_all
-/// privilege on the same immutable document; the normal read check is mandatory.
-pub(crate) async fn requires_pet(
-    authz: &(dyn Authz + Send + Sync),
-    ring: &RingPayload,
-    document: &DocumentPayload,
-    object_id: &str,
-    actor: &str,
-    window: Option<ValidWindow>,
-    target: Option<&str>,
-) -> Result<bool> {
-    if !ring.requires_pet {
-        return Ok(false);
-    }
-    if target.is_some() {
-        return Ok(true);
-    }
-    let request = AccessCheckRequest::new(
-        document.policy_id.clone(),
-        document.resource.clone(),
-        object_id.into(),
-        "read_all".into(),
-        document.tier.clone(),
-        document.timestamp,
-        window,
-    )
-    .to_bytes()
-    .map_err(|e| PreError::AuthZ(e.to_string()))?;
-    Ok(!authz
-        .check(request, actor)
-        .await
-        .map_err(|e| PreError::AuthZ(e.to_string()))?)
-}
-
-/// PET exemption never exempts the document's tag-knowledge proof.
-pub(crate) fn verify_tag_binding(
-    context: &CiphertextContext,
-    secret: &Secret,
-    document: &DocumentPayload,
-) -> Result<()> {
-    use crypto::r#trait::{Pet, PetTag, TagKnowledgeProof};
-    let Some(binding) = &context.pet_tag else {
-        return Ok(());
-    };
-    let tag = PetTag {
-        ephemeral_point: binding.ephemeral_point.clone(),
-        masked_fingerprint: binding.masked_fingerprint.clone(),
-    };
-    let proof = TagKnowledgeProof::try_from(
-        document
-            .pet_tag_proof
-            .clone()
-            .ok_or_else(|| PreError::InvalidInput("missing tag proof".into()))?,
-    )
-    .map_err(|e| PreError::Deserialization(e.to_string()))?;
-    let payload = EncryptionProof::try_from(document.proof.clone())
-        .map_err(|e| PreError::Deserialization(e.to_string()))?;
-    let digest = crypto::pet_context::tag_proof_digest(
-        &tag.ephemeral_point,
-        &tag.masked_fingerprint,
-        &binding.pet_pk,
-        &binding.ring_id,
-        context,
-        secret,
-        &payload,
-    );
-    crypto::PetImpl::verify_tag_knowledge(&tag, &proof, &digest)
-        .map_err(|e| PreError::Crypto(e.to_string()))
 }
