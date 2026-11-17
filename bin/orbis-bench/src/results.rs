@@ -32,7 +32,7 @@ pub struct RunManifest {
     pub status: RunStatus,
     pub experiment: Experiment,
     pub host: HostMetadata,
-    pub vera_ref: String,
+    pub vera_go_ref: String,
     pub node_image: Option<String>,
     pub vera_image: Option<String>,
     #[serde(default)]
@@ -589,7 +589,7 @@ mod tests {
             created_at_unix_ms: 1,
             completed_at_unix_ms: None,
             status: RunStatus::Interrupted,
-            vera_ref: experiment.vera_ref.clone(),
+            vera_go_ref: experiment.vera_go_ref.clone(),
             experiment,
             host: HostMetadata {
                 os: "test".into(),

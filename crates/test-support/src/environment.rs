@@ -1,6 +1,6 @@
 //! Cosmos's concrete [`TestEnvironment`]. Compiled only under this crate's
 //! `cosmos` feature — native's counterpart lives in
-//! `bin/orbis-node/src/tests/e2e/native_environment.rs` instead (it needs
+//! `bin/orbis-node/src/tests/e2e/vera_environment.rs` instead (it needs
 //! `vera-client`/`vera-domain`/`k256`/`acp-light-client`, which this crate
 //! deliberately excludes; see `admin/mod.rs`'s doc comment). Each backend
 //! defines its own `TestEnvironmentImpl` alias at the shared test-tree entry
@@ -20,10 +20,10 @@ use crate::node_readiness::wait_for_nodes_ready;
 use bulletin::r#trait::{
     Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, KeyDerivation,
 };
-use bulletin::vera::VeraBulletin;
+use bulletin::vera_go::VeraGoBulletin;
 use common::blockchain::{
     orbis::{generate_document_id, WhitelistTarget},
-    ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
+    ChainConfig, TxSigner, VeraGoClient, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
 };
 use proto::info_service::{info_service_client::InfoServiceClient, GetNodeInfoRequest};
 use std::collections::HashMap;
@@ -291,7 +291,7 @@ fn key_derivations_genesis_json(fixture: &ScenarioFixture) -> Vec<serde_json::Va
         .collect()
 }
 
-async fn wait_for_node_info_on_chain(client: &VeraClient, node_key: &str) {
+async fn wait_for_node_info_on_chain(client: &VeraGoClient, node_key: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         match client.orbis_read_node_info(node_key).await {
@@ -384,7 +384,7 @@ impl TestEnvironment for CosmosTestEnvironment {
             .collect();
         let indexed_endpoints: Vec<_> = endpoints.into_iter().enumerate().collect();
         let nodes = publish_ready_node_routes(&network, &indexed_endpoints, None).await;
-        let controller_client = VeraClient::with_signer(
+        let controller_client = VeraGoClient::with_signer(
             network.chain_config(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, network.chain_config())
                 .expect("test account signer"),
@@ -524,8 +524,8 @@ impl CosmosTestEnvironment {
         }
     }
 
-    async fn signed_bulletin(&self) -> VeraBulletin {
-        VeraBulletin::with_signer(
+    async fn signed_bulletin(&self) -> VeraGoBulletin {
+        VeraGoBulletin::with_signer(
             self.network.chain_config_builder(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
                 .expect("test account signer"),
@@ -554,7 +554,7 @@ impl CosmosTestEnvironment {
     /// running node regardless of ring membership, so this gap is
     /// Cosmos-only.
     pub async fn whitelist_node_for_ring(&self, ring: &RingId, node_index: usize) {
-        let client = VeraClient::with_signer(
+        let client = VeraGoClient::with_signer(
             self.network.chain_config(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
                 .expect("test account signer"),
@@ -624,7 +624,7 @@ impl AuthorizationTestDriver for CosmosTestEnvironment {
     }
 
     async fn register_object(&self, policy: &PolicyId, resource: &str, object_id: &str) {
-        let client = VeraClient::with_signer(
+        let client = VeraGoClient::with_signer(
             self.network.chain_config(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
                 .expect("test account signer"),
@@ -687,12 +687,12 @@ impl BulletinTestDriver for CosmosTestEnvironment {
         self.network.admin().read_ring(ring).await
     }
 
-    /// Same direct `VeraBulletin::read` pattern `read_document` already
+    /// Same direct `VeraGoBulletin::read` pattern `read_document` already
     /// uses — the raw `RingPayload` this reads is exactly what a real
     /// responder hashes when verifying evidence against the ring's current
     /// state, so `ring_state_sha256` here is guaranteed to match.
     async fn read_ring_state_facts(&self, ring: &RingId) -> RingStateFacts {
-        let payload_bytes = VeraBulletin::new(self.network.chain_config_builder())
+        let payload_bytes = VeraGoBulletin::new(self.network.chain_config_builder())
             .await
             .expect("bulletin read client")
             .read(ring.0.clone(), BulletinKind::Ring)
@@ -748,7 +748,7 @@ impl BulletinTestDriver for CosmosTestEnvironment {
     }
 
     async fn read_document(&self, id: &DocumentId) -> Vec<u8> {
-        VeraBulletin::new(self.network.chain_config_builder())
+        VeraGoBulletin::new(self.network.chain_config_builder())
             .await
             .expect("bulletin read client")
             .read(id.0.clone(), BulletinKind::Document)
@@ -836,7 +836,7 @@ impl BulletinTestDriver for CosmosTestEnvironment {
     ) {
         // The chain rejects a reshare whose member list is not strictly sorted.
         new_members.sort();
-        let client = VeraClient::with_signer(
+        let client = VeraGoClient::with_signer(
             self.network.chain_config(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
                 .expect("test account signer"),
@@ -859,7 +859,7 @@ impl BulletinTestDriver for CosmosTestEnvironment {
     // refresh becomes due naturally within the scenario's own wait.
 
     async fn cancel_reshare(&self, ring: &RingId) {
-        let client = VeraClient::with_signer(
+        let client = VeraGoClient::with_signer(
             self.network.chain_config(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
                 .expect("test account signer"),
@@ -878,7 +878,7 @@ impl BulletinTestDriver for CosmosTestEnvironment {
     }
 
     async fn schedule_ring_upgrade(&self, ring: &RingId, next_version: u64, activation_time: u64) {
-        let client = VeraClient::with_signer(
+        let client = VeraGoClient::with_signer(
             self.network.chain_config(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
                 .expect("test account signer"),
@@ -923,7 +923,7 @@ async fn publish_ready_node_routes(
     let mut nodes = wait_for_nodes_ready(&endpoints).await;
     // Integration startup can fund a node from the controller account. Load
     // its sequence only after all those startup transactions have completed.
-    let controller_client = VeraClient::with_signer(
+    let controller_client = VeraGoClient::with_signer(
         network.chain_config(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, network.chain_config())
             .expect("test account signer"),

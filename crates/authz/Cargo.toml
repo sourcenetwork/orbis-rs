@@ -19,9 +19,9 @@ vera-domain = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 
 [features]
-default = ["vera"]
-vera = ["common/cosmos"]
-native = ["common/native", "dep:vera-identity", "dep:vera-client", "dep:vera-domain", "dep:hex"]
+default = ["vera-go"]
+vera-go = ["common/cosmos"]
+vera = ["common/vera", "dep:vera-identity", "dep:vera-client", "dep:vera-domain", "dep:hex"]
 test-helpers = []
 # The `AuthzFactory`/`PreparedAuthz` traits and factory impls. Separate from
 # `native`/`vera` (which just compile the backend module for direct use —
@@ -30,12 +30,12 @@ test-helpers = []
 startup = ["common/startup"]
 # Select the corresponding `AuthzFactoryImpl`. Implies `startup` since
 # selecting one *is* constructing a factory.
-select-native = ["native", "startup"]
 select-vera = ["vera", "startup"]
+select-vera-go = ["vera-go", "startup"]
 
 [[test]]
-name = "native_service"
-required-features = ["native"]
+name = "vera_service"
+required-features = ["vera"]
 
 [dev-dependencies]
 vera-harness = { workspace = true }
@@ -43,7 +43,7 @@ alloy-primitives = "1"
 tokio = { workspace = true, features = ["full", "process"] }
 serial_test = "3.2.0"
 authn = { path = "../authn" }
-# Vera-backend tests use the Docker integration harness (VeraTestContainer).
+# Vera-backend tests use the Docker integration harness (VeraGoTestContainer).
 test-support = { path = "../test-support" }
 
 [lints]

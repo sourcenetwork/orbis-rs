@@ -12,7 +12,7 @@
 //! hardcodes a default crypto feature (`bls12-381`) that would conflict with
 //! a jubjub build's feature unification if pulled into this crate. They stay
 //! in `test_helpers.rs`, unchanged. `CosmosAdmin::register_ring` doesn't need
-//! that dependency at all, though: it drives `VeraClient` directly (the same
+//! that dependency at all, though: it drives `VeraGoClient` directly (the same
 //! client every other method here already uses), the same way `cli_tool::
 //! create_ring` itself ultimately does underneath.
 
@@ -20,7 +20,7 @@ use super::{BackendAdmin, DocumentId, PolicyId, RingId, RingKeys, RingSpec, Ring
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
     orbis::WhitelistTarget,
-    ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
+    ChainConfig, TxSigner, VeraGoClient, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
 };
 use std::time::Duration;
 
@@ -58,7 +58,7 @@ fn secp256k1_pubkey_to_did(compressed_pubkey_hex: &str) -> String {
 /// Create an orbis ring governance policy as TEST_ACCOUNT_HEX_KEY, register its
 /// own policy ID as a `ring_policy` ACP object, and return the policy ID.
 pub async fn create_orbis_ring_policy(chain_config: &ChainConfig) -> String {
-    let client = VeraClient::with_signer(
+    let client = VeraGoClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -108,7 +108,7 @@ pub async fn create_orbis_ring_policy(chain_config: &ChainConfig) -> String {
 /// Using an existing client avoids account-sequence conflicts when the caller
 /// also uses that client for subsequent transactions.
 pub async fn create_ring_governance_with_ring(
-    client: &VeraClient,
+    client: &VeraGoClient,
     ring_id: &str,
     operator_pubkeys: &[&str],
 ) -> String {
@@ -190,7 +190,7 @@ pub async fn wait_for_ring_finalized(
     ring_id: &str,
     timeout: Duration,
 ) -> String {
-    let client = VeraClient::new(chain_config.clone())
+    let client = VeraGoClient::new(chain_config.clone())
         .await
         .expect("chain client for ring polling");
 
@@ -218,8 +218,8 @@ impl CosmosAdmin {
         Self { chain_config }
     }
 
-    async fn signed_client(&self) -> VeraClient {
-        VeraClient::with_signer(
+    async fn signed_client(&self) -> VeraGoClient {
+        VeraGoClient::with_signer(
             self.chain_config.clone(),
             TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.chain_config.clone())
                 .expect("test account signer"),
@@ -233,7 +233,7 @@ impl CosmosAdmin {
     /// need on that older trait. Read-only, so an unsigned client (same
     /// pattern as `read_ring`), not `signed_client()`.
     pub async fn read_node_demerits(&self, ring_id: &str, node_key: &str) -> u64 {
-        let client = VeraClient::new(self.chain_config.clone())
+        let client = VeraGoClient::new(self.chain_config.clone())
             .await
             .expect("chain client for demerit read");
         client
@@ -393,7 +393,7 @@ impl BackendAdmin for CosmosAdmin {
     }
 
     async fn read_ring(&self, ring: &RingId) -> Option<RingView> {
-        let client = VeraClient::new(self.chain_config.clone())
+        let client = VeraGoClient::new(self.chain_config.clone())
             .await
             .expect("chain client for ring read");
         let ring = client.orbis_read_ring(&ring.0).await.expect("read ring")?;

@@ -4,11 +4,11 @@
 # fixtures only. Production deployments should inject secrets from a secret
 # manager or read-only mounted files; see bin/orbis-node/README.md.
 services:
-  vera:
+  vera-go:
     build:
       context: https://github.com/sourcenetwork/vera.git#jesse/update-orbis
     entrypoint: ["/bin/sh", "-c"]
-    container_name: vera-integration-test
+    container_name: vera-go-integration-test
     command:
       - |
         rm -rf /home/node/.vera/*
@@ -51,14 +51,14 @@ services:
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "info", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     volumes:
-      - ./services-config-vera.json:/etc/orbis/services.json:ro
+      - ./services-config-vera-go.json:/etc/orbis/services.json:ro
     ports:
       - "50051:50051"
       - "9091:9090"
     networks:
       - orbis-integration-network
     depends_on:
-      vera:
+      vera-go:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
@@ -83,14 +83,14 @@ services:
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "info", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     volumes:
-      - ./services-config-vera.json:/etc/orbis/services.json:ro
+      - ./services-config-vera-go.json:/etc/orbis/services.json:ro
     ports:
       - "50052:50051"
       - "9092:9090"
     networks:
       - orbis-integration-network
     depends_on:
-      vera:
+      vera-go:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
@@ -115,14 +115,14 @@ services:
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "info", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     volumes:
-      - ./services-config-vera.json:/etc/orbis/services.json:ro
+      - ./services-config-vera-go.json:/etc/orbis/services.json:ro
     ports:
       - "50053:50051"
       - "9093:9090"
     networks:
       - orbis-integration-network
     depends_on:
-      vera:
+      vera-go:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]

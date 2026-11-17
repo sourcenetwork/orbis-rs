@@ -17,7 +17,7 @@ use tokio::time::{sleep, Duration, Instant};
 /// materializer always substitutes its own content-addressed governance
 /// policy regardless of what `RingFixture.policy` names) but required by
 /// native — ring creation needs the submitter to hold `creator` on a
-/// `ring_policy` object (`NativeTestEnvironment::provision` registers/
+/// `ring_policy` object (`VeraTestEnvironment::provision` registers/
 /// grants that automatically per distinct policy, but only once the
 /// policy itself defines the resource), and `RingCommand::Create` itself
 /// *always* auto-registers a new `ring`-resource object (the created

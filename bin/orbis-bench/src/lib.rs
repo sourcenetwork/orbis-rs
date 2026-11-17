@@ -1,4 +1,7 @@
-#![cfg(feature = "orbis-node")]
+#![cfg(any(feature = "orbis-node", feature = "upgrade-driver"))]
+
+#[cfg(all(feature = "orbis-node", feature = "upgrade-driver"))]
+compile_error!("Features 'orbis-node' and 'upgrade-driver' select different node factories");
 
 pub mod compose;
 pub mod config;

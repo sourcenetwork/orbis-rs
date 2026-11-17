@@ -3,7 +3,7 @@
 
 use anyhow::{anyhow, Result};
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation, RingPayload};
-use bulletin::vera::VeraBulletin;
+use bulletin::vera_go::VeraGoBulletin;
 use common::blockchain::{ChainConfig, TEST_ACCOUNT_HEX_KEY};
 use crypto::r#trait::ThresholdSigner;
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine as G1Affine, SignImpl};
@@ -100,7 +100,7 @@ pub async fn create_bulletin_post_with_config(
 ) -> Result<String> {
     let signer = tx_signer(TEST_ACCOUNT_HEX_KEY, config.clone())?;
 
-    let bulletin = VeraBulletin::with_signer(chain_config_builder(&config), signer, None)
+    let bulletin = VeraGoBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -118,7 +118,7 @@ pub async fn read_bulletin_post_with_config(
     kind: BulletinKind,
     config: ChainConfig,
 ) -> Result<Vec<u8>> {
-    let bulletin = VeraBulletin::new(chain_config_builder(&config))
+    let bulletin = VeraGoBulletin::new(chain_config_builder(&config))
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -160,7 +160,7 @@ async fn post_key_derivation_impl(
     signing_key_hex: &str,
 ) -> Result<(String, String)> {
     // Fetch ring payload from bulletin to get the ring public key
-    let ring_bulletin = VeraBulletin::new(chain_config_builder(&config))
+    let ring_bulletin = VeraGoBulletin::new(chain_config_builder(&config))
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
     let ring_post = ring_bulletin
@@ -187,7 +187,7 @@ async fn post_key_derivation_impl(
 
     let signer = tx_signer(signing_key_hex, config.clone())?;
 
-    let bulletin = VeraBulletin::with_signer(chain_config_builder(&config), signer, None)
+    let bulletin = VeraGoBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 

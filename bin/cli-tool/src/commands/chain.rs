@@ -7,10 +7,12 @@
 //! erroring). Centralized here so each command only states what it wants to do.
 
 use anyhow::{anyhow, Result};
-use common::blockchain::{BroadcastResult, ChainConfig, ChainConfigBuilder, TxSigner, VeraClient};
+use common::blockchain::{
+    BroadcastResult, ChainConfig, ChainConfigBuilder, TxSigner, VeraGoClient,
+};
 
 /// Builds a `ChainConfigBuilder` from a resolved `ChainConfig`, for the bulletin
-/// client constructors (`VeraBulletin::new`/`with_signer`), which take a builder
+/// client constructors (`VeraGoBulletin::new`/`with_signer`), which take a builder
 /// rather than a `ChainConfig` directly.
 pub(crate) fn chain_config_builder(config: &ChainConfig) -> ChainConfigBuilder {
     ChainConfigBuilder::default()
@@ -26,15 +28,15 @@ pub(crate) fn chain_config_builder(config: &ChainConfig) -> ChainConfigBuilder {
 }
 
 /// A read-only chain client, for commands that only query on-chain state.
-pub(crate) async fn vera_client(config: ChainConfig) -> Result<VeraClient> {
-    VeraClient::new(config)
+pub(crate) async fn vera_client(config: ChainConfig) -> Result<VeraGoClient> {
+    VeraGoClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))
 }
 
 /// Builds a `TxSigner` from a hex-encoded signing key, for commands that need
-/// a signer standalone rather than wrapped in a `VeraClient` (e.g. to pass to
-/// `VeraBulletin::with_signer`, or to derive a signer's public key/DID).
+/// a signer standalone rather than wrapped in a `VeraGoClient` (e.g. to pass to
+/// `VeraGoBulletin::with_signer`, or to derive a signer's public key/DID).
 pub(crate) fn tx_signer(signing_key_hex: &str, config: ChainConfig) -> Result<TxSigner> {
     TxSigner::from_hex_key(signing_key_hex, config)
         .map_err(|e| anyhow!("Failed to create signer: {}", e))
@@ -45,9 +47,9 @@ pub(crate) fn tx_signer(signing_key_hex: &str, config: ChainConfig) -> Result<Tx
 pub(crate) async fn signed_vera_client(
     config: ChainConfig,
     signing_key_hex: &str,
-) -> Result<VeraClient> {
+) -> Result<VeraGoClient> {
     let signer = tx_signer(signing_key_hex, config.clone())?;
-    VeraClient::with_signer(config, signer)
+    VeraGoClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create Vera client: {}", e))
 }

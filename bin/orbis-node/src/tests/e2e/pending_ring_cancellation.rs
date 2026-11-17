@@ -108,7 +108,7 @@ resources:
     // Backdated well past a day: native's ring creation always clamps
     // `pss_interval` to a 24h floor (its validator rejects short intervals
     // outright, unlike Cosmos's genesis-seeded rings — see
-    // `native_environment.rs::build_ring_config`), so the PSS ticker's
+    // `vera_environment.rs::build_ring_config`), so the PSS ticker's
     // "pending longer than pss_interval" check needs `indexed_at_secs` far
     // enough in the past to already be overdue on either backend,
     // regardless of what interval the fixture itself requested.

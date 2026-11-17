@@ -141,6 +141,12 @@ impl TryFrom<String> for EncryptionProof {
 /// `object_id` (via `ReaderAuthorizationContext`) into the signature's
 /// Fiat-Shamir challenge closes this: a signature for one `object_id` cannot
 /// be reused for a request naming a different one.
+///
+/// This request binding does not make recipient-key reuse safe. The reader MUST
+/// use a fresh ephemeral keypair for each PRE operation and discard its secret
+/// afterward, as required by [`super::pre::ThresholdDealer`]. Two independently
+/// authorized requests under the same ring key using the same recipient key
+/// still expose a repeated mask, even when their signatures and JWT IDs differ.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReaderAuthorizationSignature {
     /// Fiat-Shamir challenge scalar, serialized.

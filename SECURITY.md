@@ -40,9 +40,9 @@ require authenticated chain-state reads. The ACP verdict itself is computed Go
 logic with no Merkle proof, so a light client alone would not make it verifiable;
 that would also require capability materialization or client-side evaluation.
 
-### Native Vera reads require independently configured consensus trust
+### Vera reads require independently configured consensus trust
 
-Native mode verifies finality against its configured consensus key and checks the
+Vera mode verifies finality against its configured consensus key and checks the
 configured deployment root before serving requests. Authorization evaluates ACP
 locally from authenticated policy and relationship evidence at one revision.
 Current relation identities and target-object incarnations are authenticated with
@@ -59,8 +59,8 @@ certified state within the current-read freshness window. Availability and the
 chosen window remain operational considerations. Protect the provisioned
 consensus key and deployment root.
 
-Native validators, clients and verifiers must use the same ACP storage/proof
-format. Native relationship keys use `relationship/v5/` with `v3` suffixes and
+Vera validators, clients and verifiers must use the same ACP storage/proof
+format. Vera relationship keys use `relationship/v5/` with `v3` suffixes and
 mandatory incarnation stamps; owner records always use incarnation zero.
 Specialized relationship proofs require an `objects` witness array for every
 non-owner target. A certified absent state point means initial incarnation zero;
@@ -75,6 +75,30 @@ sets, etc.) can cause a round to fail and can generate spurious fault-report
 traffic, but cannot extract key material or forge a signature — FROST nonce
 state is single-use and message content is bound to the caller's JWT / an
 on-chain record. Equivocation attribution is deliberate future work.
+
+### PRE recipient keys are disposable
+
+For both BLS12-381 and Jubjub, clients **MUST generate a fresh, independent
+ephemeral reader keypair for each new PRE operation**. Never reuse it across
+requests or documents, and never use a long-lived identity/authentication key
+as the PRE recipient key. Keep the private key only while completing that
+operation's decryption, then erase and discard it when the operation completes
+or is abandoned.
+
+This is a confidentiality requirement. Without derivation, a combined PRE
+response is `sR + rP`, where `P = sG` is the ring public key, `R` is the
+recipient public key, and `rP` is the document's KEM secret. With a public
+nonzero derivation factor `d`, the response is `d(sR + rP)` and can be scaled
+by `d^-1`. Reusing `R` under the same ring key therefore repeats a recoverable
+recipient mask. A coordinator that knows one document's encryption randomness
+and observes both PRE responses can isolate that mask and derive the other
+document's encryption key. Separate reader-authorization signatures and fresh
+JWT IDs do not make reuse safe.
+
+The bundled CLI generates a fresh keypair for each request. Custom clients
+must implement the same lifetime; the crypto API and node admission checks do
+not enforce recipient-key non-reuse. These disposable keys are distinct from
+the client's DID/JWT authentication key.
 
 ### Client requests are authenticated with bearer JWTs over a trusted transport
 

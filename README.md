@@ -162,7 +162,7 @@ Encrypted local key-value storage for persisting node secrets.
 
 ### [`common`](crates/common/)
 
-Vera blockchain client (**`VeraClient`**, **`ChainConfig`**, **`TxSigner`**), ACP/bulletin helpers, and Docker-based test containers. See [`crates/common/README.md`](crates/common/README.md).
+Vera blockchain client (**`VeraGoClient`**, **`ChainConfig`**, **`TxSigner`**), ACP/bulletin helpers, and Docker-based test containers. See [`crates/common/README.md`](crates/common/README.md).
 
 ### [`proto`](crates/proto/)
 
@@ -205,9 +205,9 @@ cargo build --no-default-features --features=<alternative>
 | `network` | `iroh` | `IrohNetwork` | QUIC-based P2P (iroh) | Yes |
 | `crypto` | `bls12-381` | `DKG, PRE, SIGN` | BLS12-381 curve | Yes |
 | `crypto` | `jubjub` | `DKG, PSS, PRE, SIGN, PET` | zkcrypto Jubjub subgroup | No |
-| `authz` | `vera` | `VeraAuth` | Vera authorization | Yes |
+| `authz` | `vera` | `VeraGoAuth` | Vera authorization | Yes |
 | `authz` | `dummy` | `DummyAuthZ` | Permissive (testing only) | No |
-| `bulletin` | `vera` | `VeraBulletin` | Bulletin board backends | Yes |
+| `bulletin` | `vera` | `VeraGoBulletin` | Bulletin board backends | Yes |
 | `bulletin` | `dummy` | `DummyBulletin` | Permissive (testing only) | No |
 
 
@@ -431,14 +431,14 @@ written under `target/upgrade-tests/` unless `--output` is provided.
 Run `scripts/test-upgrade-unit.sh` for the shell syntax, ref-resolution, and
 argument-validation checks without starting Docker.
 
-When `docker/VERA_REF` differs between the baseline and target revisions the
+When `docker/VERA_GO_REF` differs between the baseline and target revisions the
 baseline chain cannot verify the target's threshold signatures, so the harness
 switches to `--fresh-target-chain`: it tears the whole stack down, brings
 SourceHub up on the target ref alongside the target Orbis images, and re-runs
 `prepare` before `verify`. This does not exercise chain-state continuity
 across the upgrade (a follow-up will add an in-place `verad` swap). Force it
 on with `--fresh-target-chain` / off with `--no-fresh-target-chain`, or pin
-the target chain with `--to-vera-ref <git-ref>`.
+the target chain with `--to-vera-go-ref <git-ref>`.
 
 The **Upgrade Compatibility** GitHub Actions workflow runs automatically for
 pull requests targeting `develop`, comparing the immutable PR base SHA with
@@ -496,14 +496,14 @@ report a vulnerability. In brief:
 
 Orbis-rs, including [`orbis-reporting`](crates/reporting), is licensed under the [Business Source License 1.1](licenses/Bsl.txt), which changes to Apache 2.0 on March 13, 2030.
 
-The separate [native Trust ring/DKG fixture](docs/native-trust-ring-fixture.md)
-connects the authenticated Go gateway contract to the shared native test network.
+The separate [Vera Trust ring/DKG fixture](docs/vera-trust-ring-fixture.md)
+connects the authenticated Go gateway contract to the shared Vera test network.
 It requires companion artifacts and is not part of the default lifecycle selection.
 
-The opt-in [hosted gateway scope](docs/native-trust-hosted.md) reuses
-`NativeTestNetwork` and the gateway fixture's own Orbis node startup to launch Docker Vera
+The opt-in [hosted gateway scope](docs/vera-trust-hosted.md) reuses
+`VeraTestNetwork` and the gateway fixture's own Orbis node startup to launch Docker Vera
 and Orbis for that exact fixture. Existing Cosmos `integration.rs` test bodies
 are not ported or invoked by this scope.
 
 [Backend boundaries and Docker E2E tests](docs/e2e-backends.md) describes the
-shared paired-DKG assertions and native fixture setup.
+shared paired-DKG assertions and Vera fixture setup.

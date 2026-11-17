@@ -59,12 +59,12 @@ jobs:
         # Pin the network launch revision so every target is checked against
         # the same compatibility baseline, including manual runs.
         # The harness auto-selects --fresh-target-chain when HEAD's
-        # docker/VERA_REF differs from the pinned baseline's (the baseline
+        # docker/VERA_GO_REF differs from the pinned baseline's (the baseline
         # chain otherwise cannot verify the target's threshold signatures).
         run: |
           scripts/test-upgrade-unit.sh
           scripts/test-upgrade.sh \
-            --from 7fd33b69632a61040c855bf7b7f1da13ae432483 \
+            --from d7b74e3d5d8ad2651dd00c12a9fe6e9e553514fb \
             --to HEAD \
             --crypto "${{ matrix.crypto }}" \
             --output "upgrade-results/${{ matrix.crypto }}"

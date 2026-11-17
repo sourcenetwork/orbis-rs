@@ -13,7 +13,7 @@
 //! populate it from their own backend's `reporting` config), so confirming
 //! the promoted key was consumed needs no raw, backend-specific `Ring` read.
 //! `NodeRole::Backup` has live registration support on native
-//! (`NativeTestEnvironment::provision`'s `fixture_node`/`NodeCommand::Register`
+//! (`VeraTestEnvironment::provision`'s `fixture_node`/`NodeCommand::Register`
 //! path); fixture-driven `node_demerits` is genesis-seeded there too, by
 //! predicting the ring's (and its governing policy's) id before the chain
 //! boots — see that function's own doc comments for the mechanism.

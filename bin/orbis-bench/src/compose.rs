@@ -5,7 +5,7 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const VERA_SERVICE: &str = "vera";
+pub const VERA_SERVICE: &str = "vera-go";
 pub const CONTROLLER_PUBLIC_KEY: &str =
     "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
 /// ACP policy IDs are `sha256(sha256(policy content) || counter)`, where
@@ -45,7 +45,7 @@ pub struct ComposeInput<'a> {
     pub stack_id: &'a str,
     pub stack: &'a StackPlan,
     pub crypto: CryptoFeature,
-    pub vera_ref: &'a str,
+    pub vera_go_ref: &'a str,
     pub vera_replicas: usize,
     pub resources: &'a ResourceLimits,
     pub scheduler_poll_secs: u64,
@@ -77,7 +77,7 @@ pub fn node_service(index: usize) -> String {
 }
 
 /// Name of the Vera Compose service for a given replica index. Index 0
-/// is always the sole validator, kept as the plain `"vera"` name so
+/// is always the sole validator, kept as the plain `"vera-go"` name so
 /// every existing single-replica reference (`VERA_SERVICE`, the bench
 /// controller's own chain client) needs no change when `vera_replicas`
 /// stays at its default of 1.
@@ -120,12 +120,12 @@ fn compose_document(input: &ComposeInput<'_>) -> Result<Value> {
 }
 
 /// The full `orbis-bench-vera:<tag>` image reference for a given
-/// `vera_ref`, truncated to at most 12 characters (not bytes, so a
+/// `vera_go_ref`, truncated to at most 12 characters (not bytes, so a
 /// multi-byte character straddling that boundary doesn't panic on slicing).
 /// Shared by the compose service definitions and the manifest image-digest
 /// lookup so the tag can't drift between the two.
-pub fn vera_image_tag(vera_ref: &str) -> String {
-    let truncated: String = vera_ref.chars().take(12).collect();
+pub fn vera_image_tag(vera_go_ref: &str) -> String {
+    let truncated: String = vera_go_ref.chars().take(12).collect();
     format!("orbis-bench-vera:{truncated}")
 }
 
@@ -157,11 +157,11 @@ touch /handoff/ready
 exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
 "#;
     let mut value = json!({
-        "image": vera_image_tag(input.vera_ref),
+        "image": vera_image_tag(input.vera_go_ref),
         "build": {
             "context": vera_context,
-            "dockerfile": "Dockerfile.vera-integration",
-            "args": {"VERA_REF": input.vera_ref},
+            "dockerfile": "Dockerfile.vera-go-integration",
+            "args": {"VERA_GO_REF": input.vera_go_ref},
         },
         "entrypoint": ["/bin/sh", "-c"],
         "command": [command],
@@ -175,7 +175,7 @@ exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.e
         "labels": {
             "dev.orbis.bench.run": input.run_id,
             "dev.orbis.bench.stack": input.stack_id,
-            "dev.orbis.bench.role": "vera",
+            "dev.orbis.bench.role": "vera-go",
         },
         "healthcheck": {
             "test": ["CMD", "verad", "status", "--home", "/home/node/.vera"],
@@ -235,14 +235,14 @@ while :; do
   handoff_waited_seconds=$$((handoff_waited_seconds + 1))
 done
 cp /handoff/genesis.json /home/node/.vera/config/genesis.json
-exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317 --p2p.persistent_peers "$$(cat /handoff/node-id.txt)@vera:26656"
+exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317 --p2p.persistent_peers "$$(cat /handoff/node-id.txt)@vera-go:26656"
 "#;
     let mut value = json!({
-        "image": vera_image_tag(input.vera_ref),
+        "image": vera_image_tag(input.vera_go_ref),
         "build": {
             "context": vera_context,
-            "dockerfile": "Dockerfile.vera-integration",
-            "args": {"VERA_REF": input.vera_ref},
+            "dockerfile": "Dockerfile.vera-go-integration",
+            "args": {"VERA_GO_REF": input.vera_go_ref},
         },
         "entrypoint": ["/bin/sh", "-c"],
         "command": [command],
@@ -381,7 +381,7 @@ mod tests {
             stack_id: "orbis-bench-run-s000",
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
-            vera_ref: &experiment.vera_ref,
+            vera_go_ref: &experiment.vera_go_ref,
             vera_replicas: experiment.vera_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,
@@ -441,7 +441,7 @@ mod tests {
             stack_id: "orbis-bench-run-s000",
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
-            vera_ref: &experiment.vera_ref,
+            vera_go_ref: &experiment.vera_go_ref,
             vera_replicas: experiment.vera_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,
@@ -466,7 +466,7 @@ mod tests {
             stack_id: "orbis-bench-run-s000",
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
-            vera_ref: &experiment.vera_ref,
+            vera_go_ref: &experiment.vera_go_ref,
             vera_replicas: experiment.vera_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,
@@ -474,7 +474,7 @@ mod tests {
         let document = compose_document(&input).unwrap();
         let services = document["services"].as_object().unwrap();
 
-        assert!(services.contains_key("vera"));
+        assert!(services.contains_key("vera-go"));
         assert!(services.contains_key("vera-001"));
         assert!(services.contains_key("vera-002"));
         assert!(!services.contains_key("vera-003"));
@@ -492,10 +492,10 @@ mod tests {
                 .unwrap()
                 .to_string()
         };
-        assert_eq!(target_of("node-001"), "vera");
+        assert_eq!(target_of("node-001"), "vera-go");
         assert_eq!(target_of("node-002"), "vera-001");
         assert_eq!(target_of("node-003"), "vera-002");
-        assert_eq!(target_of("node-004"), "vera");
+        assert_eq!(target_of("node-004"), "vera-go");
         assert_eq!(target_of("node-005"), "vera-001");
         assert_eq!(target_of("node-006"), "vera-002");
     }
@@ -513,7 +513,7 @@ mod tests {
             stack_id: "orbis-bench-run-s000",
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
-            vera_ref: &experiment.vera_ref,
+            vera_go_ref: &experiment.vera_go_ref,
             vera_replicas: experiment.vera_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,

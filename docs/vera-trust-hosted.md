@@ -1,0 +1,105 @@
+# Opt-in hosted native Trust ring qualification
+
+The existing Rust workflow's `gateway` scope runs only the two normal Orbis image
+builds, matching native Vera
+image, one shared artifact build, and two focused curve jobs. It does not run the
+legacy suites or build/use the unsafe diagnostic image.
+
+The default Trust fixture revision is selected in the workflow's immutable
+`trust_revision` input. The driver checks it against the checkout, native Dockerfile
+pin and the Vera and Defra revisions in `.github/native-ring-versions.json`. Native Vera and Defra revisions are declared in
+`scripts/vera_trust_hosted.py`; validation exports them as the workflow's checkout
+refs. The Vera daemon pin in `docker/VERA_REF` must agree. Orbis's native SDK
+revision remains separately pinned in the workspace manifest; the driver validates
+that binding independently rather than requiring SDK and daemon source equality.
+
+The artifact job builds Defra's normal native CLI once, stages it, and removes
+only its own new target directory. A single BuildKit bake graph uses the real
+Trust `Dockerfile.native` for its builder and unchanged final production stage.
+Identical source, build arguments and shared vertices reuse the normal Go gateway
+and Rust verifier build. The Go test executable is then compiled inside that
+builder's existing toolchain/module/cache environment. It neither rebuilds the
+normal gateway nor substitutes a different runtime Dockerfile. Registry caches
+and Cargo source caches remain reusable.
+
+Only named binaries, the verifier header/library and a source/build/binary hash
+manifest are transferred between Ubuntu runners. The final Trust image stays
+immutable by digest, retains UID/GID 65532 and its exact source/Vera labels. Each
+curve job verifies transferred hashes, resolves normal Vera/Orbis image IDs and
+labels, and hashes the actual runtime binaries. It checks that both packaging
+modes use the identical gateway and verifier bytes.
+
+Each curve compiles the `orbis-node` library tests once and directly runs
+`tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg` twice: the normal executable, then the normal
+container. Both use UID/GID 65532 and the same staged artifacts. Every run must
+execute exactly one Rust test and one inner Go test, produce the exact paired-ring
+success marker, and assert persisted production KDF headers in all three stopped
+Orbis stores. Fixture readiness, receipt and per-ring DKG limits are unchanged.
+The five-minute Go contract context runs within a 360-second test watchdog and a
+365-second Rust subprocess limit, including cleanup. The outer fixture watchdog
+is 600 seconds; it does not extend those inner deadlines. Build-job limits are 120 minutes and native compilation
+is bounded at 90 minutes.
+
+Private roots are fresh per packaging mode. Complete build/test logs, descriptor,
+operation IDs, passwords and stores are never uploaded. Console output is fixed
+numeric status, stage, duration and execution counts. Bounded diagnostics add
+Rust compiler error counts/E-codes, panic/Elapsed counts and numeric line locations
+for the two known fixture files (IDs 1 and 2). They never include raw messages or
+paths. Go test failures retain source locations and a bounded set of exact ring
+assertion categories: certification deadline, missing ring or paired keys,
+terminal state, HTTP failure and response shape. The decoder rejects unknown,
+duplicate or untyped categories. A failed helper location alone does not identify
+which assertion fired. Private raw logs are not retained after the ephemeral
+runner is destroyed. The artifact upload contains
+only the explicit build products and hashes. Cleanup removes only the exact Trust
+fixture label and Compose containers mounted beneath these private roots, with
+no daemon-wide prune. Source and staged binary hashes are checked again afterward.
+
+A qualification result covers only its recorded source set, curve, packaging
+mode and runtime hashes. Compilation uses the published Orbis fixture containing
+the hook and workflow; run-scoped images and labels bind that fixture separately
+from the unchanged normal runtime. Source review or a passing older fixture does
+not qualify changed pins, cold-cache builds or deployment resource limits.
+
+The reuse is the existing native fixture setup and Docker lifecycle, not a port
+of the older Cosmos `bin/orbis-node/src/tests/e2e/integration.rs` bodies. No production
+runtime or backend trait implementation is added. The exact ignored selector
+spins up four normal Vera containers and three normal Orbis containers
+through `VeraTestNetwork` and the gateway fixture's own Orbis node startup.
+
+After review and publication, the existing Rust workflow's manual dispatch uses
+`scope=gateway` and the immutable Trust revision above. For an already staged
+Linux environment, the focused invocation is:
+
+```sh
+ORBIS_VERA_IMAGE="$VERA_IMAGE_ID" \
+ORBIS_VERA_NODE_IMAGE="$ORBIS_IMAGE_ID" \
+TRUST_NATIVE_GATEWAY_TEST_BINARY="$GO_FIXTURE_BINARY" \
+TRUST_NATIVE_GATEWAY_BINARY="$NORMAL_GATEWAY_BINARY" \
+DEFRADB_RUST_BINARY="$DEFRADB_BINARY" \
+LD_LIBRARY_PATH="$VERIFIER_LIB_DIR" \
+"$VERA_STARTUP_TEST_BINARY" vera_trust_gateway_ring_dkg \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+The hosted driver performs the same selection for both curves and separately
+checks the unchanged production container as UID/GID 65532. It stages and hashes
+these artifacts first; no fresh or ad hoc Vera runtime replaces the selected image.
+
+
+The `native` scope selects the existing native backend checks and Compose-backed
+lifecycle suite for both curves, with the normal native Vera and Orbis images.
+It also builds the established diagnostic image for the fault-report scenario.
+The lifecycle suite includes restart, signing, encryption, PET member replacement
+and scheduled refresh. The Trust gateway fixture has its separate `gateway`
+scope and requires a matching immutable Trust revision.
+
+After adopting a source-consistent dependency lockfile, dispatch native lifecycle
+qualification with:
+
+```sh
+gh workflow run rust.yml --ref "$ORBIS_BRANCH" -f scope=native
+```
+
+Release qualification requires the results from that exact source and both
+curves; changing these pins does not establish a passing deployment.

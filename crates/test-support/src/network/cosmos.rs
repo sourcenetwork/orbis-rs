@@ -155,7 +155,7 @@ impl CosmosNetwork {
     /// host, from the host itself — the same host that commands `docker
     /// compose up` in the first place. `None` unless
     /// `CosmosNetworkBuilder::with_defra` was used. `Option<String>` (not
-    /// `&str`): matches `NativeTestNetwork::defra_container_url`'s return
+    /// `&str`): matches `VeraTestNetwork::defra_container_url`'s return
     /// type, which has no stored string to borrow from (it formats the
     /// address fresh from a static IP on every call) — same signature on
     /// both lets a shared test body call either without backend-specific
@@ -483,19 +483,19 @@ impl CosmosNetworkBuilder {
                     .rpc_url(Some(localhost_url(published_port(
                         &compose_file,
                         &project_name,
-                        "vera",
+                        "vera-go",
                         26657,
                     )?)))
                     .rest_url(Some(localhost_url(published_port(
                         &compose_file,
                         &project_name,
-                        "vera",
+                        "vera-go",
                         1317,
                     )?)))
                     .grpc_url(Some(localhost_url(published_port(
                         &compose_file,
                         &project_name,
-                        "vera",
+                        "vera-go",
                         9090,
                     )?)))
                     .build();

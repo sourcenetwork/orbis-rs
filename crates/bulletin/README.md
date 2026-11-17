@@ -16,8 +16,8 @@ neither service decodes signing material or selects a bulletin backend.
 Authorization is constructed separately through `Authz`. The prepared bulletin
 then connects through the `Bulletin` trait before node registration and readiness.
 
-`native::startup::PreparedNativeBulletin` owns native worker initialization and the
-deployment-scoped journal. `vera::startup::PreparedVeraBulletin` owns the legacy
+`native::startup::PreparedVeraBulletin` owns native worker initialization and the
+deployment-scoped journal. `vera_go::startup::PreparedVeraGoBulletin` owns the legacy
 signer, fee-granter and minimum-balance setup. Connection phases preserve the
 bootstrap funding status; integration account funding remains in node composition.
 The `cosmos-identity` feature exposes identity helpers without selecting that
@@ -25,7 +25,7 @@ bulletin implementation or requiring Redb.
 
 ## Native service client
 
-The `native` feature exposes `native::NativeVeraClient` for signed
+The `native` feature exposes `native::VeraClient` for signed
 node registration/controller commands, fresh-ring creation, confirmation and
 cancellation, and certified reads. Open it with an independently provisioned
 deployment root and consensus key, a worker journal
@@ -68,7 +68,7 @@ canonical ciphertext/proof fields and optional document tier/timestamp. Admissio
 registers the metadata; the threshold protocols must still validate encryption
 proofs and the requesting actor's ACP permission before use.
 
-`NativeBulletin::connect` implements the `Bulletin` trait over this client. Supply
+`VeraBulletin::connect` implements the `Bulletin` trait over this client. Supply
 an independent reader endpoint, a maximum evidence age and a request deadline.
 Connection verifies the configured deployment root. Reads verify fresh,
 monotonic revisions without waiting for the writer mutex. Writes recover the
@@ -83,7 +83,7 @@ the next distinct write. An exact retry reads its certified receipt, including
 after restart, without advancing the worker sequence again. Reshare retries match
 the originally signed ring sequence. A different write acknowledges the retained
 request before preparing its own. This is a single retained completion, not an
-unbounded history of previous calls. Use `NativeVeraClient`'s explicit
+unbounded history of previous calls. Use `VeraClient`'s explicit
 prepare/submit/confirm interface to retain receipt IDs when older outcomes must
 remain addressable across subsequent writes.
 
@@ -92,10 +92,10 @@ recovery, controller allow-list enforcement, fresh-ring confirmation, document
 and derivation posts, cancellation, duplicate calls and restart:
 
 ```bash
-VERAD_BINARY=/path/to/verad cargo test -p bulletin --features native --test native_service -- --ignored
+VERAD_BINARY=/path/to/verad cargo test -p bulletin --features vera --test vera_service -- --ignored
 ```
 
-Node startup selects this backend at compile time (the `bulletin-native`
+Node startup selects this backend at compile time (the `bulletin-vera`
 build feature); the node's `--services-config` `bulletin` section supplies
 its endpoint, deployment root and consensus key — see the node README.
 The report/reshare recovery fixture uses supplied aggregate signatures and checks
@@ -127,7 +127,7 @@ Shared **value types** (JSON serde):
 
 | Feature | Default | `BulletinImpl` |
 |---------|---------|----------------|
-| `vera` | **yes** | [`VeraBulletin`](src/vera/mod.rs) |
+| `vera` | **yes** | [`VeraGoBulletin`](src/vera/mod.rs) |
 | `dummy` | no | [`DummyBulletin`](src/dummy/mod.rs) |
 
 **`vera` and `dummy` are mutually exclusive** (only one can be enabled). Default builds use Vera.
@@ -140,7 +140,7 @@ cargo build -p bulletin --no-default-features --features dummy
 
 ## Vera implementation
 
-**`VeraBulletin`** wraps [`VeraClient`](../common) from the workspace `common` crate.
+**`VeraGoBulletin`** wraps [`VeraGoClient`](../common) from the workspace `common` crate.
 
 - **`post`** — routes to fresh `FinalizeRing`, `StoreDocument`, `StoreKeyDerivation`, or `CreateNodeInfo`, returning the chain id for the written object.
 - **`read`** — routes to typed `x/orbis` queries by object id.
@@ -148,10 +148,10 @@ cargo build -p bulletin --no-default-features --features dummy
 
 Construction:
 
-- **`VeraBulletin::new(ChainConfigBuilder)`** — Read-focused client.
-- **`VeraBulletin::with_signer(..., balance_check_amount)`** — Client with **`TxSigner`**; optionally waits (exponential backoff) until the account balance ≥ threshold, then performs a minimal **self-transfer** to register the account on-chain.
+- **`VeraGoBulletin::new(ChainConfigBuilder)`** — Read-focused client.
+- **`VeraGoBulletin::with_signer(..., balance_check_amount)`** — Client with **`TxSigner`**; optionally waits (exponential backoff) until the account balance ≥ threshold, then performs a minimal **self-transfer** to register the account on-chain.
 
-Diagnostics name: **`"bulletin/vera"`**.
+Diagnostics name: **`"bulletin/vera-go"`**.
 
 Integration tests in [`src/vera/tests.rs`](src/vera/tests.rs) may require **Docker** (Vera stack), similar to other `common`-based tests.
 

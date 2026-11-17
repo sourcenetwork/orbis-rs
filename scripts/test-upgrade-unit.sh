@@ -48,7 +48,7 @@ grep -F "fresh target chain: auto" "$TEST_ROOT/committed.log" >/dev/null
 grep -F "fresh target chain: 1" "$TEST_ROOT/fresh.log" >/dev/null
 
 expect_failure to-vera-ref-missing-value \
-  --from HEAD --to HEAD --dry-run --to-vera-ref
+  --from HEAD --to HEAD --dry-run --to-vera-go-ref
 expect_failure invalid-ref \
   --from refs/heads/orbis-upgrade-ref-that-does-not-exist \
   --to HEAD \

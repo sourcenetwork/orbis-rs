@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the same backend-neutral E2E test tree against Cosmos or native Vera.
+# Run the same backend-neutral E2E test tree against Cosmos or Vera.
 
 set -Eeuo pipefail
 
@@ -11,7 +11,7 @@ crypto=bls12-381
 
 usage() {
   cat <<'EOF'
-Usage: scripts/test-e2e.sh --backend <cosmos|native|all> [--crypto <bls12-381|jubjub>]
+Usage: scripts/test-e2e.sh --backend <cosmos|vera|all> [--crypto <bls12-381|jubjub>]
 
 The backend changes only the compile-time adapter. Both variants execute the
 same `tests::e2e` module and backend-neutral scenario contracts. Tests are never
@@ -42,9 +42,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$backend" in
-  cosmos | native | all) ;;
+  cosmos | vera | all) ;;
   *)
-    echo "--backend must be cosmos, native, or all" >&2
+    echo "--backend must be cosmos, vera, or all" >&2
     exit 2
     ;;
 esac
@@ -64,13 +64,11 @@ run_backend() {
 
   case "$selected" in
     cosmos)
-      features="integration-test,authz-vera,bulletin-vera,fault-injection,$crypto"
-      if [[ "$crypto" == jubjub ]]; then
-        default_flags=(--no-default-features)
-      fi
+      features="integration-test,authz-vera-go,bulletin-vera-go,fault-injection,redb,iroh,$crypto"
+      default_flags=(--no-default-features)
       ;;
-    native)
-      features="integration-test,native,redb,iroh,$crypto"
+    vera)
+      features="integration-test,vera,redb,iroh,$crypto"
       default_flags=(--no-default-features)
       ;;
   esac
@@ -84,7 +82,7 @@ run_backend() {
 cd "$repository_root"
 if [[ "$backend" == all ]]; then
   run_backend cosmos
-  run_backend native
+  run_backend vera
 else
   run_backend "$backend"
 fi

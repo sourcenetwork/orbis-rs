@@ -1,5 +1,5 @@
 //! Unit tests for the blockchain module (signer, ChainConfig, fee / fee-granter).
-//! The live-chain tests are in `test-support/tests/blockchain_vera.rs`.
+//! The live-chain tests are in `test-support/tests/blockchain_vera_go.rs`.
 
 use crate::blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY};
 

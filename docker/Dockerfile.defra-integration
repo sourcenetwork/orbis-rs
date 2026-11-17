@@ -1,5 +1,5 @@
 FROM rust:1.93-bookworm AS builder
-# Deliberately unpinned, unlike VERA_REF/NATIVE_VERA_REF: this is a one-way
+# Deliberately unpinned, unlike VERA_REF/VERA_REF: this is a one-way
 # dependency on a third-party test fixture we don't co-develop, not a
 # sibling repo under active coordinated release. Always builds against
 # defradb.rs's current `main` — if an upstream change breaks this image,

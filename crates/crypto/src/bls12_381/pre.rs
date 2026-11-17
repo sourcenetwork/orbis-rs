@@ -1,4 +1,5 @@
 use super::common::{PubPoly, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
+use crate::bls12_381::ct::{ct_mul_g1, ct_scalar_mul_add};
 use crate::{
     context::{self, CiphertextContext, ReaderAuthorizationContext},
     error::{CryptoError, Result},
@@ -214,8 +215,7 @@ impl ThresholdDealer for ThresholdDealerNode {
             }
         };
         // U = rG. `r` is the ephemeral encryption randomness (secret) — constant-time.
-        let enc_cmt: G1Affine =
-            crate::bls12_381::ct::ct_mul_g1(&G1Affine::from(G1Projective::generator()), &r)?;
+        let enc_cmt: G1Affine = ct_mul_g1(&G1Affine::from(G1Projective::generator()), &r)?;
 
         // Compute the effective public key if derivation is provided.
         let effective_pk = if let Some(deriv_bytes) = derivation {
@@ -239,7 +239,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         // KEM shared point V = r * effective_pk = r*d*s*G (with derivation) or r*s*G.
         // Never serialized — only the AES key is derived from it. `r` is
         // secret — constant-time.
-        let shared_point: G1Affine = crate::bls12_381::ct::ct_mul_g1(&effective_pk, &r)?;
+        let shared_point: G1Affine = ct_mul_g1(&effective_pk, &r)?;
         let aes_key = Self::derive_key_from_point(&shared_point)?;
         let cipher = Aes256Gcm::new(&aes_key.into());
 
@@ -430,7 +430,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         //                       -> shared_point = xnc_cmt - x*effective_pk = d*r*s*G
         // x * effective_pk. `rdr_sk` is the reader's long-lived secret key —
         // constant-time.
-        let xs_g = crate::bls12_381::ct::ct_mul_g1(effective_pk, rdr_sk)?;
+        let xs_g = ct_mul_g1(effective_pk, rdr_sk)?;
         let shared_point: G1Affine =
             (G1Projective::from(*xnc_cmt) - G1Projective::from(xs_g)).into();
 
@@ -662,12 +662,12 @@ impl ThresholdDealerNode {
         // `effective_ski` is this node's secret share — constant-time.
         let xr_g_affine: G1Affine =
             (G1Projective::from(*rdr_pk) + G1Projective::from(*enc_cmt)).into(); // xrG = xG + rG
-        let xnc_ski = crate::bls12_381::ct::ct_mul_g1(&xr_g_affine, &effective_ski)?; // Ui = effective_ski * (xG + rG)
+        let xnc_ski = ct_mul_g1(&xr_g_affine, &effective_ski)?; // Ui = effective_ski * (xG + rG)
 
         // Compute effective commitment for binding into challenge hash.
         // Same secret `effective_ski` — constant-time.
         let generator = G1Affine::from(G1Projective::generator());
-        let effective_cmt: G1Affine = crate::bls12_381::ct::ct_mul_g1(&generator, &effective_ski)?;
+        let effective_cmt: G1Affine = ct_mul_g1(&generator, &effective_ski)?;
 
         // Produce random oracle challenge (ei)
         // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
@@ -675,8 +675,8 @@ impl ThresholdDealerNode {
         let ri = crate::helpers::sample_nonzero(|| Fr::rand(&mut rng));
         // `ri` is this proof's fresh nonce; leaking it solves `proofi = ri +
         // ei*effective_ski` for `effective_ski` directly — constant-time.
-        let ui_hat = crate::bls12_381::ct::ct_mul_g1(&xr_g_affine, &ri)?; // UiHat = ri * (xG + rG)
-        let hi_hat = crate::bls12_381::ct::ct_mul_g1(&generator, &ri)?; // HiHat = ri * G
+        let ui_hat = ct_mul_g1(&xr_g_affine, &ri)?; // UiHat = ri * (xG + rG)
+        let hi_hat = ct_mul_g1(&generator, &ri)?; // HiHat = ri * G
 
         let challenge_hash = Self::hash_reencrypt_proof_points(
             idx,
@@ -688,8 +688,8 @@ impl ThresholdDealerNode {
         let chlgi = Fr::from_le_bytes_mod_order(&challenge_hash);
 
         // Produce NIZK proof of re-encryption (fi)
-        // fi = ri + ei * effective_ski
-        let proofi = ri + (chlgi * effective_ski);
+        // fi = ri + ei * effective_ski — constant-time, same secret as above.
+        let proofi = ct_scalar_mul_add(&ri, &chlgi, &effective_ski)?;
 
         Ok((xnc_ski, chlgi, proofi))
     }
@@ -886,11 +886,11 @@ impl ThresholdDealerNode {
             }
         };
         // `k` is this proof's fresh nonce — constant-time.
-        let r1: G1Affine =
-            crate::bls12_381::ct::ct_mul_g1(&G1Affine::from(G1Projective::generator()), &k)?;
+        let r1: G1Affine = ct_mul_g1(&G1Affine::from(G1Projective::generator()), &k)?;
 
         let c = Self::encryption_proof_challenge(enc_cmt, &r1, context_digest, ciphertext_digest)?;
-        let z = k + (c * r);
+        // `r` is the ephemeral encryption randomness (secret) — constant-time.
+        let z = ct_scalar_mul_add(&k, &c, r)?;
         Ok((c, z))
     }
 
@@ -937,12 +937,12 @@ impl ThresholdDealerNode {
             }
         };
         // `k` is this proof's fresh nonce — constant-time.
-        let r1: G1Affine =
-            crate::bls12_381::ct::ct_mul_g1(&G1Affine::from(G1Projective::generator()), &k)?;
+        let r1: G1Affine = ct_mul_g1(&G1Affine::from(G1Projective::generator()), &k)?;
 
         let context_digest = context::reader_authorization_context_digest(context);
         let c = Self::reader_authorization_challenge(rdr_pk, &r1, &context_digest)?;
-        let z = k + (c * rdr_sk);
+        // `rdr_sk` is the reader's long-term secret key — constant-time.
+        let z = ct_scalar_mul_add(&k, &c, rdr_sk)?;
         Ok((c, z))
     }
 

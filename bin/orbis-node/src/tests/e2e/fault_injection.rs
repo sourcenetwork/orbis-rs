@@ -38,10 +38,10 @@ use crate::{
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
-use bulletin::vera::startup::MIN_NODE_BALANCE;
+use bulletin::vera_go::startup::MIN_NODE_BALANCE;
 use bulletin::BulletinImpl;
 use common::blockchain::{
-    events::ReportEventSubscription, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
+    events::ReportEventSubscription, ChainConfig, TxSigner, VeraGoClient, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -53,7 +53,7 @@ use proto::{
     v0::store_secret::store_secret_service_server::StoreSecretServiceServer,
 };
 use std::sync::Arc;
-use test_support::VeraTestContainer;
+use test_support::VeraGoTestContainer;
 use tokio::time::Duration;
 
 const MAX_TEST_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
@@ -102,7 +102,7 @@ struct FaultableThreeNodeNetwork {
     node_keys: Vec<String>,
     chain_config: ChainConfig,
     /// Keeps the Vera Docker container alive via RAII.
-    _chain: VeraTestContainer,
+    _chain: VeraGoTestContainer,
 }
 
 /// Build and spawn a gRPC server from an `InitializedNode`.
@@ -166,7 +166,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
     base_port: u16,
     reshare_interval_secs: u64,
 ) -> FaultableThreeNodeNetwork {
-    let chain = VeraTestContainer::new();
+    let chain = VeraGoTestContainer::new();
     let chain_config = chain.chain_config();
     let runtime_base_path = project_root::get_project_root().expect("resolve project root");
 
@@ -665,7 +665,7 @@ async fn test_reshare_private_pair_terminal_stall_triggers_on_chain_report() {
         "the accused node should not be its own reporter"
     );
 
-    let controller_client = VeraClient::with_signer(
+    let controller_client = VeraGoClient::with_signer(
         net.chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
             .expect("test account signer"),
@@ -827,7 +827,7 @@ async fn test_reshare_missing_topology_ack_triggers_on_chain_report() {
         "the accused node should not be its own reporter"
     );
 
-    let controller_client = VeraClient::with_signer(
+    let controller_client = VeraGoClient::with_signer(
         net.chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
             .expect("test account signer"),

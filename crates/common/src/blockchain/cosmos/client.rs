@@ -107,7 +107,7 @@ fn decode_abci_data(raw: Vec<u8>) -> Vec<u8> {
 }
 
 /// Client for interacting with Vera.
-pub struct VeraClient {
+pub struct VeraGoClient {
     config: ChainConfig,
     rpc_client: TendermintClient,
     http_client: HttpClient,
@@ -117,7 +117,7 @@ pub struct VeraClient {
     tx_lock: Mutex<()>,
 }
 
-impl VeraClient {
+impl VeraGoClient {
     /// Create a new client for queries only.
     pub async fn new(config: ChainConfig) -> Result<Self> {
         // Refuse a plaintext chain endpoint on an untrusted host: RPC/REST
@@ -961,7 +961,7 @@ struct GasInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::{VeraClient, RPC_POOL_IDLE_TIMEOUT};
+    use super::{VeraGoClient, RPC_POOL_IDLE_TIMEOUT};
     use crate::blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY};
     use serde_json::Value;
     use std::io;
@@ -1066,7 +1066,7 @@ mod tests {
         });
 
         let config = ChainConfig::builder().rpc_url(Some(rpc_url)).build();
-        let client = VeraClient::new(config).await.unwrap();
+        let client = VeraGoClient::new(config).await.unwrap();
 
         client.rpc_client.health().await.unwrap();
         let first_connection = request_connections_rx.recv().await.unwrap();
@@ -1093,7 +1093,7 @@ mod tests {
             .rpc_url(Some(endpoint.clone()))
             .rest_url(Some(endpoint))
             .build();
-        let mut client = VeraClient::new(config.clone()).await.unwrap();
+        let mut client = VeraGoClient::new(config.clone()).await.unwrap();
         client.signer = Some(TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).unwrap());
         let client = Arc::new(client);
         let tx_guard = client.tx_lock.lock().await;

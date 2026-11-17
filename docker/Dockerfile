@@ -38,9 +38,9 @@ ENV CARGO_BUILD_JOBS=${BUILD_JOBS}
 # The two branches must use identical feature flags in `cook` and `build` or the
 # cooked dependency artifacts don't match and get rebuilt.
 RUN case "$BACKEND" in \
-      cosmos) features="redb,authz-vera,bulletin-vera,iroh,${CRYPTO_FEATURE}"; \
+      cosmos|vera-go) features="redb,authz-vera-go,bulletin-vera-go,iroh,${CRYPTO_FEATURE}"; \
         if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="$features,integration-test,unsafe-testing"; fi ;; \
-      native) features="native,redb,iroh,${CRYPTO_FEATURE}"; \
+      vera) features="vera,redb,iroh,${CRYPTO_FEATURE}"; \
         if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="$features,fixture-startup"; fi ;; \
       *) echo 'Unsupported integration backend' >&2; exit 1 ;; \
     esac && printf '%s' "$features" > /orbis-features
@@ -58,28 +58,28 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 #
 # `-p orbis-node` (not just `--bin orbis-node`) matters here: without it, Cargo
 # scopes feature resolution to every workspace default-member, including
-# orbis-bench, which pins its own `orbis-node` dev-dependency to
+# orbis-bench, which pins its own `orbis-node` dependency to
 # `authz-vera`/`bulletin-vera` unconditionally — unifying those into this same
-# `orbis-node` crate instance and conflicting with a `native`-selected build.
+# `orbis-node` crate instance and conflicting with a `vera-go`-selected build.
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --release --locked -p orbis-node --bin orbis-node --no-default-features \
       --features "$(cat /orbis-features)" && \
-    if [ "$BACKEND" = "native" ]; then \
+    if [ "$BACKEND" = "vera" ]; then \
       cargo tree --locked -p orbis-node --no-default-features --features "$(cat /orbis-features)" \
-        --edges normal,build --prefix none > /native-dependencies.txt && \
-      if grep -E '^(cosmrs|tendermint(-rpc|-config|-proto)?|cosmos-sdk-proto) v' /native-dependencies.txt; then exit 1; fi; \
+        --edges normal,build --prefix none > /vera-dependencies.txt && \
+      if grep -E '^(cosmrs|tendermint(-rpc|-config|-proto)?|cosmos-sdk-proto) v' /vera-dependencies.txt; then exit 1; fi; \
     fi && cp /app/target/release/orbis-node /orbis-node-bin
 
-# Reuse the normal native build's Cargo artifacts for the fault-report fixture.
-FROM builder AS native-diagnostic-builder
+# Reuse the normal Vera build's Cargo artifacts for the fault-report fixture.
+FROM builder AS vera-diagnostic-builder
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    test "$BACKEND" = "native" && test "$ENABLE_INTEGRATION_TEST" = "false" && \
+    test "$BACKEND" = "vera" && test "$ENABLE_INTEGRATION_TEST" = "false" && \
     features="$(cat /orbis-features),fixture-startup,unsafe-testing" && \
     cargo build --release --locked -p orbis-node --bin orbis-node --no-default-features --features "$features" && \
     cargo tree --locked -p orbis-node --no-default-features --features "$features" \
-      --edges normal,build --prefix none > /native-diagnostic-dependencies.txt && \
-    if grep -E '^(cosmrs|tendermint(-rpc|-config|-proto)?|cosmos-sdk-proto) v' /native-diagnostic-dependencies.txt; then exit 1; fi && \
+      --edges normal,build --prefix none > /vera-diagnostic-dependencies.txt && \
+    if grep -E '^(cosmrs|tendermint(-rpc|-config|-proto)?|cosmos-sdk-proto) v' /vera-diagnostic-dependencies.txt; then exit 1; fi && \
     cp /app/target/release/orbis-node /orbis-node-bin
 
 # ---------------------------------------------------------------------------
@@ -96,8 +96,8 @@ EXPOSE 50051
 
 ENTRYPOINT ["orbis-node"]
 
-FROM runtime-base AS native-diagnostic
-COPY --from=native-diagnostic-builder /orbis-node-bin /usr/local/bin/orbis-node
+FROM runtime-base AS vera-diagnostic
+COPY --from=vera-diagnostic-builder /orbis-node-bin /usr/local/bin/orbis-node
 
 # Keep the normal runtime last so existing builds retain their default target.
 FROM runtime-base AS runtime

@@ -23,7 +23,7 @@
 //! `RingPayload` comes from `BulletinTestDriver::read_ring_state_facts`
 //! rather than a Cosmos-only raw cli-tool bulletin read. `NodeRole::Offline`
 //! already has live registration support on native
-//! (`NativeTestEnvironment::provision`'s `fixture_node`/`NodeCommand::Register`
+//! (`VeraTestEnvironment::provision`'s `fixture_node`/`NodeCommand::Register`
 //! path) — contrary to this file's own previous doc comment, that was never
 //! actually missing by the time this was ported.
 

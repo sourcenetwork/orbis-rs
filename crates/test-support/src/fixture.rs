@@ -181,7 +181,7 @@ pub struct ScenarioFixture {
     pub node_demerits: Vec<NodeDemeritFixture>,
     /// Stand up a Defra container alongside the rest of the environment, for
     /// a ring created with `RingSpec::pre_share_endpoints` set. Read by both
-    /// concrete environments (`CosmosTestEnvironment`/`NativeTestEnvironment`),
+    /// concrete environments (`CosmosTestEnvironment`/`VeraTestEnvironment`),
     /// each exposing its own `defra_url`/`defra_container_url` escape
     /// hatches (not part of any shared trait — see each one's own doc
     /// comment).

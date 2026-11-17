@@ -209,7 +209,16 @@ impl PolynomialCommitmentTrait for PolynomialCommitment {
 
     fn verify_share(&self, share_id: u32, share_value: &Fr) -> bool {
         let expected = self.eval(share_id);
-        let actual: G1Affine = (G1Projective::generator() * share_value).into();
+        // share_value is the recipient's long-term secret share, so this must
+        // go through the constant-time path rather than arkworks' `*`, which
+        // branches on every bit of the scalar (see `bls12_381::ct` module docs).
+        let actual = match crate::bls12_381::ct::ct_mul_g1(
+            &G1Affine::from(G1Projective::generator()),
+            share_value,
+        ) {
+            Ok(point) => point,
+            Err(_) => return false,
+        };
 
         // Use constant-time comparison to prevent timing side-channels
         let mut expected_bytes = Vec::new();
