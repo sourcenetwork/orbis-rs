@@ -440,13 +440,13 @@ across the upgrade (a follow-up will add an in-place `verad` swap). Force it
 on with `--fresh-target-chain` / off with `--no-fresh-target-chain`, or pin
 the target chain with `--to-vera-go-ref <git-ref>`.
 
-The **Upgrade Compatibility** GitHub Actions workflow runs automatically for
-pull requests targeting `develop`, comparing the immutable PR base SHA with
-the immutable PR head SHA. BLS12-381 and Jubjub run as independent jobs.
-The workflow also supports manual dispatch with explicit baseline and target
-refs. Both revisions must support the selected curve. When a PR baseline predates
-Jubjub, that upgrade job is marked not applicable / not tested; changing curves
-requires fresh DKG rather than upgrading the existing ring state.
+The **Upgrade Compatibility** workflow uses a pinned launch baseline and the
+PR head (or manually selected target). BLS12-381 exercises the existing upgrade
+path. Jubjub explicitly uses `--fresh-target-chain`: its Poseidon opening/tag
+proof profile and canonical scalar PET targets are incompatible with the
+baseline's SHA-based documents. The job exercises target DKG, PRE, signing and
+resharing; it does not claim old-document or chain-state continuity. Both
+revisions must support the selected curve.
 
 ### Metrics & Monitoring
 
