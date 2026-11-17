@@ -23,7 +23,7 @@ const NAME: &str = "elgamal/jubjub";
 const PROTOCOL: &[u8] = b"elgamal-jubjub-reencrypt-challenge-v1";
 const DERIVATION_DOMAIN: &[u8] = b"elgamal-jubjub-derivation-v1";
 /// Domain separator for the encryption proof's Fiat-Shamir challenge.
-const POLICY_BINDING_PROOF_DOMAIN: &[u8] = b"orbis-jubjub-policy-binding-proof-v1";
+const POLICY_BINDING_PROOF_DOMAIN: &[u8] = b"orbis-encryption-proof-poseidon-v2";
 /// Domain separator for the reader-authorization signature's Fiat-Shamir
 /// challenge. Distinct from the retired `READER_POP_DOMAIN` ("...-pop-proof-v1")
 /// so a legacy, request-unbound proof can never be mistaken for one of these.
@@ -246,11 +246,15 @@ impl ThresholdDealer for ThresholdDealerNode {
             .encrypt(nonce, payload)
             .map_err(|_| CryptoError::ElGamalError("Encryption failed".to_string()))?;
 
-        let ciphertext_digest = context::ciphertext_digest(&nonce_bytes, &ciphertext);
+        let ciphertext_digest = context::proof_ciphertext_digest(&nonce_bytes, &ciphertext);
 
         // Schnorr PoK of r for U = rG, bound to context_digest and ciphertext_digest.
-        let (challenge, response) =
-            Self::generate_encryption_proof(&r, &enc_cmt, &context_digest, &ciphertext_digest)?;
+        let (challenge, response) = Self::generate_encryption_proof(
+            &r,
+            &enc_cmt,
+            &context::proof_context_digest(context, &enc_cmt_bytes),
+            &ciphertext_digest,
+        )?;
 
         let mut challenge_bytes = Vec::new();
         challenge.write_bytes(&mut challenge_bytes)?;
@@ -331,8 +335,9 @@ impl ThresholdDealer for ThresholdDealerNode {
         // R1' = z*G - c*U
         let r1_prime = Element::generator() * response - enc_cmt * challenge;
 
-        let context_digest = context::context_digest(context, &secret.enc_cmt);
-        let ciphertext_digest = context::ciphertext_digest(&secret.nonce, &secret.encrypted_data);
+        let context_digest = context::proof_context_digest(context, &secret.enc_cmt);
+        let ciphertext_digest =
+            context::proof_ciphertext_digest(&secret.nonce, &secret.encrypted_data);
 
         let recomputed_challenge = Self::encryption_proof_challenge(
             &enc_cmt,
@@ -798,30 +803,25 @@ impl ThresholdDealerNode {
     }
 
     /// Fiat-Shamir challenge:
-    /// `Fr::from_le_bytes_mod_order(SHA512(POLICY_BINDING_PROOF_DOMAIN || compress(U)
+    /// `Fr::from_le_bytes_mod_order(Poseidon(POLICY_BINDING_PROOF_DOMAIN || compress(U)
     ///   || compress(R1) || context_digest || ciphertext_digest))`.
     ///
-    /// SHA-512 is used (the encryption proof is entirely off-circuit) so the
-    /// reduction bias into `Fr` is negligible.
+    /// The field output is reduced canonically into `Fr`; native and circuit
+    /// implementations use identical byte framing and Poseidon parameters.
     fn encryption_proof_challenge(
         enc_cmt: &Element,
         r1: &Element,
         context_digest: &[u8; 32],
         ciphertext_digest: &[u8; 32],
     ) -> Result<Fr> {
-        let mut hasher = Sha512::new();
-        hasher.update(POLICY_BINDING_PROOF_DOMAIN);
-
-        let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
-        for point in [enc_cmt, r1] {
-            bytes.clear();
-            point.write_bytes(&mut bytes)?;
-            hasher.update(&bytes);
-        }
-        hasher.update(context_digest);
-        hasher.update(ciphertext_digest);
-
-        Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
+        let mut transcript = POLICY_BINDING_PROOF_DOMAIN.to_vec();
+        enc_cmt.write_bytes(&mut transcript)?;
+        r1.write_bytes(&mut transcript)?;
+        transcript.extend(context_digest);
+        transcript.extend(ciphertext_digest);
+        Ok(Fr::from_le_bytes_mod_order(&super::poseidon::digest(
+            &transcript,
+        )))
     }
 
     /// Generate the Schnorr signature of `rdr_sk` for `rdr_pk = rdr_sk*G`,

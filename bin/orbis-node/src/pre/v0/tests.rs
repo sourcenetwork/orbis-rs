@@ -621,7 +621,23 @@ async fn wait_for_dkg_completion(
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pre_with_inline_document_end_to_end() {
-    let db_name = "test_pre_with_inline_document_end_to_end";
+    inline_document_round_trip(false).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_read_all_releases_pet_document_without_pet() {
+    inline_document_round_trip(true).await;
+}
+
+async fn inline_document_round_trip(with_pet: bool) {
+    use crypto::context::PetTagBinding;
+    use crypto::r#trait::{Pet, PetTag};
+    let db_name = if with_pet {
+        "pre_read_all"
+    } else {
+        "pre_inline"
+    };
     let db_paths = [
         test_db_path(&format!("{}_1", db_name)),
         test_db_path(&format!("{}_2", db_name)),
@@ -658,13 +674,42 @@ async fn test_pre_with_inline_document_end_to_end() {
         .await
         .expect("start_dkg should succeed");
 
-    let ring_payload = wait_for_dkg_completion(&network).await;
+    let mut ring_payload = wait_for_dkg_completion(&network).await;
     let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
     let aggregate_pk =
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     let secret_message = b"Hello Bob! This one skips the bulletin entirely.";
-    let ciphertext_context = generate_test_context(&ring_pk_bytes);
+    let mut ciphertext_context = generate_test_context(&ring_pk_bytes);
+    let tag_witness = if with_pet {
+        let (_, pet_pk) = crypto::helpers::generate_keypair().unwrap();
+        let (r_tag, r_point) = crypto::helpers::generate_keypair().unwrap();
+        let fingerprint = crypto::PetImpl::owner_fingerprint(b"alice").unwrap();
+        let mask = crypto::helpers::mul_point(&pet_pk, &r_tag).unwrap();
+        let masked = crypto::helpers::add_points(&fingerprint, &mask).unwrap();
+        let pet_pk_bytes = CryptoSerialize::to_bytes(&pet_pk).unwrap();
+        let tag = PetTag {
+            ephemeral_point: CryptoSerialize::to_bytes(&r_point).unwrap(),
+            masked_fingerprint: CryptoSerialize::to_bytes(&masked).unwrap(),
+        };
+        let bulletin = network.dummy_bulletin.as_ref().unwrap();
+        let ring_id = get_test_ring_post(bulletin).id;
+        ring_payload.requires_pet = true;
+        ring_payload.pet_pk = Some(hex::encode(&pet_pk_bytes));
+        bulletin
+            .set_ring(ring_id.clone(), ring_payload.clone())
+            .unwrap();
+        ciphertext_context.permission = "read".into();
+        ciphertext_context.pet_tag = Some(PetTagBinding {
+            ring_id,
+            pet_pk: pet_pk_bytes,
+            ephemeral_point: tag.ephemeral_point.clone(),
+            masked_fingerprint: tag.masked_fingerprint.clone(),
+        });
+        Some((r_tag, tag))
+    } else {
+        None
+    };
     let (_enc_cmt, encrypted_secret, proof) =
         PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
             .expect("Encryption should succeed");
@@ -684,6 +729,25 @@ async fn test_pre_with_inline_document_end_to_end() {
 
     // Built the same way `setup_document_in_bulletin` would, but never posted anywhere —
     // object_id is computed locally instead of coming back from a bulletin write.
+    let (pet_tag, pet_tag_proof) = if let Some((r_tag, tag)) = tag_witness {
+        let binding = ciphertext_context.pet_tag.as_ref().unwrap();
+        let digest = crypto::pet_context::tag_proof_digest(
+            &tag.ephemeral_point,
+            &tag.masked_fingerprint,
+            &binding.pet_pk,
+            &binding.ring_id,
+            &ciphertext_context,
+            &encrypted_secret,
+            &proof,
+        );
+        let tag_proof = crypto::PetImpl::prove_tag_knowledge(&r_tag, &tag, &digest).unwrap();
+        (
+            Some(String::try_from(tag).unwrap()),
+            Some(String::try_from(tag_proof).unwrap()),
+        )
+    } else {
+        (None, None)
+    };
     let document = DocumentPayload {
         ring_id: ring_post.id.clone(),
         document: String::from_utf8(secret_bytes.clone())
@@ -691,12 +755,34 @@ async fn test_pre_with_inline_document_end_to_end() {
         proof: String::try_from(proof).expect("serialize EncryptionProof"),
         policy_id: "test-policy".to_string(),
         resource: "test-resource".to_string(),
-        permission: "test-permission".to_string(),
+        permission: ciphertext_context.permission.clone(),
         tier: None,
         timestamp: None,
-        pet_tag: None,
-        pet_tag_proof: None,
+        pet_tag,
+        pet_tag_proof,
     };
+    if with_pet {
+        use crate::pre::v0::helpers::{verify_encryption_binding, verify_tag_binding};
+        verify_encryption_binding(
+            &ciphertext_context,
+            &encrypted_secret,
+            document.proof.clone(),
+        )
+        .unwrap();
+        verify_tag_binding(&ciphertext_context, &encrypted_secret, &document).unwrap();
+        let mut tampered = document.clone();
+        tampered.pet_tag_proof = None;
+        assert!(verify_tag_binding(&ciphertext_context, &encrypted_secret, &tampered).is_err());
+        let mut altered_secret = encrypted_secret.clone();
+        altered_secret.encrypted_data[0] ^= 1;
+        assert!(verify_encryption_binding(
+            &ciphertext_context,
+            &altered_secret,
+            document.proof.clone()
+        )
+        .is_err());
+        assert!(verify_tag_binding(&ciphertext_context, &altered_secret, &document).is_err());
+    }
     let object_id = common::blockchain::orbis::generate_document_id(
         &document.ring_id,
         &document.document,

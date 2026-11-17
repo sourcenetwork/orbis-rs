@@ -2479,28 +2479,3 @@ fn certificate_rejects_wrong_target_fingerprint() {
         "a certificate built against one target must not verify against a different one"
     );
 }
-
-#[tokio::test]
-async fn tag_proof_bypass_is_ring_configured_and_preserves_document_binding() {
-    let db_name = "pet_tag_proof_bypass";
-    let mut fixture = build_fixture(3, 2, AUDIT_TARGET);
-    fixture.document.proof = r#"{"challenge":[],"response":[]}"#.into();
-    fixture.document.pet_tag_proof = Some(r#"{"challenge":[],"response":[]}"#.into());
-    let mut coordinator = test_coordinator(db_name, &fixture).await;
-    let mut ctx = authorized_pet_context(&fixture);
-    assert!(matches!(
-        coordinator.verify_pet_check_request(&ctx).await,
-        Err(PetError::Crypto(_))
-    ));
-    Arc::get_mut(&mut coordinator.app_state)
-        .unwrap()
-        .proof_bypass_rings
-        .push(RING_ID.into());
-    coordinator.verify_pet_check_request(&ctx).await.unwrap();
-    ctx.object_id = "other-document".into();
-    assert!(matches!(
-        coordinator.verify_pet_check_request(&ctx).await,
-        Err(PetError::InvalidInput(_))
-    ));
-    cleanup_db(&test_db_path(db_name));
-}

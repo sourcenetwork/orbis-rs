@@ -19,7 +19,7 @@ const NAME: &str = "pet/jubjub";
 /// hash-to-scalar uses can never collide on the same input bytes.
 const FINGERPRINT_DOMAIN: &[u8] = b"orbis-jubjub-pet-fingerprint-v1";
 /// Domain separator for the tag-knowledge proof's Fiat-Shamir challenge.
-const TAG_KNOWLEDGE_PROOF_DOMAIN: &[u8] = b"orbis-jubjub-pet-tag-knowledge-proof-v1";
+const TAG_KNOWLEDGE_PROOF_DOMAIN: &[u8] = b"orbis-tag-knowledge-poseidon-v2";
 /// Domain separator for the per-share PET-check DLEQ proof's Fiat-Shamir
 /// challenge. Distinct from `TAG_KNOWLEDGE_PROOF_DOMAIN` and from PRE's own
 /// reencryption-proof domain so a proof from one scheme can never be
@@ -460,25 +460,20 @@ impl PetNode {
     }
 
     /// Fiat-Shamir challenge:
-    /// `Fr::from_le_bytes_mod_order(SHA512(TAG_KNOWLEDGE_PROOF_DOMAIN || compress(R)
+    /// `Fr::from_le_bytes_mod_order(Poseidon(TAG_KNOWLEDGE_PROOF_DOMAIN || compress(R)
     ///   || compress(R1) || tag_transcript_digest))`.
     fn tag_knowledge_proof_challenge(
         ephemeral_point: &Element,
         r1: &Element,
         tag_transcript_digest: &[u8; 32],
     ) -> Result<Fr> {
-        let mut hasher = Sha512::new();
-        hasher.update(TAG_KNOWLEDGE_PROOF_DOMAIN);
-
-        let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
-        for point in [ephemeral_point, r1] {
-            bytes.clear();
-            point.write_bytes(&mut bytes)?;
-            hasher.update(&bytes);
-        }
-        hasher.update(tag_transcript_digest);
-
-        Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
+        let mut transcript = TAG_KNOWLEDGE_PROOF_DOMAIN.to_vec();
+        ephemeral_point.write_bytes(&mut transcript)?;
+        r1.write_bytes(&mut transcript)?;
+        transcript.extend(tag_transcript_digest);
+        Ok(Fr::from_le_bytes_mod_order(&super::poseidon::digest(
+            &transcript,
+        )))
     }
 
     /// Fiat-Shamir challenge for the per-share PET-check DLEQ proof — see

@@ -769,19 +769,9 @@ where
             &secret,
             &payload_proof,
         );
-        if self.app_state.bypasses_proofs(&ctx.document.ring_id) {
-            for bytes in [&tag.ephemeral_point, &tag.masked_fingerprint] {
-                let point =
-                    P::PublicKey::from_bytes(bytes).map_err(|e| PetError::Crypto(e.to_string()))?;
-                if point == P::PublicKey::default() {
-                    return Err(PetError::InvalidInput("identity ownership tag".into()));
-                }
-            }
-        } else {
-            P::verify_tag_knowledge(&tag, &tag_proof, &digest).map_err(|e| {
-                PetError::Crypto(format!("Tag-knowledge proof verification failed: {}", e))
-            })?;
-        }
+        P::verify_tag_knowledge(&tag, &tag_proof, &digest).map_err(|e| {
+            PetError::Crypto(format!("Tag-knowledge proof verification failed: {}", e))
+        })?;
 
         Ok((tag, pet_pk_hex, digest, ring_payload))
     }

@@ -286,19 +286,20 @@ where
             return Err(error);
         }
 
-        // Refuse to release a share for a `requires_pet` ring unless a genuine threshold
-        // PET check already passed — independently re-verified here, not trusted from the
-        // initiator's word. Without this, a compromised or simply modified initiator could
-        // skip PET entirely and still collect valid reencryption shares from every honest
-        // peer, since nothing else in this function consults `requires_pet`. See
-        // `pet::v0::coordinator::verification::verify_pet_admission`'s doc comment for why
-        // this necessarily exposes the audit target to every committee member, not just the
-        // initiator.
-        if crate::pre::v0::helpers::requires_pet(
+        // Each responder independently requires either the existing read_all
+        // privilege or verified threshold PET evidence; a coordinator cannot
+        // choose an exemption. Named requests always run PET.
+        let pet_required = crate::pre::v0::helpers::requires_pet(
+            &*self.app_state.authz,
             &ring_payload,
             &document_payload,
-            self.app_state.bypasses_proofs(&document_payload.ring_id),
-        ) {
+            &ctx.object_id,
+            &actor_id,
+            ctx.valid_window.clone(),
+            ctx.audit_target_object_id.as_deref(),
+        )
+        .await?;
+        if pet_required {
             let audit_target_object_id = ctx.audit_target_object_id.clone().ok_or_else(|| {
                 PreError::Unauthorized(
                     "ring requires PET but the request carried no audit_target_object_id"
@@ -424,12 +425,49 @@ where
         // 6. Perform reencryption
         let dealer = T::new();
         // Check permission binding - verify proof before re-encryption
-        verify_encryption_binding(
+        verify_encryption_binding(&ciphertext_context, &secret, document_payload.proof.clone())?;
+        crate::pre::v0::helpers::verify_tag_binding(
             &ciphertext_context,
             &secret,
-            document_payload.proof.clone(),
-            self.app_state.bypasses_proofs(&document_payload.ring_id),
+            &document_payload,
         )?;
+        // PET may take several rounds. Recheck live permissions immediately before
+        // producing a share; a revoked general grant cannot reuse an earlier exemption.
+        check_policy_access(
+            &*self.app_state.authz,
+            &document_payload,
+            &ctx.object_id,
+            &actor_id,
+            ctx.valid_window.clone(),
+        )
+        .await?;
+        if crate::pre::v0::helpers::requires_pet(
+            &*self.app_state.authz,
+            &ring_payload,
+            &document_payload,
+            &ctx.object_id,
+            &actor_id,
+            ctx.valid_window.clone(),
+            ctx.audit_target_object_id.as_deref(),
+        )
+        .await?
+            && !pet_required
+        {
+            return Err(PreError::Unauthorized(
+                "PET exemption is no longer authorized".into(),
+            ));
+        }
+        if let Some(target) = ctx.audit_target_object_id.as_deref() {
+            crate::pet::v0::coordinator::verification::check_pet_permission(
+                &*self.app_state.authz,
+                &document_payload,
+                target,
+                &actor_id,
+                ctx.valid_window.clone(),
+            )
+            .await
+            .map_err(PreError::from)?;
+        }
         let reply = dealer
             .reencrypt(
                 &dist_key_share,

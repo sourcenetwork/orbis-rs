@@ -320,8 +320,6 @@ where
 {
     /// Public key for this node's Vera signing key.
     pub node_key: String,
-    /// Rings whose application already proves encryption and tag knowledge.
-    pub proof_bypass_rings: Vec<String>,
     /// Network for node-to-node communication
     pub network: Arc<dyn Network>,
     /// Local Storage implementation for storing items locally
@@ -364,10 +362,6 @@ impl<D> AppState<D>
 where
     D: Dkg + Clone + 'static,
 {
-    pub fn bypasses_proofs(&self, ring_id: &str) -> bool {
-        self.proof_bypass_rings.iter().any(|id| id == ring_id)
-    }
-
     pub fn new(
         node_key: String,
         network: Arc<dyn Network>,
@@ -377,7 +371,6 @@ where
     ) -> Self {
         Self {
             node_key,
-            proof_bypass_rings: Vec::new(),
             network,
             local_storage,
             dkg_session_state: Arc::new(SessionStateManager::new()),

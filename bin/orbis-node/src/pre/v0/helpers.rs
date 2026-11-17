@@ -276,17 +276,7 @@ pub fn verify_encryption_binding(
     context: &CiphertextContext,
     secret: &Secret,
     proof_str: String,
-    bypass: bool,
 ) -> Result<()> {
-    if bypass {
-        for bytes in [&secret.enc_cmt, &context.ring_pk] {
-            let point = G1Affine::from_bytes(bytes).map_err(|e| PreError::Crypto(e.to_string()))?;
-            if point == G1Affine::default() {
-                return Err(PreError::InvalidInput("identity encryption point".into()));
-            }
-        }
-        return Ok(());
-    }
     let proof: EncryptionProof = EncryptionProof::try_from(proof_str).map_err(|e| {
         PreError::Deserialization(format!("Failed to deserialize encryption proof: {}", e))
     })?;
@@ -369,43 +359,108 @@ pub async fn store_response(
 mod tests {
     use super::*;
 
-    #[test]
-    fn proof_bypass_keeps_point_validation_and_is_opt_in() {
-        use crypto::CryptoSerialize;
-        let (_, key) = crypto::helpers::generate_keypair().unwrap();
-        let bytes = key.to_bytes().unwrap();
-        let context =
-            build_ciphertext_context(&hex::encode(&bytes), &document_b(), None, None).unwrap();
-        let mut secret = Secret {
-            enc_cmt: bytes,
-            encrypted_data: vec![1; 32],
-            nonce: vec![0; 12],
-        };
-        let proof = r#"{"challenge":[],"response":[]}"#.to_string();
-        assert!(verify_encryption_binding(&context, &secret, proof.clone(), false).is_err());
-        verify_encryption_binding(&context, &secret, proof.clone(), true).unwrap();
-        secret.enc_cmt = G1Affine::default().to_bytes().unwrap();
-        assert!(verify_encryption_binding(&context, &secret, proof, true).is_err());
+    struct ScopedAuthz {
+        read: bool,
+        all: std::sync::atomic::AtomicBool,
+        expected: AccessCheckRequest,
     }
-
-    #[test]
-    fn read_all_bypass_is_bound_to_the_native_document_id() {
+    #[async_trait::async_trait]
+    impl Authz for ScopedAuthz {
+        async fn check(&self, bytes: Vec<u8>, actor: &str) -> authz::error::Result<bool> {
+            assert_eq!(actor, "reader");
+            let request = AccessCheckRequest::from_bytes(&bytes)?;
+            let mut expected = self.expected.clone();
+            expected.permission = request.permission.clone();
+            assert_eq!(bytes, expected.to_bytes()?);
+            Ok(match request.permission.as_str() {
+                "read" => self.read,
+                "read_all" => self.all.load(std::sync::atomic::Ordering::SeqCst),
+                _ => false,
+            })
+        }
+        async fn capture_evidence(&self, _: Vec<u8>, _: &str) -> authz::error::Result<Vec<u8>> {
+            unreachable!()
+        }
+        async fn verify_evidence(
+            &self,
+            _: &[u8],
+            _: Vec<u8>,
+            _: &str,
+        ) -> authz::error::Result<authz::r#trait::VerifiedEvidence> {
+            unreachable!()
+        }
+    }
+    #[tokio::test]
+    async fn pet_exemption_uses_current_exact_object_permission_without_mutating_document() {
         let mut document = document_b();
+        document.permission = "read".into();
         let id = object_id_for(&document);
+        let window = Some(ValidWindow { start: 10, end: 20 });
+        let authz = ScopedAuthz {
+            read: true,
+            all: std::sync::atomic::AtomicBool::new(true),
+            expected: AccessCheckRequest::new(
+                document.policy_id.clone(),
+                document.resource.clone(),
+                id.clone(),
+                "read".into(),
+                document.tier.clone(),
+                document.timestamp,
+                window.clone(),
+            ),
+        };
         let ring = RingPayload {
             requires_pet: true,
             ..Default::default()
         };
-        assert!(requires_pet(&ring, &document, true));
-        document.permission = "read_all".into();
-        assert_ne!(id, object_id_for(&document));
-        assert!(check_document_id_binding(&id, &document).is_err());
-        assert!(requires_pet(&ring, &document, false));
-        assert!(!requires_pet(&ring, &document, true));
-        document.proof = r#"{"challenge":[],"response":[]}"#.into();
-        document.pet_tag = Some(r#"{"ephemeral_point":[1],"masked_fingerprint":[2]}"#.into());
-        document.pet_tag_proof = Some(r#"{"challenge":[],"response":[]}"#.into());
-        check_document_id_binding(&object_id_for(&document), &document).unwrap();
+        check_policy_access(&authz, &document, &id, "reader", window.clone())
+            .await
+            .unwrap();
+        assert!(!requires_pet(
+            &authz,
+            &ring,
+            &document,
+            &id,
+            "reader",
+            window.clone(),
+            None
+        )
+        .await
+        .unwrap());
+        assert!(requires_pet(
+            &authz,
+            &ring,
+            &document,
+            &id,
+            "reader",
+            window.clone(),
+            Some("person")
+        )
+        .await
+        .unwrap());
+        authz.all.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(requires_pet(
+            &authz,
+            &ring,
+            &document,
+            &id,
+            "reader",
+            window.clone(),
+            None
+        )
+        .await
+        .unwrap());
+        assert_eq!(object_id_for(&document), id);
+        let denied = ScopedAuthz {
+            read: false,
+            all: std::sync::atomic::AtomicBool::new(true),
+            expected: authz.expected,
+        };
+        assert!(
+            check_policy_access(&denied, &document, &id, "reader", window)
+                .await
+                .is_err()
+        );
     }
 
     /// A well-formed encrypted-`Secret` JSON; `tag` varies the ciphertext bytes.
@@ -549,8 +604,72 @@ mod tests {
     }
 }
 
-/// ACP checks this permission on the exact ID before either PRE path. Changing
-/// read to read_all changes the native document ID and requires a separate grant.
-pub(crate) fn requires_pet(ring: &RingPayload, document: &DocumentPayload, bypass: bool) -> bool {
-    ring.requires_pet && !(bypass && document.permission == "read_all")
+/// A named request always runs PET. General access uses the existing read_all
+/// privilege on the same immutable document; the normal read check is mandatory.
+pub(crate) async fn requires_pet(
+    authz: &(dyn Authz + Send + Sync),
+    ring: &RingPayload,
+    document: &DocumentPayload,
+    object_id: &str,
+    actor: &str,
+    window: Option<ValidWindow>,
+    target: Option<&str>,
+) -> Result<bool> {
+    if !ring.requires_pet {
+        return Ok(false);
+    }
+    if target.is_some() {
+        return Ok(true);
+    }
+    let request = AccessCheckRequest::new(
+        document.policy_id.clone(),
+        document.resource.clone(),
+        object_id.into(),
+        "read_all".into(),
+        document.tier.clone(),
+        document.timestamp,
+        window,
+    )
+    .to_bytes()
+    .map_err(|e| PreError::AuthZ(e.to_string()))?;
+    Ok(!authz
+        .check(request, actor)
+        .await
+        .map_err(|e| PreError::AuthZ(e.to_string()))?)
+}
+
+/// PET exemption never exempts the document's tag-knowledge proof.
+pub(crate) fn verify_tag_binding(
+    context: &CiphertextContext,
+    secret: &Secret,
+    document: &DocumentPayload,
+) -> Result<()> {
+    use crypto::r#trait::{Pet, PetTag, TagKnowledgeProof};
+    let Some(binding) = &context.pet_tag else {
+        return Ok(());
+    };
+    let tag = PetTag {
+        ephemeral_point: binding.ephemeral_point.clone(),
+        masked_fingerprint: binding.masked_fingerprint.clone(),
+    };
+    let proof = TagKnowledgeProof::try_from(
+        document
+            .pet_tag_proof
+            .clone()
+            .ok_or_else(|| PreError::InvalidInput("missing tag proof".into()))?,
+    )
+    .map_err(|e| PreError::Deserialization(e.to_string()))?;
+    let payload = EncryptionProof::try_from(document.proof.clone())
+        .map_err(|e| PreError::Deserialization(e.to_string()))?;
+    let digest = crypto::pet_context::tag_proof_digest(
+        &tag.ephemeral_point,
+        &tag.masked_fingerprint,
+        &binding.pet_pk,
+        &binding.ring_id,
+        context,
+        secret,
+        &payload,
+    );
+    crypto::PetImpl::verify_tag_knowledge(&tag, &proof, &digest)
+        .map_err(|e| PreError::Crypto(e.to_string()))
 }

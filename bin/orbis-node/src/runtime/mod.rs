@@ -281,14 +281,13 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     tracing::info!(connection = %connection_string, "Iroh peer route");
 
     // Create shared application state (needed for router)
-    let mut app_state = AppState::<DkgImpl>::new(
+    let app_state = AppState::<DkgImpl>::new(
         config.identity.node_key.clone(),
         config.network.clone(),
         config.local_storage,
         config.authz,
         config.bulletin,
     );
-    app_state.proof_bypass_rings = config.args.proof_bypass_rings.clone();
     let app_state_arc = Arc::new(app_state);
 
     // Start the router in the background with DKG, PRE, and Sign protocol handlers
