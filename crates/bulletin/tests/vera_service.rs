@@ -667,7 +667,9 @@ async fn native_report_and_reshare_recover_certified_completion() {
         .unwrap_err();
     assert!(matches!(
         denied,
-        vera_client::ClientError::TxReverted { .. }
+        vera_client::ClientError::Refused { ref refusal, .. }
+            if refusal.module == vera_client::RefusingModule::Acp
+                && refusal.kind == vera_client::RefusalKind::Unauthorized
     ));
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
