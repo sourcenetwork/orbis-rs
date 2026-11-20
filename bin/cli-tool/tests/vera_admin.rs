@@ -360,9 +360,21 @@ async fn vera_admin_provisions_ring_and_recovers_exact_results() {
     )
     .unwrap();
     let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
-    let created = client.native_create_policy(&worker, b"name: vera_admin\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n", 1, vera_client::random_policy_nonce()).await.unwrap();
+    let definition = "name: vera_admin\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n";
+    let nonce = vera_client::random_policy_nonce();
+    let policy = vera_client::predict_policy_id(
+        definition,
+        &vera_client::PolicyMarshalingType::ShortYaml,
+        &nonce,
+        worker.did(),
+    )
+    .unwrap();
+    let created = client
+        .native_create_policy(&worker, definition.as_bytes(), 1, nonce)
+        .await
+        .unwrap();
     receipt(&client, created.transaction_hash, &trusted).await;
-    let policy = client.get_policy_ids().await.unwrap().pop().unwrap();
+    assert!(client.get_policy_ids().await.unwrap().contains(&policy));
     let policy_bytes = B256::from_slice(&hex::decode(&policy).unwrap());
     let registered = client
         .native_register_object(&worker, policy_bytes, &policy, "ring_policy")

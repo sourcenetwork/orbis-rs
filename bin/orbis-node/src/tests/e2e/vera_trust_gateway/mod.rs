@@ -273,17 +273,21 @@ impl GatewayNetwork {
             infos.push(nodes[index].ready(&addresses[index], &logs[index]).await);
         }
         let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
+        let definition = super::policy_generations::definition(true, true);
+        let nonce = vera_client::random_policy_nonce();
+        let policy = vera_client::predict_policy_id(
+            &definition,
+            &vera_client::PolicyMarshalingType::ShortYaml,
+            &nonce,
+            worker.did(),
+        )
+        .unwrap();
         let created = client
-            .native_create_policy(
-                &worker,
-                super::policy_generations::definition(true, true).as_bytes(),
-                1,
-                vera_client::random_policy_nonce(),
-            )
+            .native_create_policy(&worker, definition.as_bytes(), 1, nonce)
             .await
             .unwrap();
         confirmed(&client, created.transaction_hash, &trusted).await;
-        let policy = client.get_policy_ids().await.unwrap().pop().unwrap();
+        assert!(client.get_policy_ids().await.unwrap().contains(&policy));
         let policy_bytes = B256::from_slice(&hex::decode(&policy).unwrap());
         let registered = client
             .native_register_object(&worker, policy_bytes, &policy, "ring_policy")

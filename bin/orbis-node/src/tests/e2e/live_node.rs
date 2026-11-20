@@ -737,26 +737,39 @@ impl Chain {
         }
     }
 
-    async fn create_ring_policy(&self) -> String {
+    /// Create `definition` under a random nonce and return its id, predicted
+    /// from the definition, the worker and the nonce. Vera lists policy ids
+    /// in id order, so a listing position does not identify the new one.
+    async fn create_policy(&self, definition: &str) -> String {
+        let nonce = vera_client::random_policy_nonce();
+        let policy_id = vera_client::predict_policy_id(
+            definition,
+            &vera_client::PolicyMarshalingType::ShortYaml,
+            &nonce,
+            self.worker.did(),
+        )
+        .expect("predict native policy id");
         let created = self
             .client
-            .native_create_policy(
-                &self.worker,
-                super::report_scenario::STANDARD_RING_POLICY_YAML.as_bytes(),
-                1,
-                vera_client::random_policy_nonce(),
-            )
+            .native_create_policy(&self.worker, definition.as_bytes(), 1, nonce)
             .await
-            .expect("create native ring policy");
+            .expect("create native policy");
         self.confirmed(created.transaction_hash).await;
+        assert!(
+            self.client
+                .get_policy_ids()
+                .await
+                .expect("list policy ids")
+                .contains(&policy_id),
+            "created policy {policy_id} must be listed"
+        );
+        policy_id
+    }
 
+    async fn create_ring_policy(&self) -> String {
         let policy_id = self
-            .client
-            .get_policy_ids()
-            .await
-            .expect("list policy ids")
-            .pop()
-            .expect("new policy id");
+            .create_policy(super::report_scenario::STANDARD_RING_POLICY_YAML)
+            .await;
         let policy_bytes = Self::policy_bytes(&policy_id);
 
         let registered = self
@@ -932,23 +945,7 @@ impl Chain {
     }
 
     async fn create_document_policy(&self) -> String {
-        let created = self
-            .client
-            .native_create_policy(
-                &self.worker,
-                DOCUMENT_POLICY_YAML.as_bytes(),
-                1,
-                vera_client::random_policy_nonce(),
-            )
-            .await
-            .expect("create native document policy");
-        self.confirmed(created.transaction_hash).await;
-        self.client
-            .get_policy_ids()
-            .await
-            .expect("list policy ids")
-            .pop()
-            .expect("new policy id")
+        self.create_policy(DOCUMENT_POLICY_YAML).await
     }
 
     async fn register_object(&self, policy_id: &str, resource: &str, object_id: &str) {
