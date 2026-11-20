@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   upgrade:
-    name: ${{ matrix.crypto }} upgrade
+    name: ${{ matrix.crypto == 'jubjub' && 'jubjub fresh deployment' || 'bls12-381 upgrade' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -53,7 +53,7 @@ jobs:
       - name: Configure Docker Hub cache
         uses: ./.github/actions/docker-builder
 
-      - name: Run cross-commit upgrade gate
+      - name: Run deployment compatibility gate
         shell: bash
         working-directory: upgrade-target
         # Pin the network launch revision so every target is checked against
@@ -63,7 +63,13 @@ jobs:
         # chain otherwise cannot verify the target's threshold signatures).
         run: |
           scripts/test-upgrade-unit.sh
-          scripts/test-upgrade.sh \
+          args=()
+          # Jubjub's Poseidon proof profile requires a fresh deployment. Do not
+          # claim compatibility with the baseline's SHA-based documents.
+          if [[ "${{ matrix.crypto }}" == jubjub ]]; then
+            args+=(--fresh-target-chain)
+          fi
+          scripts/test-upgrade.sh "${args[@]}" \
             --from d7b74e3d5d8ad2651dd00c12a9fe6e9e553514fb \
             --to HEAD \
             --crypto "${{ matrix.crypto }}" \

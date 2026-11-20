@@ -306,6 +306,31 @@ pub fn reader_authorization_context_digest(ctx: &ReaderAuthorizationContext) -> 
     hasher.finalize().into()
 }
 
+/// Proof-only context digest; native AES-GCM keeps its existing AAD digest.
+pub fn proof_context_digest(context: &CiphertextContext, enc_cmt: &[u8]) -> [u8; 32] {
+    #[cfg(feature = "jubjub")]
+    {
+        let mut bytes = b"orbis-context-poseidon-v2".to_vec();
+        bytes.extend(canonical_encode(context));
+        put_bytes(&mut bytes, enc_cmt);
+        crate::jubjub::poseidon::digest(&bytes)
+    }
+    #[cfg(not(feature = "jubjub"))]
+    context_digest(context, enc_cmt)
+}
+
+pub fn proof_ciphertext_digest(nonce: &[u8], encrypted_data: &[u8]) -> [u8; 32] {
+    #[cfg(feature = "jubjub")]
+    {
+        let mut bytes = b"orbis-ciphertext-poseidon-v2".to_vec();
+        put_bytes(&mut bytes, nonce);
+        put_bytes(&mut bytes, encrypted_data);
+        crate::jubjub::poseidon::digest(&bytes)
+    }
+    #[cfg(not(feature = "jubjub"))]
+    ciphertext_digest(nonce, encrypted_data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

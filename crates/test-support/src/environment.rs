@@ -858,6 +858,20 @@ impl BulletinTestDriver for CosmosTestEnvironment {
     // genesis-seeded with a short `pss_interval` (see `provision`), so a
     // refresh becomes due naturally within the scenario's own wait.
 
+    async fn arm_refresh_for_next_start(&self, ring: &RingId, _ring_pk: &str, _members: &[String]) {
+        let post = VeraGoBulletin::new(self.network.chain_config_builder())
+            .await
+            .expect("bulletin read client")
+            .read(ring.0.clone(), BulletinKind::Ring)
+            .await
+            .expect("read stopped ring interval");
+        let payload: bulletin::r#trait::RingPayload =
+            serde_json::from_slice(&post.payload).expect("parse RingPayload");
+        // Every member is stopped. A full interval makes even a refresh
+        // completed immediately before shutdown due on restart.
+        tokio::time::sleep(Duration::from_secs(payload.pss_interval)).await;
+    }
+
     async fn cancel_reshare(&self, ring: &RingId) {
         let client = VeraGoClient::with_signer(
             self.network.chain_config(),
