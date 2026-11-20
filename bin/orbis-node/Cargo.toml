@@ -53,7 +53,7 @@ hyper-util = { workspace = true }
 [dev-dependencies]
 wiremock = "0.6"
 defra-edge = { package = "edge", git = "https://github.com/sourcenetwork/defradb.rs", rev = "b758f89a532d8d8add94911e0c580bfcf8804cff" }
-acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "b4c181a5d2e726dd5289a59dd5197216aed7bf82" }
+acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "df6515f71901d9b4ebfe56f221de412e849e43f9" }
 defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "b758f89a532d8d8add94911e0c580bfcf8804cff", default-features = false, features = ["p2p"] }
 defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "b758f89a532d8d8add94911e0c580bfcf8804cff", default-features = false, features = ["iroh-transport"] }
 defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "b758f89a532d8d8add94911e0c580bfcf8804cff" }

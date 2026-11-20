@@ -33,6 +33,7 @@ use vera_client::{
         encode_node_request, sign_node_request, NodeCommand, NodeInfo as VeraNodeInfo, NodeRequest,
         NodeTarget,
     },
+    predict_policy_id, random_policy_nonce,
     rings::{
         encode_ring_command, ReportingConfig, RingCommand, RingConfig, RingState, RingUpdate,
         ScheduledUpgrade,
@@ -40,11 +41,11 @@ use vera_client::{
     threshold_objects::{
         encode_threshold_object, EncryptedDocument, KeyDerivation, ObjectKind, ThresholdObject,
     },
-    BlsSigner, DelegationScope, VeraClient,
+    BlsSigner, DelegationScope, PolicyNonce, VeraClient,
 };
 use vera_domain::ConsensusPublicKey;
 use vera_harness::cluster::{GenesisBuilder, KeySet};
-use vera_modules::acp::{types::PolicyMarshalingType, AcpModule};
+use vera_modules::acp::{types::PolicyMarshalingType, AcpModule, GENESIS_POLICY_CREATOR};
 
 const DEPLOYMENT: u64 = 9000;
 /// Deterministic secp256k1 node identities, now that `ORBIS_SIGNING_KEY` in
@@ -197,11 +198,19 @@ async fn create_policy(
     client: &VeraClient,
     worker: &BlsSigner,
     trusted: &ConsensusPublicKey,
-    definition: &[u8],
+    definition: &str,
+    nonce: PolicyNonce,
 ) -> PolicyId {
+    let predicted = predict_policy_id(
+        definition,
+        &PolicyMarshalingType::ShortYaml,
+        &nonce,
+        worker.did(),
+    )
+    .expect("predict created policy id");
     let before: HashSet<String> = client.get_policy_ids().await.unwrap().into_iter().collect();
     let created = client
-        .native_create_policy(worker, definition, 1)
+        .native_create_policy(worker, definition.as_bytes(), 1, nonce)
         .await
         .unwrap();
     confirmed(client, created.transaction_hash, trusted).await;
@@ -218,6 +227,7 @@ async fn create_policy(
         added.next().is_none(),
         "one policy creation added multiple ids"
     );
+    assert_eq!(id, predicted, "created policy id must match its prediction");
     PolicyId(id)
 }
 
@@ -328,7 +338,6 @@ impl TestEnvironment for VeraTestEnvironment {
         let mut genesis = GenesisBuilder::devnet();
         let now = unix_now();
         let mut genesis_seeded_policies: HashMap<FixtureId, PolicyId> = HashMap::new();
-        let mut policy_counter: u64 = 0;
         for ring in &fixture.rings {
             let demerits: Vec<_> = fixture
                 .node_demerits
@@ -350,15 +359,16 @@ impl TestEnvironment for VeraTestEnvironment {
                         ring.id
                     )
                 });
-            policy_counter += 1;
             let marshal_type = PolicyMarshalingType::ShortYaml;
+            let nonce = random_policy_nonce();
             let policy_id = AcpModule::predict_policy_id(
                 &policy_fixture.definition,
                 &marshal_type,
-                policy_counter,
+                &nonce,
+                GENESIS_POLICY_CREATOR,
             )
             .expect("predict genesis-seeded policy id");
-            genesis = genesis.policy(policy_fixture.definition.clone(), marshal_type);
+            genesis = genesis.policy(policy_fixture.definition.clone(), marshal_type, nonce);
             genesis_seeded_policies.insert(ring.policy.clone(), PolicyId(policy_id.clone()));
 
             let peer_node_keys: Vec<String> =
@@ -469,7 +479,14 @@ impl TestEnvironment for VeraTestEnvironment {
             if policies.contains_key(&policy.id) {
                 continue;
             }
-            let id = create_policy(&client, &worker, &trusted, policy.definition.as_bytes()).await;
+            let id = create_policy(
+                &client,
+                &worker,
+                &trusted,
+                &policy.definition,
+                random_policy_nonce(),
+            )
+            .await;
             policies.insert(policy.id.clone(), id);
         }
         // A scenario may name a ring policy without separately caring about
@@ -480,7 +497,14 @@ impl TestEnvironment for VeraTestEnvironment {
             if policies.contains_key(&ring.policy) {
                 continue;
             }
-            let id = create_policy(&client, &worker, &trusted, RING_POLICY_YAML.as_bytes()).await;
+            let id = create_policy(
+                &client,
+                &worker,
+                &trusted,
+                RING_POLICY_YAML,
+                random_policy_nonce(),
+            )
+            .await;
             policies.insert(ring.policy.clone(), id);
         }
         let resolve = |id: &FixtureId| -> String {
@@ -761,7 +785,8 @@ impl AuthorizationTestDriver for VeraTestEnvironment {
             &self.client,
             &self.worker,
             &self.trusted,
-            definition.as_bytes(),
+            definition,
+            random_policy_nonce(),
         )
         .await
     }
