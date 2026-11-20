@@ -744,6 +744,7 @@ impl Chain {
                 &self.worker,
                 super::report_scenario::STANDARD_RING_POLICY_YAML.as_bytes(),
                 1,
+                vera_client::random_policy_nonce(),
             )
             .await
             .expect("create native ring policy");
@@ -933,7 +934,12 @@ impl Chain {
     async fn create_document_policy(&self) -> String {
         let created = self
             .client
-            .native_create_policy(&self.worker, DOCUMENT_POLICY_YAML.as_bytes(), 1)
+            .native_create_policy(
+                &self.worker,
+                DOCUMENT_POLICY_YAML.as_bytes(),
+                1,
+                vera_client::random_policy_nonce(),
+            )
             .await
             .expect("create native document policy");
         self.confirmed(created.transaction_hash).await;

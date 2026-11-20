@@ -278,6 +278,7 @@ impl GatewayNetwork {
                 &worker,
                 super::policy_generations::definition(true, true).as_bytes(),
                 1,
+                vera_client::random_policy_nonce(),
             )
             .await
             .unwrap();

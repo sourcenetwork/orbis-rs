@@ -173,7 +173,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     assert_eq!(restored, info);
 
     let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
-    let created = client.native_create_policy(&worker, b"name: ring_objects\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n", 1).await.unwrap();
+    let created = client.native_create_policy(&worker, b"name: ring_objects\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n", 1, vera_client::random_policy_nonce()).await.unwrap();
     receipt(&client, created.transaction_hash, &trusted).await;
     let policy = client.get_policy_ids().await.unwrap().pop().unwrap();
     let policy_bytes = B256::from_slice(&hex::decode(&policy).unwrap());
@@ -442,7 +442,7 @@ async fn native_report_and_reshare_recover_certified_completion() {
         authority.verifying_key().to_sec1_bytes().as_ref(),
     )
     .unwrap();
-    let created = client.native_create_policy(&worker, b"name: recovery\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n", 1).await.unwrap();
+    let created = client.native_create_policy(&worker, b"name: recovery\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n", 1, vera_client::random_policy_nonce()).await.unwrap();
     receipt(&client, created.transaction_hash, &trusted).await;
     let policy = client.get_policy_ids().await.unwrap().pop().unwrap();
     let policy_bytes = B256::from_slice(&hex::decode(&policy).unwrap());
