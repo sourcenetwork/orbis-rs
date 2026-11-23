@@ -17,6 +17,7 @@ import time
 
 VERA = '9ce122f9a24c5cdb3a66aa9d5daf8df920539550'
 VERA_VERIFIER = '9de4ac3391caf3b7ac85e317177daa9b9ced8a5a'
+VERIFIER_HEADER_SHA256 = '23a08dade8e2408d567df5bbf4c894689a51e3f24f478809cff5c3a3b9502b15'
 VERA_SDK = '9ce122f9a24c5cdb3a66aa9d5daf8df920539550'
 DEFRA = '1632acb47b16547631c552e85d7fc358668b9a98'
 SELECTOR = 'tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg'
@@ -359,7 +360,7 @@ def build(root, args, output):
             command(['docker', 'cp', container + ':' + src, str(payload / dst)], root, env, output / ('copy-' + Path(dst).name + '.log'))
     finally:
         command(['docker', 'rm', '--force', container], root, env, output / 'builder-cleanup.log', 30)
-    if sha(payload / 'include/vera_verifier.h') != sha(vera / 'crates/vera-verifier/include/vera_verifier.h'):
+    if sha(payload / 'include/vera_verifier.h') != VERIFIER_HEADER_SHA256:
         raise Failure()
     STAGE = 40
     go_version = capture(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'go', 'trust-ring-builder:local', 'version'])
