@@ -328,9 +328,9 @@ def build(root, args, output):
     STAGE = 20
     prebuilt = getattr(args, 'defra_artifacts', None)
     if prebuilt is None:
-        command(['cargo', '+1.99.1', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defra', '--features', 'vera'],
+        command(['cargo', '+1.99.1', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defradb', '--features', 'vera'],
                 defra, env, output / 'defra-build.log')
-        shutil.copy2(target / 'release/defra', payload / 'bin/defra')
+        shutil.copy2(target / 'release/defradb', payload / 'bin/defra')
         shutil.rmtree(target)
     else:
         restore_defra(Path(prebuilt), defra, payload / 'bin/defra')
