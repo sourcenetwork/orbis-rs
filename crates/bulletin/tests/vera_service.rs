@@ -371,15 +371,17 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         ring_id: pending_id.clone(),
     })
     .unwrap();
-    backend
-        .post(BulletinWriteKind::CancelPendingRing, cancel.clone())
-        .await
-        .unwrap();
-    backend
-        .post(BulletinWriteKind::CancelPendingRing, cancel)
-        .await
-        .unwrap();
-    assert!(backend.read(pending_id, BulletinKind::Ring).await.is_err());
+    for _ in 0..2 {
+        let cancelled = backend
+            .post(BulletinWriteKind::CancelPendingRing, cancel.clone())
+            .await
+            .unwrap();
+        assert_eq!(cancelled, pending_id);
+    }
+    assert!(matches!(
+        backend.read(pending_id.clone(), BulletinKind::Ring).await,
+        Err(bulletin::error::BulletinError::NotFound { id }) if id == pending_id
+    ));
     drop(backend);
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();

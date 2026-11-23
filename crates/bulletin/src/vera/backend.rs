@@ -277,11 +277,15 @@ impl VeraBulletin {
             BulletinWriteKind::CancelPendingRing => {
                 let request: RingCancellationPayload =
                     serde_json::from_slice(payload).map_err(error)?;
-                if matches!(
-                    self.ring(&request.ring_id).await?.state,
-                    RingState::Cancelled { .. }
-                ) {
-                    return Ok(request.ring_id);
+                match self.ring(&request.ring_id).await {
+                    // Vera removes a cancelled pending ring. A verified absence
+                    // already satisfies a repeated cancellation.
+                    Err(BulletinError::NotFound { .. }) => return Ok(request.ring_id),
+                    Ok(record) if matches!(record.state, RingState::Cancelled { .. }) => {
+                        return Ok(request.ring_id);
+                    }
+                    Ok(_) => {}
+                    Err(error) => return Err(error),
                 }
                 writer
                     .prepare_ring_participant_request(
