@@ -1,0 +1,13 @@
+[package]
+name = "orbis-email"
+description = "DKIM email evidence integration for Orbis flows"
+version.workspace = true
+edition.workspace = true
+publish = false
+readme = "README.md"
+
+[dependencies]
+orbis-integration-core.workspace = true
+
+[lints]
+workspace = true

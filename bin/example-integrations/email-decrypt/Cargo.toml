@@ -1,0 +1,13 @@
+[package]
+name = "email-decrypt"
+description = "Email document decryption reference application scaffold"
+version.workspace = true
+edition.workspace = true
+publish = false
+readme = "README.md"
+
+[dependencies]
+orbis-email.workspace = true
+
+[lints]
+workspace = true

@@ -16,6 +16,12 @@ members = [
     "crates/pre-share",
     "crates/test-support",
     "crates/jubjub-wasm",
+    "crates/integrations/core",
+    "crates/integrations/webauthn",
+    "crates/integrations/email",
+    "bin/example-integrations/passkey-sign",
+    "bin/example-integrations/yubikey-sign",
+    "bin/example-integrations/email-decrypt",
 ]
 
 [workspace.lints.clippy]
@@ -37,6 +43,10 @@ authors = ["Orbis Contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+orbis-integration-core = { path = "crates/integrations/core" }
+orbis-webauthn = { path = "crates/integrations/webauthn" }
+orbis-email = { path = "crates/integrations/email" }
+
 vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "45cd086b9c58b5960f09aa14e3803dd26a125d16" }
 vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "45cd086b9c58b5960f09aa14e3803dd26a125d16" }
 vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "45cd086b9c58b5960f09aa14e3803dd26a125d16" }

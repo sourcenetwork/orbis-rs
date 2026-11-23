@@ -4077,6 +4077,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "email-decrypt"
+version = "0.0.1"
+dependencies = [
+ "orbis-email",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7383,6 +7390,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "orbis-email"
+version = "0.0.1"
+dependencies = [
+ "orbis-integration-core",
+]
+
+[[package]]
+name = "orbis-integration-core"
+version = "0.0.1"
+
+[[package]]
 name = "orbis-node"
 version = "0.0.1"
 dependencies = [
@@ -7486,6 +7504,13 @@ dependencies = [
  "serde",
  "sha2 0.10.9",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "orbis-webauthn"
+version = "0.0.1"
+dependencies = [
+ "orbis-integration-core",
 ]
 
 [[package]]
@@ -7653,6 +7678,13 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "passkey-sign"
+version = "0.0.1"
+dependencies = [
+ "orbis-webauthn",
 ]
 
 [[package]]
@@ -12761,6 +12793,13 @@ dependencies = [
  "quote",
  "syn 3.0.10",
  "synstructure 0.14.0",
+]
+
+[[package]]
+name = "yubikey-sign"
+version = "0.0.1"
+dependencies = [
+ "orbis-webauthn",
 ]
 
 [[package]]
