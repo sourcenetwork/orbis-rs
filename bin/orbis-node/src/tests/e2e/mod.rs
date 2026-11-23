@@ -47,6 +47,7 @@ mod member_replacement;
 mod passkey_sign_scenario;
 mod pending_ring_cancellation;
 mod pet_dkg_scenario;
+mod pre_passkey_scenario;
 mod pre_scenario;
 mod production_kdf;
 mod refresh_scenario;

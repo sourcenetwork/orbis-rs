@@ -18,7 +18,7 @@
 //! WebAuthn-authorized Sign requests.
 
 use super::standard_dkg_pre::POLICY_YAML;
-use super::TestEnvironmentImpl;
+use super::{pre_scenario, TestEnvironmentImpl};
 use crypto::r#trait::{CryptoDeserialize, ThresholdSigner};
 use crypto::{GroupAffine, SignImpl};
 use p256::ecdsa::SigningKey;
@@ -121,9 +121,7 @@ async fn test_passkey_authorized_signing() {
     let policy_id = environment.fixture().policies[&policy].id.clone();
     let endpoint = environment.nodes()[0].grpc_endpoint.clone();
 
-    let ring_view = environment
-        .wait_for_finalized(&ring_id, Duration::from_secs(60))
-        .await;
+    let (keys, _local_state) = pre_scenario::run_dkg(&environment, &ring_id).await;
 
     let derivation_id = environment
         .register_key_derivation(&ring_id, DERIVATION, &policy_id, RESOURCE, PERMISSION)
@@ -133,9 +131,8 @@ async fn test_passkey_authorized_signing() {
         "key derivation must return an object id"
     );
 
-    let ring_pk =
-        GroupAffine::from_bytes(&hex::decode(&ring_view.ring_pk).expect("ring key is hex"))
-            .expect("ring key must decode");
+    let ring_pk = GroupAffine::from_bytes(&hex::decode(&keys.main).expect("ring key is hex"))
+        .expect("ring key must decode");
     let metadata = SignImpl::encode_metadata(&policy_id.0, RESOURCE, PERMISSION);
     let derived_pk = SignImpl::derive_public_key(&ring_pk, DERIVATION.as_bytes(), Some(&metadata))
         .expect("derive passkey Sign public key");
