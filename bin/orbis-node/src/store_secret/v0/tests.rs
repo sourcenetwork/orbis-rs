@@ -9,7 +9,7 @@ use crate::helpers::test_helpers::{
 };
 use crate::ring_state::RingIndexEntry;
 use crate::store_secret::StoreSecretServiceImpl;
-use authn::StoreSecretClaims;
+use authn::endpoints::store_secret::StoreSecretClaims;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
@@ -107,6 +107,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         tier: None,
         timestamp: None,
         pet_tag: None,
+        webauthn_assertion: None,
     }
 }
 
@@ -327,6 +328,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         tier: None,
         timestamp: None,
         pet_tag: None,
+        webauthn_assertion: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -514,6 +516,7 @@ async fn test_store_secret_idempotent() {
         tier: None,
         timestamp: None,
         pet_tag: None,
+        webauthn_assertion: None,
     };
 
     // Snapshot post count before any store_secret call. The bulletin already holds
@@ -556,6 +559,7 @@ async fn test_store_secret_idempotent() {
         tier: None,
         timestamp: None,
         pet_tag: None,
+        webauthn_assertion: None,
     };
 
     let tonic_request2 = create_authenticated_request(request2, &token).unwrap();

@@ -1,9 +1,10 @@
 # orbis-integration-core
 
-Shared operation description for the flow integrations: `SignOperation` is
-the exact Sign request a piece of authentication evidence (e.g. a WebAuthn
-assertion) must commit to, plus `canonical_bytes()`, its deterministic,
-domain-separated encoding.
+Shared operation description for the flow integrations: `SignOperation`,
+`PreOperation`, and `StoreSecretOperation` are the exact Sign/PRE/StoreSecret
+request a piece of authentication evidence (e.g. a WebAuthn assertion) must
+commit to, each via `CanonicalOperation::canonical_bytes()`, its
+deterministic, domain-separated encoding.
 
 Encoding is one-way by design. A verifier reconstructs the *expected*
 operation from the live request it already has (ring id, derivation id,

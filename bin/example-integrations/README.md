@@ -3,14 +3,11 @@
 Small reference applications demonstrating user-facing Orbis integrations.
 All three binaries are members of the root Cargo workspace.
 
-**Status: scaffold only.** Each executable prints its status and exits.
-Registration, proof verification, ACP setup, and Orbis requests are not wired up.
-
-| Directory / package | Intended experience |
-| --- | --- |
-| [passkey-sign](passkey-sign/README.md) | Register a passkey, approve a message, receive and verify an Orbis threshold signature |
-| [yubikey-sign](yubikey-sign/README.md) | Use a FIDO2 YubiKey with the same WebAuthn integration |
-| [email-decrypt](email-decrypt/README.md) | Share an encrypted document by email and decrypt locally after threshold PRE |
+| Directory / package | Status | Intended experience |
+| --- | --- | --- |
+| [passkey-sign](passkey-sign/README.md) | Implemented | Register a passkey, approve a message, receive and verify an Orbis threshold signature — no JWT, no password |
+| [yubikey-sign](yubikey-sign/README.md) | Scaffold only | Use a FIDO2 YubiKey with the same WebAuthn integration |
+| [email-decrypt](email-decrypt/README.md) | Scaffold only | Share an encrypted document by email and decrypt locally after threshold PRE |
 
 Each example owns its Rust application in `src/`, browser assets in `web/`, and
 ACP setup in `policies/`. Shared local ring configuration belongs in

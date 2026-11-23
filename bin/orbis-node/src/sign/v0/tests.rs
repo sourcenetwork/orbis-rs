@@ -19,7 +19,8 @@ use crate::sign::v0::messages::{PolicyContext, SignContext};
 #[cfg(feature = "jubjub")]
 use crate::sign::v0::messages::{SignMessage, SignRequest};
 use crate::sign::v0::service::SignServiceImpl;
-use authn::{DkgClaims, SignClaims};
+use authn::endpoints::dkg::DkgClaims;
+use authn::endpoints::sign::SignClaims;
 use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{

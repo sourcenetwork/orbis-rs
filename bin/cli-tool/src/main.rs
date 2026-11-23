@@ -6,14 +6,14 @@ use clap::{Args, Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_node_to_whitelist, add_policy_to_chain,
     cancel_ring_reshare_by_acp, cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring,
-    derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_pre_and_save, do_retrieve_pre,
-    do_sign, do_sign_with_passkey, do_store_secret, fund_with_signer, get_account_sequence,
-    get_latest_ring, list_bulletin_posts, post_key_derivation, prepare_secret, query_node_info,
-    query_pet_ring_state, query_ring_state, read_bulletin_post_with_config,
-    register_bulletin_namespace, register_object_to_chain, remove_node_from_whitelist,
-    schedule_ring_upgrade_by_acp, set_relationship_on_chain, set_ring_pss_interval_by_acp,
-    start_ring_reshare_by_acp, store_prepared_secret, transfer_node_controller,
-    update_node_peer_id, PendingPreRetrieval, PreparedSecret, SignResult,
+    derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_pre_and_save, do_pre_with_passkey,
+    do_retrieve_pre, do_sign, do_sign_with_passkey, do_store_secret, fund_with_signer,
+    get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
+    prepare_secret, query_node_info, query_pet_ring_state, query_ring_state,
+    read_bulletin_post_with_config, register_bulletin_namespace, register_object_to_chain,
+    remove_node_from_whitelist, schedule_ring_upgrade_by_acp, set_relationship_on_chain,
+    set_ring_pss_interval_by_acp, start_ring_reshare_by_acp, store_prepared_secret,
+    transfer_node_controller, update_node_peer_id, PendingPreRetrieval, PreparedSecret, SignResult,
 };
 use commands::{reader_did_from_seed, secp256k1_pubkey_to_did};
 use common::blockchain::{orbis::WhitelistTarget, ChainConfig};
@@ -199,6 +199,43 @@ pub enum SubCommands {
         #[clap(long)]
         save_only: bool,
     },
+    /// Decrypt via PRE, authorized by a WebAuthn assertion instead of a
+    /// JWT — the passkey's own public key is the identity ACP grants or
+    /// revokes directly. There is no browser or hardware authenticator
+    /// here: `--passkey-key-hex` supplies a raw P-256 private key
+    /// directly, standing in for one. Fine for scripting/testing; a real
+    /// end-user flow drives this through an actual WebAuthn ceremony.
+    PreWithPasskey {
+        /// Ring public key (from DKG) in hex format
+        #[clap(long)]
+        ring_pk: String,
+        /// Id of object
+        #[clap(long)]
+        object_id: String,
+        /// Hex-encoded 32-byte P-256 private key, standing in for a passkey.
+        #[clap(long, env = "ORBIS_PASSKEY_KEY_HEX", hide_env_values = true)]
+        passkey_key_hex: String,
+        /// Relying-party ID to embed in the assertion; must match the
+        /// node's own `--webauthn-rp-id`.
+        #[clap(long)]
+        rp_id: String,
+        /// Origin to embed in the assertion; must match the node's own
+        /// `--webauthn-origin`.
+        #[clap(long)]
+        origin: String,
+        /// Optional derivation path (hex encoded)
+        #[clap(long)]
+        derivation: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
+        /// Start of the validity window (Unix timestamp, inclusive). Requires --valid-window-end.
+        #[clap(long)]
+        valid_window_start: Option<u64>,
+        /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
+        #[clap(long)]
+        valid_window_end: Option<u64>,
+    },
     /// Decrypt a PRE response saved earlier via `pre --save-only`
     RetrievePre {
         /// The JSON printed by `pre --save-only`
@@ -279,8 +316,14 @@ pub enum SubCommands {
         /// Grant this relation to the DID derived from a secp256k1 public key
         /// instead of --reader-did-pk -- matches the identity Vera resolves
         /// for ACP checks on signed transactions (see `derive-signer-did`).
-        #[clap(long, conflicts_with = "reader_did_pk")]
+        #[clap(long, conflicts_with_all = ["reader_did_pk", "subject_did"])]
         actor_pubkey: Option<String>,
+        /// Grant this relation to an already-known did:key verbatim, e.g.
+        /// one derived from a passkey's own public key
+        /// (see `authn::did_from_p256_public_key`) rather than one this
+        /// tool derives itself.
+        #[clap(long, conflicts_with_all = ["reader_did_pk", "actor_pubkey"])]
+        subject_did: Option<String>,
     },
     /// Register a bulletin namespace
     RegisterBulletinNamespace {
@@ -602,7 +645,11 @@ fn require_reader_did_pk(reader_did_pk: Option<String>) -> Result<String> {
 fn resolve_relationship_actor_did(
     reader_did_pk: Option<String>,
     actor_pubkey: Option<String>,
+    subject_did: Option<String>,
 ) -> Result<String> {
+    if let Some(did) = subject_did {
+        return Ok(did);
+    }
     if let Some(seed) = reader_did_pk {
         return Ok(reader_did_from_seed(&seed));
     }
@@ -610,7 +657,7 @@ fn resolve_relationship_actor_did(
         return secp256k1_pubkey_to_did(&pubkey_hex);
     }
     Err(anyhow::anyhow!(
-        "Must provide --reader-did-pk or --actor-pubkey"
+        "Must provide --reader-did-pk, --actor-pubkey, or --subject-did"
     ))
 }
 
@@ -723,6 +770,41 @@ async fn main() -> Result<()> {
                 .await?;
             }
         }
+        SubCommands::PreWithPasskey {
+            ring_pk,
+            object_id,
+            passkey_key_hex,
+            rp_id,
+            origin,
+            derivation,
+            salt,
+            valid_window_start,
+            valid_window_end,
+        } => {
+            require_valid_window_pair(valid_window_start, valid_window_end)?;
+            let derivation_bytes = parse_derivation_hex(derivation)?;
+            let key_bytes = hex::decode(&passkey_key_hex)
+                .map_err(|e| anyhow::anyhow!("Failed to decode passkey key hex: {}", e))?;
+            let key_bytes: [u8; 32] = key_bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("--passkey-key-hex must be 32 bytes"))?;
+            let signing_key = p256::ecdsa::SigningKey::from_bytes((&key_bytes).into())
+                .map_err(|e| anyhow::anyhow!("Invalid P-256 private key: {}", e))?;
+            do_pre_with_passkey(
+                network.endpoint.clone(),
+                network.chain_id.clone(),
+                ring_pk,
+                object_id,
+                &signing_key,
+                &rp_id,
+                &origin,
+                derivation_bytes,
+                salt,
+                valid_window_start,
+                valid_window_end,
+            )
+            .await?;
+        }
         SubCommands::RetrievePre { pending_json } => {
             do_retrieve_pre(pending_json).await?;
         }
@@ -785,9 +867,10 @@ async fn main() -> Result<()> {
             relation,
             reader_did_pk,
             actor_pubkey,
+            subject_did,
         } => {
             let signing_key = network.require_signing_key()?;
-            let did_uri = resolve_relationship_actor_did(reader_did_pk, actor_pubkey)?;
+            let did_uri = resolve_relationship_actor_did(reader_did_pk, actor_pubkey, subject_did)?;
             set_relationship_on_chain(
                 policy_id,
                 object_id,

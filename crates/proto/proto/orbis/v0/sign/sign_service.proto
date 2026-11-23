@@ -15,16 +15,25 @@ message TimestampRange {
 // Sign request in place of a JWT. The passkey's own credential public key
 // is the identity: `issuer_did` is the `did:key` it decodes to, and ACP
 // grants/revokes that DID directly — there is no separate enrollment
-// registry. `expiry`/`nonce` complete the exact operation the assertion's
-// `client_data_json.challenge` must commit to (alongside this request's own
-// `derivation_id`/`message` and the derivation's live ring_id); every other
-// field of that commitment is already present on `StartSignRequest`, so it
-// is never caller-suppliable. See `orbis_integration_core::SignOperation`.
+// registry. `issued_at`/`expiry`/`nonce` complete the exact operation the
+// assertion's `client_data_json.challenge` must commit to (alongside this
+// request's own `derivation_id`/`message` and the derivation's live
+// ring_id); every other field of that commitment is already present on
+// `StartSignRequest`, so it is never caller-suppliable. Same shape as
+// `orbis.v0.pre.WebAuthnAssertion` — kept as its own message per service
+// rather than a shared import, matching this file's own `TimestampRange`
+// precedent. See `orbis_webauthn::WebAuthnEvidence`/
+// `orbis_integration_core::SignOperation`.
 message WebAuthnAssertion {
   string issuer_did = 1;
   bytes authenticator_data = 2;
   bytes client_data_json = 3;
   bytes signature = 4;
+  // Unix seconds, client-chosen. Not cryptographically bound by Sign's own
+  // protocol the way PRE's reader-key proof-of-possession binds it, but
+  // carried identically for both so the node-side adapter is the same
+  // generic code either way (see `orbis_webauthn::verify_and_build_token`).
+  uint64 issued_at = 7;
   uint64 expiry = 5;
   bytes nonce = 6;
 }

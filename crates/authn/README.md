@@ -22,6 +22,25 @@ Verification logic lives in [`src/lib.rs`](src/lib.rs); signing and gRPC utiliti
 
 Use `BearerToken<()>` when you only need the base claims.
 
+## `endpoints` — one authentication shape per endpoint
+
+[`src/endpoints/`](src/endpoints/) defines the `EndpointAuth` trait and one
+marker type per endpoint (`SignEndpoint`, `PreEndpoint`,
+`StoreSecretEndpoint`) describing how to validate a JWT's claims against a
+live request, and how to build the canonical operation a WebAuthn
+assertion's challenge must commit to instead. `orbis_webauthn::resolve_request_auth::<E: EndpointAuth>` is the one function
+every endpoint's node-side code calls — generic over which marker type is
+passed in, so Sign/PRE/StoreSecret's own call sites in `orbis-node` are
+identical apart from that type parameter. See that trait's own doc comment
+for why the dispatch itself lives in `orbis-webauthn` rather than here:
+`authn` can describe the shape (same level of per-endpoint specificity as
+the `*Claims` types above) but can't verify WebAuthn evidence itself
+without depending on `orbis-webauthn`, which already depends on `authn`.
+
+DKG's `start_dkg` has no per-caller authentication at all — ring
+authorization already happened on-chain at ring creation — so it has no
+`EndpointAuth` impl; there is no existing JWT boundary to extend.
+
 ## Verification rules (`resolve_jwt_did`)
 
 1. Algorithm must be **EdDSA** (reject others).

@@ -19,16 +19,15 @@ use crate::sign::v0::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments,
     fetch_bulletin_payloads_for_version, load_dist_key_share, refresh_health_check_context_key,
     ring_reshare_update_context_key, validate_refresh_health_check_statement,
-    validate_ring_reshare_update_statement, validate_sign_claims,
-    verify_message_and_get_info_for_version,
+    validate_ring_reshare_update_statement, verify_message_and_get_info_for_version,
 };
 use crate::sign::v0::messages::{
     NonceRequest, PolicyContext, RefreshHealthCheckContext, RingReshareUpdateContext, SignContext,
     SignMessage, SignRequest,
 };
 use crate::sign::v0::response_state::NonceStoreOutcome;
-use crate::sign::v0::webauthn_auth;
-use authn::{resolve_jwt_did, BearerToken, SignClaims};
+use authn::endpoints::sign::SignClaims;
+use authn::BearerToken;
 use authz::request::AccessCheckRequest;
 use bulletin::r#trait::{BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::sign_node_message_with_hex_key;
@@ -267,35 +266,23 @@ where
                 // challenge binds `message_sha256`, so unlike the JWT path it can't defer
                 // that check to Round 2: `ctx.message_sha256` (set once at stage 1) is what
                 // makes that possible without the raw message, which Round 1 never carries.
-                let token: BearerToken<SignClaims> = if let Some(evidence) = &ctx.webauthn_assertion
-                {
-                    webauthn_auth::verify_and_build_token(
-                        evidence,
-                        derivation_id,
-                        &ctx.message_sha256,
+                let fields = authn::endpoints::sign::SignFields {
+                    derivation_id: derivation_id.clone(),
+                    message_sha256: ctx.message_sha256.clone(),
+                };
+                let token: BearerToken<SignClaims> =
+                    orbis_webauthn::resolve_request_auth::<authn::endpoints::sign::SignEndpoint>(
+                        &fields,
+                        ctx.token_string.as_deref(),
+                        ctx.webauthn_assertion.as_ref(),
                         self.app_state.webauthn_rp_id.as_deref(),
                         self.app_state.webauthn_origin.as_deref(),
-                        current_time,
-                    )?
-                } else {
-                    let token_string = ctx.token_string.as_deref().ok_or_else(|| {
-                        SignError::Unauthorized(
-                            "Sign request carries neither a JWT nor WebAuthn evidence".to_string(),
-                        )
-                    })?;
-                    let token: BearerToken<SignClaims> = resolve_jwt_did(
-                        token_string,
                         current_time,
                         MAX_TOKEN_LIFETIME_SECS,
                         MAX_JWT_BYTES,
                         JWT_CLOCK_SKEW_LEEWAY_SECS,
                     )
-                    .map_err(|e| {
-                        SignError::Unauthorized(format!("JWT validation failed: {}", e))
-                    })?;
-                    validate_sign_claims(&token, derivation_id, None)?;
-                    token
-                };
+                    .map_err(|e| SignError::Unauthorized(e.to_string()))?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
                     derivation_id,
@@ -612,33 +599,24 @@ where
             .duration_since(UNIX_EPOCH)
             .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
-        let token: BearerToken<SignClaims> = if let Some(evidence) = &ctx.webauthn_assertion {
-            let message_sha256 = Sha256::digest(message).to_vec();
-            webauthn_auth::verify_and_build_token(
-                evidence,
-                derivation_id,
-                &message_sha256,
+        let message_sha256 = Sha256::digest(message).to_vec();
+        let fields = authn::endpoints::sign::SignFields {
+            derivation_id: derivation_id.clone(),
+            message_sha256,
+        };
+        let token: BearerToken<SignClaims> =
+            orbis_webauthn::resolve_request_auth::<authn::endpoints::sign::SignEndpoint>(
+                &fields,
+                ctx.token_string.as_deref(),
+                ctx.webauthn_assertion.as_ref(),
                 self.app_state.webauthn_rp_id.as_deref(),
                 self.app_state.webauthn_origin.as_deref(),
-                current_time,
-            )?
-        } else {
-            let token_string = ctx.token_string.as_deref().ok_or_else(|| {
-                SignError::Unauthorized(
-                    "Sign request carries neither a JWT nor WebAuthn evidence".to_string(),
-                )
-            })?;
-            let token: BearerToken<SignClaims> = resolve_jwt_did(
-                token_string,
                 current_time,
                 MAX_TOKEN_LIFETIME_SECS,
                 MAX_JWT_BYTES,
                 JWT_CLOCK_SKEW_LEEWAY_SECS,
             )
-            .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-            validate_sign_claims(&token, derivation_id, Some(message))?;
-            token
-        };
+            .map_err(|e| SignError::Unauthorized(e.to_string()))?;
 
         // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
         let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(

@@ -32,8 +32,18 @@ pub struct PreRequestContext {
     pub rdr_pk_signature: ReaderAuthorizationSignature,
     /// Object ID of the encrypted document on the bulletin
     pub object_id: String,
-    /// Raw JWT string issued by the caller
-    pub token_string: String,
+    /// Raw JWT string issued by the caller. `None` when `webauthn_assertion`
+    /// is set instead — the two authentication methods are mutually
+    /// exclusive for a given request.
+    pub token_string: Option<String>,
+    /// Passkey-authorized decryption evidence, in place of `token_string`.
+    /// `None` for the ordinary JWT path. See `pre::v0::webauthn_auth` —
+    /// converted once at the service boundary
+    /// (`stages::authenticate_pre_request`) and carried unverified from
+    /// there on; every peer node independently re-verifies it from these
+    /// same raw bytes, never trusting the leader's word that it already
+    /// passed.
+    pub webauthn_assertion: Option<orbis_webauthn::WebAuthnEvidence>,
     /// Optional key derivation bytes
     pub derivation: Option<Vec<u8>>,
     /// Optional salt for policy metadata binding

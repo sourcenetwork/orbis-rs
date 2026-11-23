@@ -73,6 +73,32 @@ message ReaderAuthorizationSignature {
   bytes response = 2;
 }
 
+// A WebAuthn assertion (`navigator.credentials.get()` output) authorizing a
+// PRE decrypt request in place of a JWT. The passkey's own credential
+// public key is the identity: `issuer_did` is the `did:key` it decodes to,
+// and ACP grants/revokes that DID directly — there is no separate
+// enrollment registry. `issued_at`/`expiry`/`nonce` complete the exact
+// operation the assertion's `client_data_json.challenge` must commit to
+// (alongside this request's own `object_id`/`rdr_pk`/`derivation`/`salt`).
+// `issued_at` matters here specifically (unlike it would for a protocol
+// with no further use for it): it becomes this request's synthetic
+// token's `issued_time`, which `ReaderAuthorizationSignature` ends up
+// cryptographically binding into its own transcript — see
+// `orbis_webauthn::WebAuthnEvidence`'s doc comment for why that has to be
+// client-chosen rather than derived at verification time. Same shape as
+// `orbis.v0.sign.WebAuthnAssertion` — kept as its own message per service
+// rather than a shared import, matching this file's own `TimestampRange`
+// precedent. See `orbis_integration_core::PreOperation`.
+message WebAuthnAssertion {
+  string issuer_did = 1;
+  bytes authenticator_data = 2;
+  bytes client_data_json = 3;
+  bytes signature = 4;
+  uint64 issued_at = 5;
+  uint64 expiry = 6;
+  bytes nonce = 7;
+}
+
 message StartPreRequest {
   // Ephemeral recipient public key for this PRE operation, on either backend.
   // Clients MUST generate a fresh, independent keypair for each new operation;
@@ -102,6 +128,11 @@ message StartPreRequest {
   // ACP or bound in authorization. Distinct from object_id, which keeps its
   // current document-identity meaning.
   optional string audit_target_object_id = 8;
+  // Passkey-authorized decryption: present instead of a bearer JWT.
+  // Mutually exclusive with the JWT path in practice (a request
+  // authenticated this way carries no Authorization header), not enforced
+  // by the message shape itself.
+  optional WebAuthnAssertion webauthn_assertion = 9;
 }
 
 message StartPreResponse {

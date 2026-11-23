@@ -8,7 +8,8 @@ use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::messages::SignContext;
 use crate::store_secret::v0::error::StoreSecretError;
-use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
+use authn::endpoints::store_secret::StoreSecretClaims;
+use authn::{extract_bearer_token, BearerToken};
 use bulletin::r#trait::{BulletinKind, BulletinWriteKind, DocumentPayload};
 use crypto::r#trait::{Dkg, EncryptionProof};
 use proto::v0::store_secret::{
@@ -82,28 +83,64 @@ where
             .map_err(|e| StoreSecretError::SystemTime(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
 
-        // 1. Authenticate: Extract and validate JWT
-        let token_str = extract_bearer_token(&request)
-            .map_err(|e| StoreSecretError::Unauthorized(e.to_string()))?;
-        let token: BearerToken<StoreSecretClaims> = resolve_jwt_did(
-            token_str,
+        // 1. Authenticate: JWT or WebAuthn evidence (mutually exclusive — see
+        // `WebAuthnAssertion`'s proto doc comment). WebAuthn, when present,
+        // takes priority and the bearer header, if any, is never even read.
+        let has_webauthn = request.get_ref().webauthn_assertion.is_some();
+        let token_str = if has_webauthn {
+            None
+        } else {
+            Some(
+                extract_bearer_token(&request)
+                    .map_err(|e| StoreSecretError::Unauthorized(e.to_string()))?
+                    .to_string(),
+            )
+        };
+
+        let mut req = request.into_inner();
+        let webauthn_assertion = req
+            .webauthn_assertion
+            .take()
+            .map(super::webauthn_auth::evidence_from_proto);
+
+        let encrypted_document_sha256 = Sha256::digest(&req.encrypted_document).to_vec();
+        let fields = authn::endpoints::store_secret::StoreSecretFields {
+            encrypted_document_sha256,
+            enc_cmt: req.enc_cmt.clone(),
+            ring_id: req.ring_id.clone(),
+            policy_id: req.policy_id.clone(),
+            resource: req.resource.clone(),
+            permission: req.permission.clone(),
+            challenge: req.challenge.clone(),
+            response: req.response.clone(),
+            with_proof: req.with_proof,
+            tier: req.tier.clone(),
+            timestamp: req.timestamp,
+        };
+
+        // 2. Authorize: resolve the caller's identity and validate its claims
+        // (JWT path) or WebAuthn challenge binding (WebAuthn path) match
+        // this exact request — see `authn::endpoints::store_secret`.
+        let token: BearerToken<StoreSecretClaims> = orbis_webauthn::resolve_request_auth::<
+            authn::endpoints::store_secret::StoreSecretEndpoint,
+        >(
+            &fields,
+            token_str.as_deref(),
+            webauthn_assertion.as_ref(),
+            self.state.webauthn_rp_id.as_deref(),
+            self.state.webauthn_origin.as_deref(),
             current_time,
             MAX_TOKEN_LIFETIME_SECS,
             MAX_JWT_BYTES,
             JWT_CLOCK_SKEW_LEEWAY_SECS,
         )
-        .map_err(|e| StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        .map_err(|e| StoreSecretError::Unauthorized(e.to_string()))?;
         if token.subject_id.is_some() {
             return Err(StoreSecretError::Unauthorized(
                 "delegated actors must store documents through their Vera signer".to_string(),
             )
             .into());
         }
-
-        let req = request.into_inner();
-
-        // 2. Validate JWT claims match request
-        validate_store_secret_claims(&token, &req)?;
 
         // No `jti` single-use guard here (unlike start_pre / start_sign): storing
         // a secret is idempotent by design — the bulletin dedups by `object_id`,
@@ -286,91 +323,4 @@ where
             signature,
         }))
     }
-}
-
-fn validate_store_secret_claims(
-    token: &BearerToken<StoreSecretClaims>,
-    req: &StoreSecretRequest,
-) -> Result<(), StoreSecretError> {
-    let expected = Sha256::digest(&req.encrypted_document);
-    // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65 ("please
-    // upgrade to generic-array 1.x"), but sha2/digest 0.10 have no non-deprecated
-    // path off it yet; the API itself is unaffected.
-    #[allow(deprecated)]
-    let matches = token.claims.encrypted_document_sha256 == expected.as_slice();
-    if !matches {
-        return Err(StoreSecretError::Unauthorized(
-            "Token encrypted_document_sha256 does not match request encrypted_document".to_string(),
-        ));
-    }
-
-    if token.claims.enc_cmt != req.enc_cmt {
-        return Err(StoreSecretError::Unauthorized(
-            "Token enc_cmt does not match request".to_string(),
-        ));
-    }
-
-    if token.claims.ring_id != req.ring_id {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token ring_id '{}' does not match request ring_id '{}'",
-            token.claims.ring_id, req.ring_id
-        )));
-    }
-
-    if token.claims.policy_id != req.policy_id {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token policy_id '{}' does not match request policy_id '{}'",
-            token.claims.policy_id, req.policy_id
-        )));
-    }
-
-    if token.claims.resource != req.resource {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token resource '{}' does not match request resource '{}'",
-            token.claims.resource, req.resource
-        )));
-    }
-
-    if token.claims.permission != req.permission {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token permission '{}' does not match request permission '{}'",
-            token.claims.permission, req.permission
-        )));
-    }
-
-    if token.claims.challenge != req.challenge {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token challenge '{:?}' does not match request challenge '{:?}'",
-            token.claims.challenge, req.challenge
-        )));
-    }
-
-    if token.claims.response != req.response {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token response '{:?}' does not match request response '{:?}'",
-            token.claims.response, req.response
-        )));
-    }
-
-    if token.claims.with_proof != req.with_proof {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token with_proof '{:?}' does not match request with_proof '{:?}'",
-            token.claims.with_proof, req.with_proof
-        )));
-    }
-
-    if token.claims.tier != req.tier {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token tier '{:?}' does not match request tier '{:?}'",
-            token.claims.tier, req.tier
-        )));
-    }
-    if token.claims.timestamp != req.timestamp {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token timestamp '{:?}' does not match request timestamp '{:?}'",
-            token.claims.timestamp, req.timestamp
-        )));
-    }
-
-    Ok(())
 }

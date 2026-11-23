@@ -1487,6 +1487,7 @@ dependencies = [
  "bs58",
  "ed25519-dalek 2.2.0",
  "jsonwebtoken",
+ "orbis-integration-core",
  "p256 0.13.2",
  "pkcs8 0.10.2",
  "rand 0.8.8",
@@ -7588,9 +7589,12 @@ dependencies = [
 name = "orbis-webauthn"
 version = "0.0.1"
 dependencies = [
+ "authn",
  "base64 0.22.1",
+ "hex",
  "orbis-integration-core",
  "p256 0.13.2",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",
@@ -7768,7 +7772,22 @@ dependencies = [
 name = "passkey-sign"
 version = "0.0.1"
 dependencies = [
+ "authn",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "cli-tool",
+ "hex",
+ "orbis-integration-core",
  "orbis-webauthn",
+ "p256 0.13.2",
+ "proto",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]

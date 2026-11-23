@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+orbis-integration-core.workspace = true
 bs58 = "0.5"
 ring = "0.17"
 ed25519-dalek = "2.2"

@@ -3,11 +3,12 @@
 //!
 //! Harness-unification migration, PR 6: migrated off `concurrent.rs`'s
 //! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one.
-//! `authn::DkgClaims`/the delegated-auth-token signing path is backend-
-//! neutral production code (no chain-specific logic), so this is fully
-//! dual-backend -- no `#[ignore]` needed.
+//! `authn::endpoints::dkg::DkgClaims`/the delegated-auth-token signing path
+//! is backend-neutral production code (no chain-specific logic), so this
+//! is fully dual-backend -- no `#[ignore]` needed.
 
-use authn::{create_authenticated_request, DkgClaims, JwtSigner};
+use authn::endpoints::dkg::DkgClaims;
+use authn::{create_authenticated_request, JwtSigner};
 use proto::v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest};
 
 #[tokio::test]

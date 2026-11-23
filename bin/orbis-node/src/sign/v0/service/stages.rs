@@ -23,7 +23,8 @@
 //! `super`, alongside `SignServiceImpl`.
 
 use super::*;
-use crate::helpers::auth::{client_valid_window, extract_and_validate_jwt, request_actor};
+use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::helpers::auth::{client_valid_window, request_actor};
 use crate::helpers::jti_replay::record_client_jti_after_acp;
 use crate::helpers::node_routes::resolve_and_validate_peer_ids;
 use crate::helpers::ring::RingConfig;
@@ -32,13 +33,14 @@ use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
 use crate::sign::v0::helpers::{
     check_policy_access_at, fetch_bulletin_payloads_for_version, policy_access_timestamp,
-    validate_sign_claims,
 };
-use crate::sign::v0::messages::{PolicyContext, SignContext, WebAuthnEvidence};
+use crate::sign::v0::messages::{PolicyContext, SignContext};
 use crate::sign::v0::webauthn_auth;
-use authn::{BearerToken, SignClaims};
+use authn::endpoints::sign::SignClaims;
+use authn::BearerToken;
 use authz::request::ValidWindow;
 use bulletin::r#trait::{KeyDerivation, RingPayload};
+use orbis_webauthn::WebAuthnEvidence;
 use sha2::{Digest, Sha256};
 
 /// Output of stage 1.
@@ -150,48 +152,48 @@ where
         request: Request<StartSignRequest>,
         current_time: u64,
     ) -> Result<AuthenticatedSignRequest, SignError> {
-        if request.get_ref().webauthn_assertion.is_some() {
-            let req = request.into_inner();
-            let assertion = req
-                .webauthn_assertion
-                .expect("checked Some above, body not touched since");
-            let message_sha256 = Sha256::digest(&req.message).to_vec();
-            let evidence = webauthn_auth::evidence_from_proto(assertion);
-            let token = webauthn_auth::verify_and_build_token(
-                &evidence,
-                &req.derivation_id,
-                &message_sha256,
-                self.state.webauthn_rp_id.as_deref(),
-                self.state.webauthn_origin.as_deref(),
-                current_time,
-            )?;
-            let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
+        // Mutually exclusive by convention (see `WebAuthnAssertion`'s proto
+        // doc comment): a WebAuthn-bearing request's bearer header, if any,
+        // is never even read, so it can never end up on the wire to peers
+        // alongside the WebAuthn evidence that actually authenticates it.
+        let has_webauthn = request.get_ref().webauthn_assertion.is_some();
+        let token_string = if has_webauthn {
+            None
+        } else {
+            authn::extract_bearer_token(&request)
+                .ok()
+                .map(str::to_string)
+        };
 
-            return Ok(AuthenticatedSignRequest {
-                token_string: None,
-                webauthn_assertion: Some(evidence),
-                message_sha256,
-                token,
-                derivation_id: req.derivation_id,
-                message: req.message,
-                valid_window,
-            });
-        }
-
-        let (token_string, token) =
-            extract_and_validate_jwt::<SignClaims, _>(&request, current_time)
-                .map_err(SignError::Unauthorized)?;
-
-        let req = request.into_inner();
-
-        validate_sign_claims(&token, &req.derivation_id, Some(&req.message))?;
-
+        let mut req = request.into_inner();
+        let webauthn_assertion = req
+            .webauthn_assertion
+            .take()
+            .map(webauthn_auth::evidence_from_proto);
         let message_sha256 = Sha256::digest(&req.message).to_vec();
+        let fields = authn::endpoints::sign::SignFields {
+            derivation_id: req.derivation_id.clone(),
+            message_sha256: message_sha256.clone(),
+        };
+
+        let token = orbis_webauthn::resolve_request_auth::<authn::endpoints::sign::SignEndpoint>(
+            &fields,
+            token_string.as_deref(),
+            webauthn_assertion.as_ref(),
+            self.state.webauthn_rp_id.as_deref(),
+            self.state.webauthn_origin.as_deref(),
+            current_time,
+            MAX_TOKEN_LIFETIME_SECS,
+            MAX_JWT_BYTES,
+            JWT_CLOCK_SKEW_LEEWAY_SECS,
+        )
+        .map_err(|e| SignError::Unauthorized(e.to_string()))?;
+
         let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
 
         Ok(AuthenticatedSignRequest {
-            token_string: Some(token_string),
-            webauthn_assertion: None,
+            token_string,
+            webauthn_assertion,
             message_sha256,
             token,
             derivation_id: req.derivation_id,

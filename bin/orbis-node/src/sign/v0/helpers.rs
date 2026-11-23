@@ -18,7 +18,6 @@ use crate::sign::v0::{
     },
     response_state::SignResponseManager,
 };
-use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
 use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{
@@ -564,40 +563,6 @@ pub fn deserialize_commitments<S: ThresholdSigner>(
     }
 
     Ok(commitments)
-}
-
-/// Validates JWT claims against the Sign request parameters.
-///
-/// Ensures the token was issued for exactly this namespace and derivation_id,
-/// preventing token reuse across different signing targets. The derivation path
-/// itself is fetched from the bulletin and is not client-supplied.
-pub fn validate_sign_claims(
-    token: &BearerToken<SignClaims>,
-    derivation_id: &str,
-    message: Option<&[u8]>,
-) -> Result<()> {
-    if token.claims.derivation_id != derivation_id {
-        return Err(SignError::Unauthorized(format!(
-            "Token derivation_id '{}' does not match request derivation_id '{}'",
-            token.claims.derivation_id, derivation_id
-        )));
-    }
-
-    if let Some(message) = message {
-        let expected = Sha256::digest(message);
-        // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65
-        // ("please upgrade to generic-array 1.x"), but sha2/digest 0.10 have no
-        // non-deprecated path off it yet; the API itself is unaffected.
-        #[allow(deprecated)]
-        let matches = token.claims.message_sha256 == expected.as_slice();
-        if !matches {
-            return Err(SignError::Unauthorized(
-                "Token message_sha256 does not match request message".to_string(),
-            ));
-        }
-    }
-
-    Ok(())
 }
 
 /// Checks whether the token issuer has the required policy access for a document.

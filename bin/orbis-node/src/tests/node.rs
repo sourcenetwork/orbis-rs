@@ -581,6 +581,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             document: None,
             rdr_pk_signature: None,
             audit_target_object_id: None,
+            webauthn_assertion: None,
         })
         .await
         .expect_err("oversized pre request should fail during decode");
@@ -632,6 +633,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             tier: None,
             timestamp: None,
             pet_tag: None,
+            webauthn_assertion: None,
         })
         .await
         .expect_err("oversized store-secret request should fail during decode");

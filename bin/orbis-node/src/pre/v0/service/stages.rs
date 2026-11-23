@@ -28,30 +28,35 @@
 //! `super`, alongside `PreServiceImpl`.
 
 use super::*;
-use crate::helpers::auth::{client_valid_window, extract_and_validate_jwt, request_actor};
+use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::helpers::auth::{client_valid_window, request_actor};
 use crate::helpers::jti_replay::record_client_jti_after_acp;
 use crate::helpers::node_routes::resolve_and_validate_peer_ids;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding};
 use crate::pre::v0::helpers::{
     build_ciphertext_context, build_reader_authorization_context, check_policy_access,
-    decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads, validate_pre_claims,
+    decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads,
     verify_encryption_binding,
 };
 use crate::pre::v0::messages::PreRequestContext;
+use crate::pre::v0::webauthn_auth;
 use crate::reporting::v0::types::ReportedDocumentEvidence;
 use crate::reporting::v0::{build_signed_relay_statement, RelayStatementInputs};
 use crate::ring_state::RingPolyState;
-use authn::{BearerToken, PreClaims};
+use authn::endpoints::pre::PreClaims;
+use authn::BearerToken;
 use authz::request::ValidWindow;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
 use crypto::context::{CiphertextContext, ReaderAuthorizationContext};
 use crypto::r#trait::ReaderAuthorizationSignature;
+use orbis_webauthn::WebAuthnEvidence;
 
 /// Output of stage 1. The parsed inline document (if any) is returned alongside rather
 /// than folded into this type, since only stage 2 consumes it.
 pub(super) struct AuthenticatedPreRequest {
-    token_str: String,
+    token_str: Option<String>,
+    webauthn_assertion: Option<WebAuthnEvidence>,
     pub(super) token: BearerToken<PreClaims>,
     pub(super) object_id: String,
     rdr_pk: Vec<u8>,
@@ -79,7 +84,8 @@ pub(super) struct PreBulletinState {
 /// ciphertext-binding verification. The remaining stages only set up and run the
 /// threshold coordination round.
 pub(super) struct AuthorizedPreRequest {
-    token_str: String,
+    token_str: Option<String>,
+    webauthn_assertion: Option<WebAuthnEvidence>,
     token: BearerToken<PreClaims>,
     object_id: String,
     rdr_pk: Vec<u8>,
@@ -217,23 +223,49 @@ where
     /// [`crypto::context::ReaderAuthorizationContext`] transcript can be rebuilt (see
     /// `authorize_pre_request`).
     pub(super) fn authenticate_pre_request(
+        &self,
         request: Request<StartPreRequest>,
         current_time: u64,
     ) -> Result<(AuthenticatedPreRequest, Option<DocumentPayload>), PreError> {
-        let (token_str, token) = extract_and_validate_jwt::<PreClaims, _>(&request, current_time)
-            .map_err(PreError::Unauthorized)?;
+        // Mutually exclusive by convention (see `WebAuthnAssertion`'s proto
+        // doc comment): a WebAuthn-bearing request's bearer header, if any,
+        // is never even read, so it can never end up on the wire to peers
+        // alongside the WebAuthn evidence that actually authenticates it.
+        let has_webauthn = request.get_ref().webauthn_assertion.is_some();
+        let token_str = if has_webauthn {
+            None
+        } else {
+            authn::extract_bearer_token(&request)
+                .ok()
+                .map(str::to_string)
+        };
 
         let mut req = request.into_inner();
+        let webauthn_assertion = req
+            .webauthn_assertion
+            .take()
+            .map(webauthn_auth::evidence_from_proto);
+
+        let fields = authn::endpoints::pre::PreFields {
+            object_id: req.object_id.clone(),
+            rdr_pk: req.rdr_pk.clone(),
+            derivation: req.derivation.clone(),
+            salt: req.salt.clone(),
+        };
+        let token = orbis_webauthn::resolve_request_auth::<authn::endpoints::pre::PreEndpoint>(
+            &fields,
+            token_str.as_deref(),
+            webauthn_assertion.as_ref(),
+            self.state.webauthn_rp_id.as_deref(),
+            self.state.webauthn_origin.as_deref(),
+            current_time,
+            MAX_TOKEN_LIFETIME_SECS,
+            MAX_JWT_BYTES,
+            JWT_CLOCK_SKEW_LEEWAY_SECS,
+        )
+        .map_err(|e| PreError::Unauthorized(e.to_string()))?;
 
         let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
-
-        validate_pre_claims(
-            &token,
-            &req.rdr_pk,
-            &req.object_id,
-            &req.derivation,
-            &req.salt,
-        )?;
 
         let rdr_pk_signature = req
             .rdr_pk_signature
@@ -253,6 +285,7 @@ where
         Ok((
             AuthenticatedPreRequest {
                 token_str,
+                webauthn_assertion,
                 token,
                 object_id: req.object_id,
                 rdr_pk: req.rdr_pk,
@@ -407,6 +440,7 @@ where
 
         Ok(AuthorizedPreRequest {
             token_str: authenticated.token_str,
+            webauthn_assertion: authenticated.webauthn_assertion,
             token: authenticated.token,
             object_id: authenticated.object_id,
             rdr_pk: authenticated.rdr_pk,
@@ -473,7 +507,12 @@ where
                 audit_target_object_id,
                 authorized.actor_id.clone(),
                 authorized.valid_window.clone(),
-                authorized.token_str.clone(),
+                // PET's own actor-permission check is JWT-only today and
+                // doubly-guarded against a non-`requires_pet` ring (checked
+                // here and again inside `initiate_pet_check` itself) — a
+                // deliberate, narrow gap, not something this change's scope
+                // extends to WebAuthn-authorized requests.
+                authorized.token_str.clone().unwrap_or_default(),
             )
             .await
             .map(Some)
@@ -564,6 +603,7 @@ where
             rdr_pk_signature: authorized.rdr_pk_signature,
             object_id: authorized.object_id,
             token_string: authorized.token_str,
+            webauthn_assertion: authorized.webauthn_assertion,
             derivation: authorized.derivation,
             salt: authorized.salt,
             valid_window: authorized.valid_window,

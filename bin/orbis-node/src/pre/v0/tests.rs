@@ -11,7 +11,8 @@ use crate::helpers::test_helpers::{
 };
 use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding, PreResponse};
 use crate::pre::v0::service::PreServiceImpl;
-use authn::{DkgClaims, PreClaims};
+use authn::endpoints::dkg::DkgClaims;
+use authn::endpoints::pre::PreClaims;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
 use crypto::context::CiphertextContext;
 use crypto::r#trait::{
@@ -397,7 +398,8 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 rdr_pk_bytes: bob_pk_bytes.clone(),
                 rdr_pk_signature: bob_pk_signature.clone(),
                 object_id: object_id.clone(),
-                token_string: pre_token.clone(),
+                token_string: Some(pre_token.clone()),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -538,7 +540,8 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 rdr_pk_bytes: bob_pk_bytes.clone(),
                 rdr_pk_signature: bob_pk_signature,
                 object_id: second_object_id,
-                token_string: second_pre_token,
+                token_string: Some(second_pre_token),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -789,7 +792,8 @@ async fn test_pre_with_inline_document_end_to_end() {
                 rdr_pk_bytes: bob_pk_bytes,
                 rdr_pk_signature: bob_pk_signature,
                 object_id,
-                token_string: pre_token,
+                token_string: Some(pre_token),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -948,7 +952,8 @@ async fn test_pre_with_large_secret() {
                 rdr_pk_bytes: bob_pk_bytes,
                 rdr_pk_signature: bob_pk_signature,
                 object_id,
-                token_string: pre_token,
+                token_string: Some(pre_token),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1114,7 +1119,8 @@ async fn test_pre_fails_with_wrong_key() {
                 rdr_pk_bytes: bob_pk_bytes,
                 rdr_pk_signature: bob_pk_signature,
                 object_id,
-                token_string: pre_token,
+                token_string: Some(pre_token),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1264,7 +1270,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 rdr_pk_bytes: bob_pk_bytes,
                 rdr_pk_signature: bob_pk_signature,
                 object_id,
-                token_string: invalid_token,
+                token_string: Some(invalid_token),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1438,7 +1445,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 rdr_pk_bytes: bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
                 rdr_pk_signature: bob_pk_signature,
                 object_id,
-                token_string: mismatched_token,
+                token_string: Some(mismatched_token),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1514,6 +1522,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         document: None,
         rdr_pk_signature: None,
         audit_target_object_id: None,
+        webauthn_assertion: None,
     };
 
     // Create request WITHOUT authentication header
@@ -1558,6 +1567,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         document: None,
         rdr_pk_signature: None,
         audit_target_object_id: None,
+        webauthn_assertion: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -1618,6 +1628,7 @@ async fn test_start_pre_fails_wrong_signature() {
         document: None,
         rdr_pk_signature: None,
         audit_target_object_id: None,
+        webauthn_assertion: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -1669,6 +1680,7 @@ async fn test_start_pre_does_not_record_jti_before_authorization() {
         document: None,
         rdr_pk_signature: None,
         audit_target_object_id: None,
+        webauthn_assertion: None,
     };
 
     // First call: JWT and claims are valid, but the flow fails before
@@ -1822,7 +1834,8 @@ async fn test_pre_fails_with_wrong_derivation() {
                 rdr_pk_bytes: bob_pk_bytes.clone(),
                 rdr_pk_signature: bob_pk_signature,
                 object_id: object_id.clone(),
-                token_string: pre_token,
+                token_string: Some(pre_token),
+                webauthn_assertion: None,
                 derivation: Some(correct_derivation.clone()),
                 salt: None,
                 valid_window: None,
@@ -2028,7 +2041,8 @@ async fn test_pre_fails_with_bad_proof() {
                 rdr_pk_bytes: bob_pk_bytes,
                 rdr_pk_signature: bob_pk_signature,
                 object_id,
-                token_string: pre_token,
+                token_string: Some(pre_token),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -2192,7 +2206,8 @@ async fn test_pre_rejects_peers_with_mismatched_pinned_generation() {
                 rdr_pk_bytes: bob_pk_bytes,
                 rdr_pk_signature: bob_pk_signature,
                 object_id,
-                token_string: pre_token,
+                token_string: Some(pre_token),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -2369,7 +2384,8 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
                 rdr_pk_bytes: bob_pk_bytes,
                 rdr_pk_signature: bob_pk_signature,
                 object_id,
-                token_string: pre_token,
+                token_string: Some(pre_token),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -2606,7 +2622,8 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 rdr_pk_bytes: bob_pk_bytes,
                 rdr_pk_signature: bob_pk_signature,
                 object_id: "local-verify-failure-object".to_string(),
-                token_string: "unused".to_string(),
+                token_string: Some("unused".to_string()),
+                webauthn_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,

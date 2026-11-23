@@ -14,26 +14,6 @@ pub const RING_RESHARE_UPDATE_DOMAIN: &str = RING_RESHARE_FINALIZE_SIGN_DOC_DOMA
 /// Domain separator for discarded post-refresh diagnostic signatures.
 pub const REFRESH_HEALTH_CHECK_DOMAIN: &str = "orbis-pss-refresh-healthcheck-v1";
 
-/// A WebAuthn assertion authorizing a Sign request in place of a JWT — see
-/// `PolicyContext::webauthn_assertion` and `sign::v0::webauthn_auth`. Plain
-/// fields rather than the generated proto type, like every other internal
-/// context payload in this module; converted once at the service boundary
-/// (`stages::authenticate_sign_request`) and carried unverified from there
-/// on — every peer node independently re-verifies it from these same raw
-/// bytes, never trusting the coordinator's word that it already passed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebAuthnEvidence {
-    /// `did:key` the credential's public key decodes to — the identity ACP
-    /// grants/revokes directly; there is no separate enrollment registry.
-    pub issuer_did: String,
-    pub authenticator_data: Vec<u8>,
-    pub client_data_json: Vec<u8>,
-    pub signature: Vec<u8>,
-    /// Unix seconds; rejected once `now` passes this.
-    pub expiry: u64,
-    pub nonce: Vec<u8>,
-}
-
 /// Payload for the `Policy` variant of [`SignContext`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyContext {
@@ -42,8 +22,13 @@ pub struct PolicyContext {
     /// exclusive for a given request.
     pub token_string: Option<String>,
     /// Passkey-authorized signing evidence, in place of `token_string`.
-    /// `None` for the ordinary JWT path.
-    pub webauthn_assertion: Option<WebAuthnEvidence>,
+    /// `None` for the ordinary JWT path. See `sign::v0::webauthn_auth` —
+    /// converted once at the service boundary
+    /// (`stages::authenticate_sign_request`) and carried unverified from
+    /// there on; every peer node independently re-verifies it from these
+    /// same raw bytes, never trusting the coordinator's word that it
+    /// already passed.
+    pub webauthn_assertion: Option<orbis_webauthn::WebAuthnEvidence>,
     /// SHA-256 of the message being signed, computed once at stage 1.
     /// FROST's Round 1 (`handle_nonce_request`) has no message bytes of its
     /// own to hash — the JWT path defers message checking to Round 2, but
