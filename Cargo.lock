@@ -11,7 +11,7 @@ checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
 [[package]]
 name = "acp"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "async-trait",
  "datastore",
@@ -35,7 +35,7 @@ dependencies = [
 [[package]]
 name = "acp-light-client"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/backbone.git?rev=974226f35675be85e5d55456e7a7b2eddfa54867#974226f35675be85e5d55456e7a7b2eddfa54867"
+source = "git+https://github.com/sourcenetwork/backbone.git?rev=571ddf742cb17b1f95c171054bf7209e5f57e017#571ddf742cb17b1f95c171054bf7209e5f57e017"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
@@ -1868,7 +1868,7 @@ dependencies = [
 [[package]]
 name = "blockstore"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2171,7 +2171,7 @@ dependencies = [
 [[package]]
 name = "chunk-split"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "hex",
  "rapidhash",
@@ -2997,7 +2997,7 @@ dependencies = [
 [[package]]
 name = "crdt"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "ciborium",
  "defra-core",
@@ -3158,7 +3158,7 @@ dependencies = [
 [[package]]
 name = "crypto"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "aes-gcm 0.11.1",
  "blst",
@@ -3263,7 +3263,7 @@ dependencies = [
 [[package]]
 name = "cursor"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -3476,7 +3476,7 @@ dependencies = [
 [[package]]
 name = "datastore"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3490,7 +3490,7 @@ dependencies = [
 [[package]]
 name = "db"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "acp",
  "async-trait",
@@ -3558,7 +3558,7 @@ checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
 [[package]]
 name = "defra-core"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3586,7 +3586,7 @@ dependencies = [
 [[package]]
 name = "defra-node"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "acp",
  "async-trait",
@@ -3626,7 +3626,7 @@ dependencies = [
 [[package]]
 name = "defra-p2p-adapter"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "acp",
  "async-trait",
@@ -3891,7 +3891,7 @@ dependencies = [
 [[package]]
 name = "document"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -4023,7 +4023,7 @@ dependencies = [
 [[package]]
 name = "edge"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "async-compat",
  "defra-core",
@@ -4198,7 +4198,7 @@ dependencies = [
 [[package]]
 name = "events"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -5191,7 +5191,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "identity"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "base64 0.23.1",
  "crypto 0.5.0",
@@ -5343,7 +5343,7 @@ dependencies = [
 [[package]]
 name = "inputs"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "defra-core",
  "edge",
@@ -5942,7 +5942,7 @@ dependencies = [
 [[package]]
 name = "jsonrpsee-server"
 version = "0.26.1"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "futures-util",
  "http",
@@ -6086,7 +6086,7 @@ dependencies = [
 [[package]]
 name = "keyring"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.11.1",
@@ -6105,7 +6105,7 @@ dependencies = [
 [[package]]
 name = "kms"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "acp",
  "async-channel",
@@ -6198,7 +6198,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 [[package]]
 name = "lens"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -6637,7 +6637,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 [[package]]
 name = "net"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "bytes",
  "edge",
@@ -7396,7 +7396,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orbis"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "base64 0.23.1",
  "crypto 0.5.0",
@@ -7583,7 +7583,7 @@ dependencies = [
 [[package]]
 name = "p2p"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "acp",
  "async-trait",
@@ -8313,7 +8313,7 @@ checksum = "8bccbff07d5ed689c4087d20d7307a52ab6141edeedf487c3876a55b86cf63df"
 [[package]]
 name = "prolly"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "rapidhash",
  "sha2 0.10.9",
@@ -8523,7 +8523,7 @@ dependencies = [
 [[package]]
 name = "query"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "acp",
  "async-graphql",
@@ -8955,7 +8955,7 @@ dependencies = [
 [[package]]
 name = "replication-filter"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "kovan-map",
  "p2p",
@@ -9625,7 +9625,7 @@ dependencies = [
 [[package]]
 name = "schema"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "cid",
  "defra-core",
@@ -10374,7 +10374,7 @@ dependencies = [
 [[package]]
 name = "storage"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "async-trait",
  "bm25",
@@ -10605,7 +10605,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 [[package]]
 name = "telemetry"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "rapidhash",
  "regolith",
@@ -11538,7 +11538,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vera-acp"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "async-trait",
  "serde",
@@ -11553,7 +11553,7 @@ dependencies = [
 [[package]]
 name = "vera-app"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -11581,7 +11581,7 @@ dependencies = [
 [[package]]
 name = "vera-backend"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-primitives",
  "bytes",
@@ -11605,7 +11605,7 @@ dependencies = [
 [[package]]
 name = "vera-cli"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "libc",
 ]
@@ -11613,7 +11613,7 @@ dependencies = [
 [[package]]
 name = "vera-client"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11649,7 +11649,7 @@ dependencies = [
 [[package]]
 name = "vera-config"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -11664,7 +11664,7 @@ dependencies = [
 [[package]]
 name = "vera-consensus"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "commonware-codec",
  "parking_lot",
@@ -11675,7 +11675,7 @@ dependencies = [
 [[package]]
 name = "vera-crypto"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-primitives",
  "ark-bls12-381 0.4.0",
@@ -11701,7 +11701,7 @@ dependencies = [
 [[package]]
 name = "vera-domain"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11722,7 +11722,7 @@ dependencies = [
 [[package]]
 name = "vera-executor"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11750,7 +11750,7 @@ dependencies = [
 [[package]]
 name = "vera-genesis"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-evm",
  "commonware-codec",
@@ -11768,7 +11768,7 @@ dependencies = [
 [[package]]
 name = "vera-harness"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11801,7 +11801,7 @@ dependencies = [
 [[package]]
 name = "vera-identity"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -11810,7 +11810,7 @@ dependencies = [
 [[package]]
 name = "vera-indexer"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-primitives",
  "parking_lot",
@@ -11822,7 +11822,7 @@ dependencies = [
 [[package]]
 name = "vera-jsonrpc"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -11848,7 +11848,7 @@ dependencies = [
 [[package]]
 name = "vera-modules"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -11874,7 +11874,7 @@ dependencies = [
 [[package]]
 name = "vera-node"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11930,7 +11930,7 @@ dependencies = [
 [[package]]
 name = "vera-permission"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-primitives",
  "bytes",
@@ -11949,7 +11949,7 @@ dependencies = [
 [[package]]
 name = "vera-qmdb"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-primitives",
 ]
@@ -11957,7 +11957,7 @@ dependencies = [
 [[package]]
 name = "vera-test-infra"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "eyre",
  "libc",
@@ -11970,7 +11970,7 @@ dependencies = [
 [[package]]
 name = "vera-traits"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "alloy-primitives",
  "thiserror 2.0.21",
@@ -11979,7 +11979,7 @@ dependencies = [
 [[package]]
 name = "vera-zanzibar"
 version = "0.2.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=9ce122f9a24c5cdb3a66aa9d5daf8df920539550#9ce122f9a24c5cdb3a66aa9d5daf8df920539550"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=f69d1b3747b65e3b3ff601958e856c574ac127e4#f69d1b3747b65e3b3ff601958e856c574ac127e4"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -12695,7 +12695,7 @@ dependencies = [
 [[package]]
 name = "workers"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "libc",
  "rapidhash",
@@ -12836,7 +12836,7 @@ dependencies = [
 [[package]]
 name = "zanzibar"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd#9e3ecc0f57ee0ec2a2b833fc6eb19b10fc3316fd"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc#7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc"
 dependencies = [
  "async-trait",
  "identity",
