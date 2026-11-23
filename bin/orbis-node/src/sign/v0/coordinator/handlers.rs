@@ -270,19 +270,20 @@ where
                     derivation_id: derivation_id.clone(),
                     message_sha256: ctx.message_sha256.clone(),
                 };
-                let token: BearerToken<SignClaims> =
-                    orbis_webauthn::resolve_request_auth::<authn::endpoints::sign::SignEndpoint>(
-                        &fields,
-                        ctx.token_string.as_deref(),
-                        ctx.webauthn_assertion.as_ref(),
-                        self.app_state.webauthn_rp_id.as_deref(),
-                        self.app_state.webauthn_origin.as_deref(),
-                        current_time,
-                        MAX_TOKEN_LIFETIME_SECS,
-                        MAX_JWT_BYTES,
-                        JWT_CLOCK_SKEW_LEEWAY_SECS,
-                    )
-                    .map_err(|e| SignError::Unauthorized(e.to_string()))?;
+                let token: BearerToken<SignClaims> = crate::helpers::auth::resolve_request_auth::<
+                    authn::endpoints::sign::SignEndpoint,
+                >(
+                    &fields,
+                    ctx.token_string.as_deref(),
+                    ctx.webauthn_assertion.as_ref(),
+                    self.app_state.webauthn_rp_id.as_deref(),
+                    self.app_state.webauthn_origin.as_deref(),
+                    current_time,
+                    MAX_TOKEN_LIFETIME_SECS,
+                    MAX_JWT_BYTES,
+                    JWT_CLOCK_SKEW_LEEWAY_SECS,
+                )
+                .map_err(|e| SignError::Unauthorized(e.to_string()))?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
                     derivation_id,
@@ -605,7 +606,7 @@ where
             message_sha256,
         };
         let token: BearerToken<SignClaims> =
-            orbis_webauthn::resolve_request_auth::<authn::endpoints::sign::SignEndpoint>(
+            crate::helpers::auth::resolve_request_auth::<authn::endpoints::sign::SignEndpoint>(
                 &fields,
                 ctx.token_string.as_deref(),
                 ctx.webauthn_assertion.as_ref(),

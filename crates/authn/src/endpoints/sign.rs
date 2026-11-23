@@ -1,9 +1,11 @@
-//! Sign's [`EndpointAuth`] shape.
+//! Sign's [`EndpointAuth`] shape — the normal (JWT) path only. WebAuthn
+//! support for Sign is layered on top in `orbis-webauthn`'s own
+//! `impl WebAuthnEndpoint for SignEndpoint` — see this module's parent's
+//! doc comment for why that split exists.
 
 use super::EndpointAuth;
 use crate::error::{AuthNError, Result};
 use crate::BearerToken;
-use orbis_integration_core::SignOperation;
 use serde::{Deserialize, Serialize};
 
 /// Claims for Sign (threshold signing) endpoints
@@ -15,28 +17,19 @@ pub struct SignClaims {
     pub message_sha256: Vec<u8>,
 }
 
-/// Fields a Sign request needs for claims-matching and operation-building,
-/// already pulled out of `StartSignRequest` by the caller.
+/// Fields a Sign request needs for claims-matching, already pulled out of
+/// `StartSignRequest` by the caller.
 pub struct SignFields {
     pub derivation_id: String,
     pub message_sha256: Vec<u8>,
 }
 
-/// Marker type selecting Sign's authentication shape — pass this as
-/// `orbis_webauthn::resolve_request_auth`'s generic parameter.
+/// Marker type selecting Sign's authentication shape.
 pub struct SignEndpoint;
 
 impl EndpointAuth for SignEndpoint {
     type Claims = SignClaims;
-    type Operation = SignOperation;
     type Fields = SignFields;
-
-    fn claims(fields: &SignFields) -> SignClaims {
-        SignClaims {
-            derivation_id: fields.derivation_id.clone(),
-            message_sha256: fields.message_sha256.clone(),
-        }
-    }
 
     fn validate_claims(token: &BearerToken<SignClaims>, fields: &SignFields) -> Result<()> {
         if token.claims.derivation_id != fields.derivation_id {
@@ -51,19 +44,5 @@ impl EndpointAuth for SignEndpoint {
             ));
         }
         Ok(())
-    }
-
-    fn operation(
-        fields: &SignFields,
-        _issued_at: u64,
-        expiry: u64,
-        nonce: [u8; 16],
-    ) -> SignOperation {
-        SignOperation {
-            derivation_id: fields.derivation_id.clone(),
-            message_sha256: fields.message_sha256.clone(),
-            expiry,
-            nonce,
-        }
     }
 }

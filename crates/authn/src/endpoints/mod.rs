@@ -1,16 +1,18 @@
-//! One file per endpoint, each describing that endpoint's authentication
-//! shape — generic over both the JWT and WebAuthn paths, so an endpoint's
-//! node-side code needs nothing endpoint-specific beyond which marker
-//! type it passes to `orbis_webauthn::resolve_request_auth`.
-//!
-//! `authn` can describe this shape (it already holds each endpoint's
-//! claims type — `SignClaims`, `PreClaims`, `StoreSecretClaims` — so this
-//! is the same level of per-endpoint specificity, not a new one) but
-//! can't dispatch WebAuthn evidence itself: that needs
-//! `webauthn-rs-core`/P-256 crypto, which lives in `orbis-webauthn`, a
-//! crate that already depends on this one — `authn` depending back on it
-//! would be a cycle. The dispatch function that actually branches between
-//! the two paths lives there instead, generic over `EndpointAuth`.
+//! One file per endpoint, each describing that endpoint's *normal*
+//! (JWT) authentication shape — nothing here knows about WebAuthn, email,
+//! or any other extra mechanism. An endpoint that wants one of those
+//! layers it on top: see `orbis_webauthn::WebAuthnEndpoint` for how
+//! WebAuthn extends this trait without this crate needing to depend on
+//! `orbis-webauthn` (which already depends on this crate — the reverse
+//! would be a cycle), and `orbis-node`'s `helpers::auth::resolve_request_auth`
+//! for where "try JWT, then try an extra mechanism if the request carries
+//! one" is actually decided. That decision deliberately does not live in
+//! any one mechanism's crate: a mechanism crate only ever needs to know
+//! how to verify its own evidence, never which other mechanisms exist or
+//! which one takes priority. Adding a new mechanism later (e.g. a
+//! DKIM-verified email flow) means writing that mechanism's own crate and
+//! extending the orchestrator in `orbis-node` — this trait and its
+//! `Claims`/`Fields` types don't change.
 
 pub mod dkg;
 pub mod pre;
@@ -19,48 +21,47 @@ pub mod store_secret;
 
 use crate::error::Result;
 use crate::BearerToken;
-use orbis_integration_core::CanonicalOperation;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
 
-/// Describes one endpoint's authentication shape.
+/// Describes one endpoint's normal (JWT) authentication shape.
 pub trait EndpointAuth {
-    /// Claims type carried by this endpoint's JWT — and synthesized,
-    /// identically, for a WebAuthn-authorized request.
+    /// Claims type carried by this endpoint's JWT.
     type Claims: DeserializeOwned + Serialize + Debug + Clone;
-    /// The canonically-encodable operation a WebAuthn assertion's
-    /// challenge must commit to for this endpoint.
-    type Operation: CanonicalOperation;
-    /// Whatever this endpoint needs to validate claims and build its
-    /// operation, already extracted from its own proto request type by
-    /// the caller — this trait has no business knowing about proto, since
-    /// every service's generated request type is a distinct Rust type
-    /// even where their fields are identical (see
-    /// `orbis_webauthn::WebAuthnEvidence`'s own doc comment for the same
-    /// reasoning about the wire evidence itself).
+    /// Whatever this endpoint needs to validate claims against, already
+    /// extracted from its own proto request type by the caller — this
+    /// trait has no business knowing about proto, since every service's
+    /// generated request type is a distinct Rust type even where their
+    /// fields are identical.
     type Fields;
 
-    /// Builds the claims a WebAuthn-authorized request's synthetic token
-    /// carries, from `fields` alone — always derivable, never checked
-    /// against anything, since the WebAuthn signature already covers
-    /// `Self::operation`'s encoding of these same fields.
-    fn claims(fields: &Self::Fields) -> Self::Claims;
-
-    /// Checks a JWT-authorized request's verified claims match `fields` —
-    /// the JWT path's analogue of the WebAuthn path's challenge binding.
+    /// Checks a JWT-authorized request's verified claims match `fields`.
     fn validate_claims(token: &BearerToken<Self::Claims>, fields: &Self::Fields) -> Result<()>;
+}
 
-    /// Builds the operation a WebAuthn assertion's challenge must commit
-    /// to for this exact request. `issued_at` is only meaningful to an
-    /// endpoint whose own claims get cryptographically bound into a
-    /// further signature the client produces before the server ever sees
-    /// the request (PRE's reader-key proof-of-possession is the one
-    /// example today) — an endpoint without that concern just ignores it.
-    fn operation(
-        fields: &Self::Fields,
-        issued_at: u64,
-        expiry: u64,
-        nonce: [u8; 16],
-    ) -> Self::Operation;
+/// Resolves and verifies a bearer JWT for `E`, then checks its claims
+/// against `fields` — the complete "normal" authentication path for one
+/// endpoint, self-contained in this crate. A caller with no need for any
+/// extra authentication mechanism can use this directly; one that also
+/// wants to support WebAuthn (or another mechanism) composes this with
+/// that mechanism's own verifier instead — see this module's own doc
+/// comment for where that composition happens.
+pub fn resolve_jwt_auth<E: EndpointAuth>(
+    token_str: &str,
+    fields: &E::Fields,
+    current_time: u64,
+    max_token_lifetime_secs: u64,
+    max_jwt_bytes: usize,
+    clock_skew_leeway_secs: u64,
+) -> Result<BearerToken<E::Claims>> {
+    let token = crate::resolve_jwt_did(
+        token_str,
+        current_time,
+        max_token_lifetime_secs,
+        max_jwt_bytes,
+        clock_skew_leeway_secs,
+    )?;
+    E::validate_claims(&token, fields)?;
+    Ok(token)
 }

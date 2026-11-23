@@ -121,7 +121,7 @@ where
         // 2. Authorize: resolve the caller's identity and validate its claims
         // (JWT path) or WebAuthn challenge binding (WebAuthn path) match
         // this exact request — see `authn::endpoints::store_secret`.
-        let token: BearerToken<StoreSecretClaims> = orbis_webauthn::resolve_request_auth::<
+        let token: BearerToken<StoreSecretClaims> = crate::helpers::auth::resolve_request_auth::<
             authn::endpoints::store_secret::StoreSecretEndpoint,
         >(
             &fields,

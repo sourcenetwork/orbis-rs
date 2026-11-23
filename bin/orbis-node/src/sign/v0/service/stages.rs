@@ -176,18 +176,19 @@ where
             message_sha256: message_sha256.clone(),
         };
 
-        let token = orbis_webauthn::resolve_request_auth::<authn::endpoints::sign::SignEndpoint>(
-            &fields,
-            token_string.as_deref(),
-            webauthn_assertion.as_ref(),
-            self.state.webauthn_rp_id.as_deref(),
-            self.state.webauthn_origin.as_deref(),
-            current_time,
-            MAX_TOKEN_LIFETIME_SECS,
-            MAX_JWT_BYTES,
-            JWT_CLOCK_SKEW_LEEWAY_SECS,
-        )
-        .map_err(|e| SignError::Unauthorized(e.to_string()))?;
+        let token =
+            crate::helpers::auth::resolve_request_auth::<authn::endpoints::sign::SignEndpoint>(
+                &fields,
+                token_string.as_deref(),
+                webauthn_assertion.as_ref(),
+                self.state.webauthn_rp_id.as_deref(),
+                self.state.webauthn_origin.as_deref(),
+                current_time,
+                MAX_TOKEN_LIFETIME_SECS,
+                MAX_JWT_BYTES,
+                JWT_CLOCK_SKEW_LEEWAY_SECS,
+            )
+            .map_err(|e| SignError::Unauthorized(e.to_string()))?;
 
         let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
 

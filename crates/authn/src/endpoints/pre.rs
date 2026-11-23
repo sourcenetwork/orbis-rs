@@ -1,9 +1,11 @@
-//! PRE's [`EndpointAuth`] shape.
+//! PRE's [`EndpointAuth`] shape — the normal (JWT) path only. WebAuthn
+//! support for PRE is layered on top in `orbis-webauthn`'s own
+//! `impl WebAuthnEndpoint for PreEndpoint` — see this module's parent's
+//! doc comment for why that split exists.
 
 use super::EndpointAuth;
 use crate::error::{AuthNError, Result};
 use crate::BearerToken;
-use orbis_integration_core::PreOperation;
 use serde::{Deserialize, Serialize};
 
 /// Claims for PRE (Proxy Re-Encryption) endpoints
@@ -19,8 +21,8 @@ pub struct PreClaims {
     pub salt: Option<String>,
 }
 
-/// Fields a PRE request needs for claims-matching and operation-building,
-/// already pulled out of `StartPreRequest` by the caller.
+/// Fields a PRE request needs for claims-matching, already pulled out of
+/// `StartPreRequest` by the caller.
 pub struct PreFields {
     pub object_id: String,
     pub rdr_pk: Vec<u8>,
@@ -28,23 +30,12 @@ pub struct PreFields {
     pub salt: Option<String>,
 }
 
-/// Marker type selecting PRE's authentication shape — pass this as
-/// `orbis_webauthn::resolve_request_auth`'s generic parameter.
+/// Marker type selecting PRE's authentication shape.
 pub struct PreEndpoint;
 
 impl EndpointAuth for PreEndpoint {
     type Claims = PreClaims;
-    type Operation = PreOperation;
     type Fields = PreFields;
-
-    fn claims(fields: &PreFields) -> PreClaims {
-        PreClaims {
-            rdr_pk: fields.rdr_pk.clone(),
-            object_id: fields.object_id.clone(),
-            derivation: fields.derivation.clone(),
-            salt: fields.salt.clone(),
-        }
-    }
 
     fn validate_claims(token: &BearerToken<PreClaims>, fields: &PreFields) -> Result<()> {
         if token.claims.rdr_pk != fields.rdr_pk {
@@ -69,23 +60,5 @@ impl EndpointAuth for PreEndpoint {
             ));
         }
         Ok(())
-    }
-
-    /// `issued_at` matters here specifically — PRE's reader-key
-    /// proof-of-possession (`ReaderAuthorizationContext`) binds this
-    /// request's synthetic token's `issued_time` into a signature the
-    /// client produces before the server ever sees the request, so it
-    /// has to be client-chosen and bound into what the WebAuthn
-    /// signature covers too, not just carried unbound alongside it.
-    fn operation(fields: &PreFields, issued_at: u64, expiry: u64, nonce: [u8; 16]) -> PreOperation {
-        PreOperation {
-            object_id: fields.object_id.clone(),
-            rdr_pk: fields.rdr_pk.clone(),
-            derivation: fields.derivation.clone(),
-            salt: fields.salt.clone(),
-            issued_at,
-            expiry,
-            nonce,
-        }
     }
 }

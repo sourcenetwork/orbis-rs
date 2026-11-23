@@ -19,13 +19,18 @@
 //! verification result produced by one party (a coordinator, an example
 //! app) is never proof for another.
 //!
-//! [`verify_and_build_token`] is the generic, shared entry point every
-//! protocol (Sign, PRE, ...) actually calls: it wraps [`verify_assertion`]
-//! with the operation-binding and identity-resolution steps every protocol
-//! needs identically, generic over that protocol's own operation
-//! (`orbis_integration_core::CanonicalOperation`) and claims types so the
-//! per-protocol code is just a few lines of type- and field-mapping, not a
-//! second copy of this control flow.
+//! [`verify_and_build_token`] wraps [`verify_assertion`] with the
+//! operation-binding and identity-resolution steps every protocol needs
+//! identically, generic over that protocol's own operation
+//! (`orbis_integration_core::CanonicalOperation`) and claims types.
+//! [`verify_endpoint_auth`] goes one step further: generic over
+//! [`WebAuthnEndpoint`] (an endpoint's own extension of
+//! `authn::endpoints::EndpointAuth`), it's the complete WebAuthn
+//! authentication path for one endpoint. This crate deliberately has no
+//! notion of a JWT fallback or of any other authentication mechanism —
+//! see `authn::endpoints`'s own doc comment for why that composition
+//! belongs to the caller (`orbis-node`), not to any one mechanism's
+//! crate.
 
 use orbis_integration_core::CanonicalOperation;
 use sha2::{Digest, Sha256};
@@ -245,63 +250,68 @@ where
     })
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ResolveAuthError {
-    #[error("{0}")]
-    WebAuthn(#[from] WebAuthnAuthError),
-    #[error("JWT validation failed: {0}")]
-    Jwt(String),
-    #[error("{0}")]
-    Claims(#[from] authn::error::AuthNError),
-    #[error("request carries neither a JWT nor WebAuthn evidence")]
-    MissingAuth,
+/// Extends an endpoint's normal (JWT) authentication shape
+/// (`authn::endpoints::EndpointAuth`) with what WebAuthn needs on top:
+/// the canonically-encodable operation a WebAuthn assertion's challenge
+/// must commit to, and how to synthesize that endpoint's claims directly
+/// from `Fields` (never checked against anything, since the WebAuthn
+/// signature already covers `operation`'s encoding of those same fields —
+/// unlike the JWT path, there is no pre-existing token to extract claims
+/// from).
+///
+/// This lives here, not on `EndpointAuth` itself, because it's specific
+/// to this one mechanism: a future mechanism (e.g. a DKIM-verified email
+/// flow) binds its own evidence to a request in its own way and would
+/// define its own extension trait in its own crate, never this one.
+/// `endpoints/` holds one file per endpoint with that endpoint's
+/// `impl WebAuthnEndpoint`, mirroring `authn::endpoints`' own layout.
+pub trait WebAuthnEndpoint: authn::endpoints::EndpointAuth {
+    /// The canonically-encodable operation a WebAuthn assertion's
+    /// challenge must commit to for this endpoint.
+    type Operation: CanonicalOperation;
+
+    /// Builds the claims a WebAuthn-authorized request's synthetic token
+    /// carries, from `fields` alone.
+    fn claims(fields: &Self::Fields) -> Self::Claims;
+
+    /// Builds the operation a WebAuthn assertion's challenge must commit
+    /// to for this exact request. `issued_at` is only meaningful to an
+    /// endpoint whose own claims get cryptographically bound into a
+    /// further signature the client produces before the server ever sees
+    /// the request (PRE's reader-key proof-of-possession is the one
+    /// example today) — an endpoint without that concern just ignores it.
+    fn operation(
+        fields: &Self::Fields,
+        issued_at: u64,
+        expiry: u64,
+        nonce: [u8; 16],
+    ) -> Self::Operation;
 }
 
-/// The single, generic dispatch every endpoint's node-side code calls —
-/// independently authenticates a request (via a JWT or WebAuthn evidence,
-/// mutually exclusive — WebAuthn evidence, when present, takes priority
-/// and the JWT path is skipped entirely) and returns a `BearerToken`,
-/// identically in shape regardless of which method was used.
-///
-/// Generic over `E: authn::endpoints::EndpointAuth`, the one thing that
-/// differs between endpoints calling this — see that trait's own doc
-/// comment for why the dispatch itself has to live here rather than in
-/// `authn`.
-#[allow(clippy::too_many_arguments)]
-pub fn resolve_request_auth<E: authn::endpoints::EndpointAuth>(
+pub mod endpoints;
+
+/// Verifies WebAuthn evidence for one endpoint `E` and returns a
+/// `BearerToken` carrying its synthesized claims — the complete WebAuthn
+/// authentication path for one endpoint, self-contained in this crate.
+/// This function has no notion of a JWT fallback: a caller that wants to
+/// support both decides, for itself, which of this or `authn`'s own
+/// `resolve_jwt_auth` applies to a given request (see
+/// `authn::endpoints`'s own doc comment for where that decision belongs).
+pub fn verify_endpoint_auth<E: WebAuthnEndpoint>(
     fields: &E::Fields,
-    token_string: Option<&str>,
-    webauthn_evidence: Option<&WebAuthnEvidence>,
+    evidence: &WebAuthnEvidence,
     rp_id: Option<&str>,
     origin: Option<&str>,
     current_time: u64,
-    max_token_lifetime_secs: u64,
-    max_jwt_bytes: usize,
-    clock_skew_leeway_secs: u64,
-) -> Result<authn::BearerToken<E::Claims>, ResolveAuthError> {
-    if let Some(evidence) = webauthn_evidence {
-        let nonce: [u8; 16] = evidence
-            .nonce
-            .as_slice()
-            .try_into()
-            .map_err(|_| WebAuthnAuthError::InvalidNonce)?;
-        let operation = E::operation(fields, evidence.issued_at, evidence.expiry, nonce);
-        let claims = E::claims(fields);
-        return verify_and_build_token(evidence, operation, claims, rp_id, origin, current_time)
-            .map_err(ResolveAuthError::WebAuthn);
-    }
-
-    let token_string = token_string.ok_or(ResolveAuthError::MissingAuth)?;
-    let token: authn::BearerToken<E::Claims> = authn::resolve_jwt_did(
-        token_string,
-        current_time,
-        max_token_lifetime_secs,
-        max_jwt_bytes,
-        clock_skew_leeway_secs,
-    )
-    .map_err(|e| ResolveAuthError::Jwt(e.to_string()))?;
-    E::validate_claims(&token, fields)?;
-    Ok(token)
+) -> Result<authn::BearerToken<E::Claims>, WebAuthnAuthError> {
+    let nonce: [u8; 16] = evidence
+        .nonce
+        .as_slice()
+        .try_into()
+        .map_err(|_| WebAuthnAuthError::InvalidNonce)?;
+    let operation = E::operation(fields, evidence.issued_at, evidence.expiry, nonce);
+    let claims = E::claims(fields);
+    verify_and_build_token(evidence, operation, claims, rp_id, origin, current_time)
 }
 
 /// Builds a WebAuthn assertion directly from a raw P-256 signing key —
@@ -533,14 +543,7 @@ mod tests {
 
     impl authn::endpoints::EndpointAuth for ToyEndpoint {
         type Claims = ToyClaims;
-        type Operation = ToyOperation;
         type Fields = &'static str;
-
-        fn claims(fields: &&'static str) -> ToyClaims {
-            ToyClaims {
-                value: fields.to_string(),
-            }
-        }
 
         fn validate_claims(
             token: &authn::BearerToken<ToyClaims>,
@@ -552,6 +555,16 @@ mod tests {
                 ));
             }
             Ok(())
+        }
+    }
+
+    impl WebAuthnEndpoint for ToyEndpoint {
+        type Operation = ToyOperation;
+
+        fn claims(fields: &&'static str) -> ToyClaims {
+            ToyClaims {
+                value: fields.to_string(),
+            }
         }
 
         fn operation(
@@ -565,22 +578,18 @@ mod tests {
     }
 
     #[test]
-    fn resolve_request_auth_dispatches_webauthn_through_the_endpoint_trait() {
+    fn verify_endpoint_auth_dispatches_through_the_webauthn_endpoint_trait() {
         let key = signing_key();
         let did = authn::did_from_p256_public_key(&compressed_public_key(&key));
         let operation = ToyOperation { value: "op-1" };
         let evidence = evidence_for(&key, &did, &operation, 2_000_000_000);
 
-        let token = resolve_request_auth::<ToyEndpoint>(
+        let token = verify_endpoint_auth::<ToyEndpoint>(
             &"op-1",
-            None,
-            Some(&evidence),
+            &evidence,
             Some(RP_ID),
             Some(ORIGIN),
             1_700_000_100,
-            3600,
-            16 * 1024,
-            30,
         )
         .expect("well-formed WebAuthn evidence must resolve");
 
@@ -589,18 +598,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_request_auth_rejects_when_neither_auth_method_present() {
-        let result = resolve_request_auth::<ToyEndpoint>(
+    fn verify_endpoint_auth_rejects_short_nonce() {
+        let key = signing_key();
+        let did = authn::did_from_p256_public_key(&compressed_public_key(&key));
+        let operation = ToyOperation { value: "op-1" };
+        let mut evidence = evidence_for(&key, &did, &operation, 2_000_000_000);
+        evidence.nonce = vec![1, 2, 3, 4];
+
+        let result = verify_endpoint_auth::<ToyEndpoint>(
             &"op-1",
-            None,
-            None,
+            &evidence,
             Some(RP_ID),
             Some(ORIGIN),
             1_700_000_100,
-            3600,
-            16 * 1024,
-            30,
         );
-        assert!(matches!(result, Err(ResolveAuthError::MissingAuth)));
+        assert!(matches!(result, Err(WebAuthnAuthError::InvalidNonce)));
     }
 }

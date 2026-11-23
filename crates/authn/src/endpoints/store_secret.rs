@@ -1,9 +1,11 @@
-//! StoreSecret's [`EndpointAuth`] shape.
+//! StoreSecret's [`EndpointAuth`] shape — the normal (JWT) path only.
+//! WebAuthn support for StoreSecret is layered on top in
+//! `orbis-webauthn`'s own `impl WebAuthnEndpoint for StoreSecretEndpoint`
+//! — see this module's parent's doc comment for why that split exists.
 
 use super::EndpointAuth;
 use crate::error::{AuthNError, Result};
 use crate::BearerToken;
-use orbis_integration_core::StoreSecretOperation;
 use serde::{Deserialize, Serialize};
 
 /// Claims for StoreSecret endpoints
@@ -33,10 +35,10 @@ pub struct StoreSecretClaims {
     pub timestamp: Option<u64>,
 }
 
-/// Fields a StoreSecret request needs for claims-matching and
-/// operation-building, already pulled out of `StoreSecretRequest` by the
-/// caller — `encrypted_document_sha256` is a digest the caller computes
-/// once from the request's raw `encrypted_document`, mirroring Sign's own
+/// Fields a StoreSecret request needs for claims-matching, already
+/// pulled out of `StoreSecretRequest` by the caller —
+/// `encrypted_document_sha256` is a digest the caller computes once from
+/// the request's raw `encrypted_document`, mirroring Sign's own
 /// `message_sha256` field.
 pub struct StoreSecretFields {
     pub encrypted_document_sha256: Vec<u8>,
@@ -52,30 +54,12 @@ pub struct StoreSecretFields {
     pub timestamp: Option<u64>,
 }
 
-/// Marker type selecting StoreSecret's authentication shape — pass this
-/// as `orbis_webauthn::resolve_request_auth`'s generic parameter.
+/// Marker type selecting StoreSecret's authentication shape.
 pub struct StoreSecretEndpoint;
 
 impl EndpointAuth for StoreSecretEndpoint {
     type Claims = StoreSecretClaims;
-    type Operation = StoreSecretOperation;
     type Fields = StoreSecretFields;
-
-    fn claims(fields: &StoreSecretFields) -> StoreSecretClaims {
-        StoreSecretClaims {
-            encrypted_document_sha256: fields.encrypted_document_sha256.clone(),
-            enc_cmt: fields.enc_cmt.clone(),
-            ring_id: fields.ring_id.clone(),
-            policy_id: fields.policy_id.clone(),
-            resource: fields.resource.clone(),
-            permission: fields.permission.clone(),
-            challenge: fields.challenge.clone(),
-            response: fields.response.clone(),
-            with_proof: fields.with_proof,
-            tier: fields.tier.clone(),
-            timestamp: fields.timestamp,
-        }
-    }
 
     fn validate_claims(
         token: &BearerToken<StoreSecretClaims>,
@@ -145,31 +129,5 @@ impl EndpointAuth for StoreSecretEndpoint {
             )));
         }
         Ok(())
-    }
-
-    /// Nothing downstream cryptographically binds this request's
-    /// `issued_time` into a further signature (unlike PRE's reader-key
-    /// proof-of-possession) — `issued_at` is unused here, same as Sign.
-    fn operation(
-        fields: &StoreSecretFields,
-        _issued_at: u64,
-        expiry: u64,
-        nonce: [u8; 16],
-    ) -> StoreSecretOperation {
-        StoreSecretOperation {
-            encrypted_document_sha256: fields.encrypted_document_sha256.clone(),
-            enc_cmt: fields.enc_cmt.clone(),
-            ring_id: fields.ring_id.clone(),
-            policy_id: fields.policy_id.clone(),
-            resource: fields.resource.clone(),
-            permission: fields.permission.clone(),
-            challenge: fields.challenge.clone(),
-            response: fields.response.clone(),
-            with_proof: fields.with_proof,
-            tier: fields.tier.clone(),
-            timestamp: fields.timestamp,
-            expiry,
-            nonce,
-        }
     }
 }

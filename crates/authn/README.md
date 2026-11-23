@@ -22,20 +22,30 @@ Verification logic lives in [`src/lib.rs`](src/lib.rs); signing and gRPC utiliti
 
 Use `BearerToken<()>` when you only need the base claims.
 
-## `endpoints` — one authentication shape per endpoint
+## `endpoints` — the normal (JWT) path, one file per endpoint
 
 [`src/endpoints/`](src/endpoints/) defines the `EndpointAuth` trait and one
-marker type per endpoint (`SignEndpoint`, `PreEndpoint`,
-`StoreSecretEndpoint`) describing how to validate a JWT's claims against a
-live request, and how to build the canonical operation a WebAuthn
-assertion's challenge must commit to instead. `orbis_webauthn::resolve_request_auth::<E: EndpointAuth>` is the one function
-every endpoint's node-side code calls — generic over which marker type is
-passed in, so Sign/PRE/StoreSecret's own call sites in `orbis-node` are
-identical apart from that type parameter. See that trait's own doc comment
-for why the dispatch itself lives in `orbis-webauthn` rather than here:
-`authn` can describe the shape (same level of per-endpoint specificity as
-the `*Claims` types above) but can't verify WebAuthn evidence itself
-without depending on `orbis-webauthn`, which already depends on `authn`.
+marker type per endpoint (`sign::SignEndpoint`, `pre::PreEndpoint`,
+`store_secret::StoreSecretEndpoint`) describing how to validate a JWT's
+claims against a live request — nothing here knows WebAuthn, or any other
+extra authentication mechanism, exists. `resolve_jwt_auth::<E: EndpointAuth>`
+is the complete, self-contained JWT authentication path for one endpoint:
+resolve the bearer token, then check its claims against the request via
+`E::validate_claims`.
+
+A mechanism that wants to add an *alternative* to JWT for some endpoint
+extends `EndpointAuth` with its own trait in its own crate — see
+`orbis_webauthn::WebAuthnEndpoint` for how WebAuthn does this (implementing
+its trait for e.g. `endpoints::sign::SignEndpoint` from *that* crate, which
+the orphan rule allows since the trait being implemented is local to it).
+`authn` never depends on `orbis-webauthn`, or on any other mechanism's
+crate: this crate can describe an endpoint's normal shape, but it isn't
+the place that decides whether JWT or some extra mechanism applies to a
+given request. That decision — "try JWT, then fall back to WebAuthn if
+the request carries it, then try the next mechanism if that one doesn't
+apply either" — is `orbis-node`'s `helpers::auth::resolve_request_auth`,
+since orchestrating between mechanisms needs a caller that depends on all
+of them, which no single mechanism's crate can be.
 
 DKG's `start_dkg` has no per-caller authentication at all — ring
 authorization already happened on-chain at ring creation — so it has no

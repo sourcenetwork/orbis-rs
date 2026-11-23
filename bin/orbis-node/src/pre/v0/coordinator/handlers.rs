@@ -169,7 +169,7 @@ where
             salt: ctx.salt.clone(),
         };
         let token: BearerToken<PreClaims> =
-            orbis_webauthn::resolve_request_auth::<authn::endpoints::pre::PreEndpoint>(
+            crate::helpers::auth::resolve_request_auth::<authn::endpoints::pre::PreEndpoint>(
                 &fields,
                 ctx.token_string.as_deref(),
                 ctx.webauthn_assertion.as_ref(),
