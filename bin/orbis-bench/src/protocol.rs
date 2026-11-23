@@ -644,6 +644,7 @@ pub async fn sign_call(
             message: message.clone(),
             derivation_id: fixture.derivation_id.clone(),
             valid_window: None,
+            webauthn_assertion: None,
         },
         &token,
     )?;

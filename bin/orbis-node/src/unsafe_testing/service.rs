@@ -892,7 +892,11 @@ async fn forward_unauthorized_sign(
         from_node_id: statement.from_node_id,
         ring_pk,
         context: SignContext::Policy(Box::new(PolicyContext {
-            token_string,
+            token_string: Some(token_string),
+            webauthn_assertion: None,
+            // Unused for this JWT-only test-forwarding path (only the
+            // WebAuthn verification branch reads this field).
+            message_sha256: Vec::new(),
             derivation_id: statement.object_id.clone(),
             valid_window: None,
             key_derivation,

@@ -745,6 +745,7 @@ pub async fn do_sign(
         message: message.clone(),
         derivation_id: derivation_id.clone(),
         valid_window,
+        webauthn_assertion: None,
     };
 
     let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
@@ -759,6 +760,107 @@ pub async fn do_sign(
 
     let response = client
         .start_sign(tonic_request)
+        .await
+        .context("Sign request failed")?;
+
+    let response = response.into_inner();
+
+    println!("Sign Result:");
+    println!("{}", "=".repeat(60));
+    println!("  Status: {}", response.status);
+    println!("  Message: {}", response.message);
+    println!("  Signature: {}", response.signature);
+
+    Ok(SignResult {
+        status: response.status,
+        message: response.message,
+        created_at: response.created_at,
+        signature: response.signature,
+    })
+}
+
+/// Call `SignService.StartSign` with a passkey-authorized request — a
+/// WebAuthn assertion in place of a JWT. `derivation_id` must have been
+/// granted (via ACP) to the `did:key` the signing key's own public key
+/// decodes to (see `authn::did_from_p256_public_key`); there is no
+/// separate enrollment step.
+///
+/// `signing_key` stands in for a real passkey: there is no browser or
+/// hardware authenticator to drive here, so the caller supplies a raw
+/// P-256 key directly and this builds the exact wire-format assertion a
+/// real one would have produced (`orbis_webauthn::build_test_assertion`).
+/// Fine for CLI tooling and tests; never represents a real end-user flow.
+pub async fn do_sign_with_passkey(
+    endpoint: String,
+    message: Vec<u8>,
+    derivation_id: String,
+    signing_key: &p256::ecdsa::SigningKey,
+    rp_id: &str,
+    origin: &str,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<SignResult> {
+    use sha2::{Digest, Sha256};
+
+    println!("Starting passkey-authorized Sign session:");
+    println!("  Endpoint: {}", endpoint);
+    println!("  Derivation ID: {}", derivation_id);
+    println!("  Message length: {} bytes", message.len());
+    println!();
+
+    let mut client = SignServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let valid_window = match (valid_window_start, valid_window_end) {
+        (Some(start), Some(end)) => Some(proto::v0::sign::TimestampRange { start, end }),
+        _ => None,
+    };
+
+    let compressed_pubkey: [u8; 33] = signing_key
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed P-256 point is 33 bytes");
+    let issuer_did = authn::did_from_p256_public_key(&compressed_pubkey);
+
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| anyhow!("system clock before epoch: {e}"))?
+        .as_secs()
+        + 300;
+    let nonce: [u8; 16] = rand::random();
+
+    let operation = orbis_integration_core::SignOperation {
+        derivation_id: derivation_id.clone(),
+        message_sha256: Sha256::digest(&message).to_vec(),
+        expiry,
+        nonce,
+    };
+    let assertion = orbis_webauthn::build_test_assertion(
+        signing_key,
+        rp_id,
+        origin,
+        &operation.canonical_bytes(),
+    );
+
+    let request = proto::v0::sign::StartSignRequest {
+        message: message.clone(),
+        derivation_id: derivation_id.clone(),
+        valid_window,
+        webauthn_assertion: Some(proto::v0::sign::WebAuthnAssertion {
+            issuer_did,
+            authenticator_data: assertion.authenticator_data,
+            client_data_json: assertion.client_data_json,
+            signature: assertion.signature,
+            expiry,
+            nonce: nonce.to_vec(),
+        }),
+    };
+
+    let response = client
+        .start_sign(Request::new(request))
         .await
         .context("Sign request failed")?;
 

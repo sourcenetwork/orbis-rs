@@ -281,12 +281,19 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     tracing::info!(connection = %connection_string, "Iroh peer route");
 
     // Create shared application state (needed for router)
+    // `${VAR:-}`-style Compose/shell substitution for an unset host var
+    // still sets the container's env var — to an empty string, not an
+    // absent one — so an empty value here means "not configured," the same
+    // as the flag being omitted entirely, not a literal empty rp_id/origin.
+    let non_empty = |value: Option<String>| value.filter(|s| !s.is_empty());
     let app_state = AppState::<DkgImpl>::new(
         config.identity.node_key.clone(),
         config.network.clone(),
         config.local_storage,
         config.authz,
         config.bulletin,
+        non_empty(config.args.webauthn_rp_id.clone()),
+        non_empty(config.args.webauthn_origin.clone()),
     );
     let app_state_arc = Arc::new(app_state);
 

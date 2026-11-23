@@ -1266,7 +1266,9 @@ async fn test_delegated_dkg_then_sign_policy_end_to_end() {
             },
             message.clone(),
             SignContext::Policy(Box::new(PolicyContext {
-                token_string: sign_token,
+                token_string: Some(sign_token),
+                webauthn_assertion: None,
+                message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
@@ -1413,7 +1415,9 @@ async fn test_sign_policy_fails_invalid_jwt() {
             },
             b"some message".to_vec(),
             SignContext::Policy(Box::new(PolicyContext {
-                token_string: "this.is.not.a.valid.jwt".to_string(),
+                token_string: Some("this.is.not.a.valid.jwt".to_string()),
+                webauthn_assertion: None,
+                message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
@@ -1522,7 +1526,9 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
             },
             b"some message".to_vec(),
             SignContext::Policy(Box::new(PolicyContext {
-                token_string: sign_token,
+                token_string: Some(sign_token),
+                webauthn_assertion: None,
+                message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
@@ -1742,6 +1748,7 @@ async fn test_sign_service_rejects_oversized_message() {
         derivation_id: "test-derivation".to_string(),
         message: oversized_message,
         valid_window: None,
+        webauthn_assertion: None,
     });
 
     let result = service.start_sign(request).await;
@@ -1903,7 +1910,9 @@ async fn test_sign_policy_fails_wrong_message_digest() {
             },
             different_message,
             SignContext::Policy(Box::new(PolicyContext {
-                token_string: sign_token,
+                token_string: Some(sign_token),
+                webauthn_assertion: None,
+                message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,

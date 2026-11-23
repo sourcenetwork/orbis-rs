@@ -34,14 +34,22 @@ use crate::sign::v0::helpers::{
     check_policy_access_at, fetch_bulletin_payloads_for_version, policy_access_timestamp,
     validate_sign_claims,
 };
-use crate::sign::v0::messages::{PolicyContext, SignContext};
+use crate::sign::v0::messages::{PolicyContext, SignContext, WebAuthnEvidence};
+use crate::sign::v0::webauthn_auth;
 use authn::{BearerToken, SignClaims};
 use authz::request::ValidWindow;
 use bulletin::r#trait::{KeyDerivation, RingPayload};
+use sha2::{Digest, Sha256};
 
 /// Output of stage 1.
 pub(super) struct AuthenticatedSignRequest {
-    token_string: String,
+    token_string: Option<String>,
+    webauthn_assertion: Option<WebAuthnEvidence>,
+    /// Computed once here (needed either way: the WebAuthn branch requires
+    /// it for verification itself, and it must reach `PolicyContext` so
+    /// FROST's Round 1 peer re-check can verify WebAuthn evidence without
+    /// having the raw message — see `PolicyContext::message_sha256`).
+    message_sha256: Vec<u8>,
     pub(super) token: BearerToken<SignClaims>,
     pub(super) derivation_id: String,
     message: Vec<u8>,
@@ -60,7 +68,9 @@ pub(super) struct SignBulletinState {
 /// on-chain policy authorization, and single-use JWT enforcement. The remaining stages
 /// only set up and run the threshold coordination round.
 pub(super) struct AuthorizedSignRequest {
-    token_string: String,
+    token_string: Option<String>,
+    webauthn_assertion: Option<WebAuthnEvidence>,
+    message_sha256: Vec<u8>,
     token: BearerToken<SignClaims>,
     derivation_id: String,
     message: Vec<u8>,
@@ -92,30 +102,6 @@ pub(super) fn validate_sign_message_size(
         )));
     }
     Ok(())
-}
-
-/// Stage 1 (authentication): extracts and validates the JWT and checks its claims
-/// against the request. No IO.
-pub(super) fn authenticate_sign_request(
-    request: Request<StartSignRequest>,
-    current_time: u64,
-) -> Result<AuthenticatedSignRequest, SignError> {
-    let (token_string, token) = extract_and_validate_jwt::<SignClaims, _>(&request, current_time)
-        .map_err(SignError::Unauthorized)?;
-
-    let req = request.into_inner();
-
-    validate_sign_claims(&token, &req.derivation_id, Some(&req.message))?;
-
-    let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
-
-    Ok(AuthenticatedSignRequest {
-        token_string,
-        token,
-        derivation_id: req.derivation_id,
-        message: req.message,
-        valid_window,
-    })
 }
 
 /// Response-encoding stage (6): parses the coordinator's raw result into the wire
@@ -153,6 +139,67 @@ where
         + Sync
         + 'static,
 {
+    /// Stage 1 (authentication): either extracts and validates the JWT and
+    /// checks its claims against the request, or — when the request carries
+    /// a WebAuthn assertion instead — independently verifies it and
+    /// produces the same `BearerToken<SignClaims>` shape, so every
+    /// downstream stage runs unchanged regardless of which method was
+    /// used. No IO either way.
+    pub(super) fn authenticate_sign_request(
+        &self,
+        request: Request<StartSignRequest>,
+        current_time: u64,
+    ) -> Result<AuthenticatedSignRequest, SignError> {
+        if request.get_ref().webauthn_assertion.is_some() {
+            let req = request.into_inner();
+            let assertion = req
+                .webauthn_assertion
+                .expect("checked Some above, body not touched since");
+            let message_sha256 = Sha256::digest(&req.message).to_vec();
+            let evidence = webauthn_auth::evidence_from_proto(assertion);
+            let token = webauthn_auth::verify_and_build_token(
+                &evidence,
+                &req.derivation_id,
+                &message_sha256,
+                self.state.webauthn_rp_id.as_deref(),
+                self.state.webauthn_origin.as_deref(),
+                current_time,
+            )?;
+            let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
+
+            return Ok(AuthenticatedSignRequest {
+                token_string: None,
+                webauthn_assertion: Some(evidence),
+                message_sha256,
+                token,
+                derivation_id: req.derivation_id,
+                message: req.message,
+                valid_window,
+            });
+        }
+
+        let (token_string, token) =
+            extract_and_validate_jwt::<SignClaims, _>(&request, current_time)
+                .map_err(SignError::Unauthorized)?;
+
+        let req = request.into_inner();
+
+        validate_sign_claims(&token, &req.derivation_id, Some(&req.message))?;
+
+        let message_sha256 = Sha256::digest(&req.message).to_vec();
+        let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
+
+        Ok(AuthenticatedSignRequest {
+            token_string: Some(token_string),
+            webauthn_assertion: None,
+            message_sha256,
+            token,
+            derivation_id: req.derivation_id,
+            message: req.message,
+            valid_window,
+        })
+    }
+
     /// Stage 2 (bulletin reads): resolves the key-derivation and ring payloads live
     /// from the bulletin, then derives the acting identity from the token and the
     /// ring's trusted-relay configuration.
@@ -227,6 +274,8 @@ where
 
         Ok(AuthorizedSignRequest {
             token_string: authenticated.token_string,
+            webauthn_assertion: authenticated.webauthn_assertion,
+            message_sha256: authenticated.message_sha256,
             token: authenticated.token,
             derivation_id: authenticated.derivation_id,
             message: authenticated.message,
@@ -306,6 +355,8 @@ where
 
         let context = SignContext::Policy(Box::new(PolicyContext {
             token_string: authorized.token_string,
+            webauthn_assertion: authorized.webauthn_assertion,
+            message_sha256: authorized.message_sha256,
             derivation_id: authorized.derivation_id,
             valid_window: authorized.valid_window,
             key_derivation: authorized.key_derivation,

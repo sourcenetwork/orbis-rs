@@ -92,6 +92,21 @@ pub fn validate_relay_issuer(issuer_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Decodes a P-256 public key from a `did:key:z...` issuer DID.
+///
+/// Used by WebAuthn-authenticated requests, where a passkey's own credential
+/// public key *is* the identity ACP grants/revokes directly — there is no
+/// separate enrollment registry to resolve through.
+pub fn p256_public_key_from_did(did: &str) -> Result<[u8; 33]> {
+    did_key::p256_public_key(did)
+}
+
+/// Encodes a compressed SEC1 P-256 public key as the `did:key` identity it
+/// stands for. The inverse of [`p256_public_key_from_did`].
+pub fn did_from_p256_public_key(compressed_pubkey: &[u8; 33]) -> String {
+    did_key::encode_p256_did(compressed_pubkey)
+}
+
 /// Claims for PRE (Proxy Re-Encryption) endpoints
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PreClaims {

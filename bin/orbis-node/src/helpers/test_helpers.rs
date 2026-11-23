@@ -198,7 +198,15 @@ async fn create_test_app_state_with_bulletin_inner(
         )
     }
 
-    AppState::<DkgImpl>::new(node_key, network, local_storage, authz, bulletin)
+    AppState::<DkgImpl>::new(
+        node_key,
+        network,
+        local_storage,
+        authz,
+        bulletin,
+        None,
+        None,
+    )
 }
 
 /// Create a test AppState with default values

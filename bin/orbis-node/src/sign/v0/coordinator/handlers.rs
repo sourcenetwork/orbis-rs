@@ -27,6 +27,7 @@ use crate::sign::v0::messages::{
     SignMessage, SignRequest,
 };
 use crate::sign::v0::response_state::NonceStoreOutcome;
+use crate::sign::v0::webauthn_auth;
 use authn::{resolve_jwt_did, BearerToken, SignClaims};
 use authz::request::AccessCheckRequest;
 use bulletin::r#trait::{BulletinKind, DocumentPayload, RingPayload};
@@ -37,6 +38,7 @@ use crypto::r#trait::{
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignaturePoint};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug)]
@@ -255,21 +257,45 @@ where
         let mut staged_sign_bundle: Option<RingShareBundle> = None;
         let authoritative_ring_pk_hex = match &context {
             SignContext::Policy(ctx) => {
-                let (token_string, derivation_id, valid_window) =
-                    (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
+                let (derivation_id, valid_window) = (&ctx.derivation_id, &ctx.valid_window);
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
                     .as_secs();
-                let token: BearerToken<SignClaims> = resolve_jwt_did(
-                    token_string,
-                    current_time,
-                    MAX_TOKEN_LIFETIME_SECS,
-                    MAX_JWT_BYTES,
-                    JWT_CLOCK_SKEW_LEEWAY_SECS,
-                )
-                .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-                validate_sign_claims(&token, derivation_id, None)?;
+                // Independently re-verified here regardless of method — never trust the
+                // coordinator's word that authentication already passed. WebAuthn's
+                // challenge binds `message_sha256`, so unlike the JWT path it can't defer
+                // that check to Round 2: `ctx.message_sha256` (set once at stage 1) is what
+                // makes that possible without the raw message, which Round 1 never carries.
+                let token: BearerToken<SignClaims> = if let Some(evidence) = &ctx.webauthn_assertion
+                {
+                    webauthn_auth::verify_and_build_token(
+                        evidence,
+                        derivation_id,
+                        &ctx.message_sha256,
+                        self.app_state.webauthn_rp_id.as_deref(),
+                        self.app_state.webauthn_origin.as_deref(),
+                        current_time,
+                    )?
+                } else {
+                    let token_string = ctx.token_string.as_deref().ok_or_else(|| {
+                        SignError::Unauthorized(
+                            "Sign request carries neither a JWT nor WebAuthn evidence".to_string(),
+                        )
+                    })?;
+                    let token: BearerToken<SignClaims> = resolve_jwt_did(
+                        token_string,
+                        current_time,
+                        MAX_TOKEN_LIFETIME_SECS,
+                        MAX_JWT_BYTES,
+                        JWT_CLOCK_SKEW_LEEWAY_SECS,
+                    )
+                    .map_err(|e| {
+                        SignError::Unauthorized(format!("JWT validation failed: {}", e))
+                    })?;
+                    validate_sign_claims(&token, derivation_id, None)?;
+                    token
+                };
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
                     derivation_id,
@@ -580,22 +606,39 @@ where
         message: &[u8],
         ctx: &PolicyContext,
     ) -> Result<SignRequestAuthorization> {
-        let (token_string, derivation_id, valid_window) =
-            (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
-        // Always re-validate JWT (pure crypto, no IO)
+        let (derivation_id, valid_window) = (&ctx.derivation_id, &ctx.valid_window);
+        // Always re-verify authentication here (pure crypto, no IO), regardless of method.
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
-        let token: BearerToken<SignClaims> = resolve_jwt_did(
-            token_string,
-            current_time,
-            MAX_TOKEN_LIFETIME_SECS,
-            MAX_JWT_BYTES,
-            JWT_CLOCK_SKEW_LEEWAY_SECS,
-        )
-        .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-        validate_sign_claims(&token, derivation_id, Some(message))?;
+        let token: BearerToken<SignClaims> = if let Some(evidence) = &ctx.webauthn_assertion {
+            let message_sha256 = Sha256::digest(message).to_vec();
+            webauthn_auth::verify_and_build_token(
+                evidence,
+                derivation_id,
+                &message_sha256,
+                self.app_state.webauthn_rp_id.as_deref(),
+                self.app_state.webauthn_origin.as_deref(),
+                current_time,
+            )?
+        } else {
+            let token_string = ctx.token_string.as_deref().ok_or_else(|| {
+                SignError::Unauthorized(
+                    "Sign request carries neither a JWT nor WebAuthn evidence".to_string(),
+                )
+            })?;
+            let token: BearerToken<SignClaims> = resolve_jwt_did(
+                token_string,
+                current_time,
+                MAX_TOKEN_LIFETIME_SECS,
+                MAX_JWT_BYTES,
+                JWT_CLOCK_SKEW_LEEWAY_SECS,
+            )
+            .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+            validate_sign_claims(&token, derivation_id, Some(message))?;
+            token
+        };
 
         // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
         let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
