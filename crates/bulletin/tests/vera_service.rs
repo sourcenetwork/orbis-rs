@@ -359,6 +359,14 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     assert_eq!(restored, derivation);
     config.nonce = [2; 32];
     let pending_id = config.id().unwrap();
+    let cancel = serde_json::to_vec(&RingCancellationPayload {
+        ring_id: pending_id.clone(),
+    })
+    .unwrap();
+    assert!(matches!(
+        backend.post(BulletinWriteKind::CancelPendingRing, cancel.clone()).await,
+        Err(bulletin::error::BulletinError::NotFound { id }) if id == pending_id
+    ));
     let creation = submit(
         &client,
         &worker,
@@ -367,10 +375,6 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     )
     .await;
     receipt(&SdkVeraClient::new(&reader_url), creation, &trusted).await;
-    let cancel = serde_json::to_vec(&RingCancellationPayload {
-        ring_id: pending_id.clone(),
-    })
-    .unwrap();
     for _ in 0..2 {
         let cancelled = backend
             .post(BulletinWriteKind::CancelPendingRing, cancel.clone())
@@ -386,7 +390,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let writer = open(&url, trusted, root.0, &directory, &storage);
-    assert!(writer.pending_id().unwrap().is_none());
+    assert!(writer.pending_id().unwrap().is_some());
     let backend = VeraBulletin::connect(
         writer,
         SdkVeraClient::new(&reader_url),
@@ -395,6 +399,13 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     )
     .await
     .unwrap();
+    assert_eq!(
+        backend
+            .post(BulletinWriteKind::CancelPendingRing, cancel)
+            .await
+            .unwrap(),
+        pending_id
+    );
     let restored: DocumentPayload = backend
         .read(document_id, BulletinKind::Document)
         .await
