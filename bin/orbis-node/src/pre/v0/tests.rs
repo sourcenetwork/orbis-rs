@@ -851,7 +851,7 @@ async fn test_pre_with_large_secret() {
     println!("=== Starting PRE Test with Large Secret ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_pre(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -1017,7 +1017,7 @@ async fn test_pre_fails_with_wrong_key() {
     println!("=== Starting PRE Failure Test (Wrong Key) ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_pre(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -1179,7 +1179,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     println!("=== Starting PRE Failure Test (Invalid JWT Token) ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_pre(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -1338,7 +1338,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     println!("=== Starting PRE Failure Test (Mismatched JWT Claims) ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_pre(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -1717,7 +1717,7 @@ async fn test_pre_fails_with_wrong_derivation() {
     println!("=== Starting PRE Failure Test (Wrong Derivation) ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_pre(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -1930,7 +1930,7 @@ async fn test_pre_fails_with_bad_proof() {
     println!("=== Starting PRE Failure Test (Bad Proof) ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_pre(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -2091,7 +2091,7 @@ async fn test_pre_rejects_peers_with_mismatched_pinned_generation() {
         test_db_path(&format!("{}_3", db_name)),
     ];
 
-    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_pre(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     let node1_service =
@@ -2246,7 +2246,7 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
         test_db_path(&format!("{}_3", db_name)),
     ];
 
-    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_pre(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Each participant gets its own docID, derived from its own node key in the

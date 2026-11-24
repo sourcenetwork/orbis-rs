@@ -68,7 +68,7 @@ async fn test_dkg_then_sign_end_to_end() {
     // Step 1: Setup the three-node network with DKG, PRE, and Sign handlers
     // =========================================================================
     println!("Step 1: Setting up three-node network...");
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
 
     // Get all peer IDs (including initiator) for participation
     let peer_ids = network.get_all_peer_ids();
@@ -322,7 +322,7 @@ async fn test_sign_different_messages() {
     println!("=== Starting Sign Different Messages Test ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -437,7 +437,7 @@ async fn test_sign_fails_wrong_message() {
     println!("=== Starting Sign Fails Wrong Message Test ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -556,7 +556,7 @@ async fn test_sign_response_cleanup() {
     println!("=== Starting Sign Response Cleanup Test ===\n");
 
     // Setup network
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -663,7 +663,7 @@ async fn test_sign_fails_invalid_bulletin_post() {
 
     println!("=== Starting Sign Fails Invalid BulletinPost Test ===\n");
 
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -759,7 +759,7 @@ async fn test_sign_fails_post_not_on_bulletin() {
 
     println!("=== Starting Sign Fails Post Not On Bulletin Test ===\n");
 
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -878,7 +878,7 @@ async fn test_sign_fails_tampered_payload() {
 
     println!("=== Starting Sign Fails Tampered Payload Test ===\n");
 
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -1018,7 +1018,7 @@ async fn test_sign_fails_invalid_ring_id() {
 
     println!("=== Starting Sign Fails Invalid Ring ID Test ===\n");
 
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
@@ -1350,7 +1350,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
         test_db_path(&format!("{}_3", db_name)),
     ];
 
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     let node1_service =
@@ -1454,7 +1454,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
         test_db_path(&format!("{}_3", db_name)),
     ];
 
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     let node1_service =
@@ -1732,7 +1732,7 @@ async fn test_sign_policy_check_policy_access_expired_valid_window() {
 #[tokio::test]
 async fn test_sign_service_rejects_oversized_message() {
     let db_name = "test_sign_service_rejects_oversized_message";
-    let app_state = create_test_app_state(true, true, db_name).await;
+    let app_state = create_test_app_state(db_name).await;
     let service = SignServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
 
     let oversized_message = vec![0u8; MAX_SIGN_MESSAGE_BYTES + 1];
@@ -1769,7 +1769,7 @@ async fn test_sign_service_rejects_oversized_message() {
 async fn test_failed_round_two_consumes_nonce_state() {
     let db_name = "test_failed_round_two_consumes_nonce_state";
     let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state(true, true, db_name).await;
+    let app_state = create_test_app_state(db_name).await;
     let sender_peer_id = app_state.network.local_peer_id().clone();
     let request_id = "failed-round-two";
     let nonce_key = format!("nonce-{request_id}");
@@ -1832,7 +1832,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
         test_db_path(&format!("{}_3", db_name)),
     ];
 
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     let peer_ids = network.get_all_peer_ids();
 
     let node1_service =

@@ -9,14 +9,6 @@ pub const MAX_LOCAL_RINGS_PER_NODE: usize = 256;
 /// Mirrors the production scheduler's early-due grace window. Benchmark PSS
 /// intervals must exceed it so due-to-start and ceremony time remain separable.
 pub const PSS_GRACE_PERIOD_SECS: u64 = 10;
-/// Vera commit every example config, `Experiment::single`/sweep-built
-/// experiment, and (via `docker/Dockerfile.vera-go-integration`'s own
-/// fallback read of the same file) every raw `docker-compose-*.yml` that
-/// doesn't pass `VERA_GO_REF` explicitly all pin by default. Single source
-/// of truth across both Rust and Docker — bump `docker/VERA_GO_REF` to
-/// move every default-using caller at once instead of hunting down each copy.
-pub const DEFAULT_VERA_GO_REF: &str = include_str!("../../../docker/VERA_GO_REF");
-
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CryptoFeature {
@@ -60,7 +52,6 @@ pub enum Operation {
     Pet,
     Sign,
     PssRefresh,
-    PssReshare,
 }
 
 fn default_operations() -> BTreeSet<Operation> {
@@ -79,28 +70,6 @@ fn default_operations() -> BTreeSet<Operation> {
 pub enum NetworkProfileKind {
     Lan,
     Wan,
-}
-
-/// Where an experiment's nodes actually run.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ExecutionBackend {
-    /// Docker Compose: Vera + N `orbis-node` containers. Supports every
-    /// operation and network profile.
-    #[default]
-    Docker,
-    /// Real `orbis-node` instances as tokio tasks in this process, over real
-    /// loopback Iroh P2P, backed by a shared in-memory mock bulletin instead
-    /// of Vera. No Docker, no chain, no external network dependency —
-    /// trades chain/container realism for immunity to infrastructure
-    /// flakiness unrelated to orbis's own protocol correctness. v1 supports
-    /// `dkg`, `pre`, `sign`, and `pss_refresh` operations (no `pss_reshare`
-    /// yet; see `Experiment::validate`). WAN profiles are supported,
-    /// approximated in software (`network::ShapedNetwork`) instead of
-    /// Docker's per-container `tc netem`. Unlike Docker's Vera-backed
-    /// rings, `DummyBulletin` enforces no floor on `pss_interval_secs`, so
-    /// `pss_refresh` isn't limited to Vera's 86400s minimum here.
-    InProcess,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -199,21 +168,6 @@ impl Default for TimeoutConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ResourceLimits {
-    pub cpus_per_node: Option<f64>,
-    pub memory_per_node: Option<String>,
-    /// Applied to every Vera container (the validator and any
-    /// replicas). Only the validator (replica index 0) proposes and
-    /// executes blocks, so it is the one actually bottlenecked by DKG
-    /// finalization traffic — but capping replicas the same way is harmless
-    /// (a cap just bounds what a container *may* use) and keeps this
-    /// consistent with `cpus_per_node`/`memory_per_node`'s single shared value.
-    pub cpus_per_vera: Option<f64>,
-    pub memory_per_vera: Option<String>,
-}
-
 fn default_schema_version() -> u32 {
     SCHEMA_VERSION
 }
@@ -231,15 +185,6 @@ fn default_seed() -> u64 {
 }
 fn default_output_dir() -> PathBuf {
     PathBuf::from("bench-results")
-}
-fn default_vera_go_ref() -> String {
-    DEFAULT_VERA_GO_REF.to_string()
-}
-fn default_vera_replicas() -> usize {
-    1
-}
-fn default_batch_size() -> usize {
-    25
 }
 fn default_pss_interval() -> u64 {
     15
@@ -271,30 +216,12 @@ pub struct Experiment {
     pub load: LoadConfig,
     #[serde(default)]
     pub timeouts: TimeoutConfig,
-    #[serde(default)]
-    pub resources: ResourceLimits,
     #[serde(default = "default_output_dir")]
     pub output_dir: PathBuf,
-    #[serde(default = "default_vera_go_ref")]
-    pub vera_go_ref: String,
-    /// Number of Vera Docker services to run. Index 0 is the sole
-    /// validator (genesis init + gentx); the rest are non-validating full
-    /// nodes that sync via P2P and independently serve REST/RPC reads and tx
-    /// relay, spreading load that would otherwise hit one REST server.
-    #[serde(default = "default_vera_replicas")]
-    pub vera_replicas: usize,
-    #[serde(default = "default_batch_size")]
-    pub setup_batch_size: usize,
     #[serde(default = "default_pss_interval")]
     pub pss_interval_secs: u64,
     #[serde(default = "default_pss_poll_interval")]
     pub pss_poll_interval_secs: u64,
-    /// Number of nodes shared by the current and next committees for a
-    /// `pss_reshare` trial. Reshare is opt-in and therefore has no default.
-    #[serde(default)]
-    pub reshare_overlap: Option<usize>,
-    #[serde(default)]
-    pub backend: ExecutionBackend,
 }
 
 fn default_profiles() -> Vec<NetworkProfile> {
@@ -330,15 +257,9 @@ impl Experiment {
             seed: default_seed(),
             load: LoadConfig::default(),
             timeouts: TimeoutConfig::default(),
-            resources: ResourceLimits::default(),
             output_dir: default_output_dir(),
-            vera_go_ref: default_vera_go_ref(),
-            vera_replicas: default_vera_replicas(),
-            setup_batch_size: default_batch_size(),
             pss_interval_secs: default_pss_interval(),
             pss_poll_interval_secs: default_pss_poll_interval(),
-            reshare_overlap: None,
-            backend: ExecutionBackend::default(),
         }
     }
 
@@ -372,12 +293,6 @@ impl Experiment {
         if self.repetitions == 0 {
             bail!("repetitions must be at least 1");
         }
-        if self.setup_batch_size == 0 {
-            bail!("setup_batch_size must be at least 1");
-        }
-        if self.vera_replicas == 0 {
-            bail!("vera_replicas must be at least 1");
-        }
         if self.load.measure_secs == 0 {
             bail!("load.measure_secs must be at least 1");
         }
@@ -403,29 +318,11 @@ impl Experiment {
                 "pss_interval_secs must exceed the production scheduler grace window ({PSS_GRACE_PERIOD_SECS}s)"
             );
         }
-        if self.operations.contains(&Operation::PssReshare) && self.reshare_overlap.is_none() {
-            bail!("pss_reshare experiments require reshare_overlap");
-        }
         if self.rings_per_case() > MAX_LOCAL_RINGS_PER_NODE {
             bail!(
                 "one case requires {} local ring slots, exceeding MAX_LOCAL_RINGS_PER_NODE ({MAX_LOCAL_RINGS_PER_NODE})",
                 self.rings_per_case()
             );
-        }
-        if self
-            .resources
-            .cpus_per_node
-            .is_some_and(|cpus| !cpus.is_finite() || cpus <= 0.0)
-        {
-            bail!("resources.cpus_per_node must be finite and greater than zero");
-        }
-        if self
-            .resources
-            .memory_per_node
-            .as_ref()
-            .is_some_and(|memory| memory.trim().is_empty())
-        {
-            bail!("resources.memory_per_node cannot be empty");
         }
         let mut profile_names = BTreeSet::new();
         for profile in &self.profiles {
@@ -469,13 +366,6 @@ impl Experiment {
             if group.cases.is_empty() {
                 bail!("network group {group_index} has no ring cases");
             }
-            if self.vera_replicas > group.network_size {
-                bail!(
-                    "vera_replicas {} cannot exceed network_size {} for network group {group_index}",
-                    self.vera_replicas,
-                    group.network_size
-                );
-            }
             for case in &group.cases {
                 if case.ring_size == 0 || case.ring_size > group.network_size {
                     bail!(
@@ -493,54 +383,12 @@ impl Experiment {
                         case.ring_size
                     );
                 }
-                if self.operations.contains(&Operation::PssReshare) {
-                    let overlap = self
-                        .reshare_overlap
-                        .expect("reshare_overlap was validated above");
-                    if overlap > case.ring_size {
-                        bail!(
-                            "reshare_overlap {overlap} cannot exceed ring size {}",
-                            case.ring_size
-                        );
-                    }
-                    let union_size = case.ring_size.saturating_mul(2).saturating_sub(overlap);
-                    if union_size > group.network_size {
-                        bail!(
-                            "reshare old/new union requires {union_size} nodes (ring size {}, overlap {overlap}) but network group {group_index} has {}",
-                            case.ring_size,
-                            group.network_size
-                        );
-                    }
-                }
             }
         }
         for concurrency in &self.load.concurrency {
             if *concurrency == 0 {
                 bail!("load concurrency values must be at least 1");
             }
-        }
-        if self.backend == ExecutionBackend::InProcess
-            && self.operations.iter().any(|operation| {
-                !matches!(
-                    operation,
-                    Operation::Dkg
-                        | Operation::Pre
-                        | Operation::Pet
-                        | Operation::Sign
-                        | Operation::PssRefresh
-                )
-            })
-        {
-            bail!(
-                "backend 'in-process' supports only dkg, pre, pet, sign, and pss_refresh operations in v1; got {:?}",
-                self.operations
-            );
-        }
-        if self.backend == ExecutionBackend::Docker && self.operations.contains(&Operation::Pet) {
-            bail!(
-                "the 'pet' operation is only implemented for backend 'in-process' so far; \
-                 Docker support is planned but not yet built"
-            );
         }
         Ok(())
     }
@@ -650,16 +498,10 @@ impl Experiment {
         // ungated cases.
         let needs_pet_ring = self.operations.contains(&Operation::Pet);
         let needs_refresh_ring = self.operations.contains(&Operation::PssRefresh);
-        let reshare_rings = if self.operations.contains(&Operation::PssReshare) {
-            self.warmups + self.repetitions
-        } else {
-            0
-        };
         dkg_rings
             + usize::from(needs_online_ring)
             + usize::from(needs_pet_ring)
             + usize::from(needs_refresh_ring)
-            + reshare_rings
     }
 }
 
@@ -760,22 +602,5 @@ mod tests {
             .collect();
         assert_eq!(sizes, vec![3, 3, 5, 5]);
         assert!(plan.stacks.iter().all(|stack| stack.cases.len() == 1));
-    }
-
-    #[test]
-    fn reshare_requires_a_feasible_explicit_overlap() {
-        let mut experiment = Experiment::single(50, 34, 23);
-        experiment.operations = BTreeSet::from([Operation::PssReshare]);
-        assert!(experiment.validate().is_err());
-
-        experiment.reshare_overlap = Some(17);
-        assert!(experiment.validate().is_err(), "34 + 34 - 17 exceeds 50");
-
-        experiment.reshare_overlap = Some(18);
-        assert!(experiment.validate().is_ok());
-        assert_eq!(experiment.rings_per_case(), 6);
-
-        experiment.reshare_overlap = Some(35);
-        assert!(experiment.validate().is_err());
     }
 }

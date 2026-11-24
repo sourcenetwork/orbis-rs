@@ -380,7 +380,7 @@ mod tests {
     use super::*;
     use crate::pre::v0::messages::PreMessage;
     use crate::reporting::v0::types::PRE_REENCRYPT_RESPONSE_DOMAIN;
-    use common::blockchain::{sign_node_message_with_hex_key, ChainConfig, TxSigner};
+    use common::blockchain::{node_public_key_hex, sign_node_message_with_hex_key};
     use crypto::r#trait::{CryptoSerialize, DkgRole};
     use crypto::test_helper::DKGCoordinator;
     use crypto::{DkgImpl, PreImpl, ScalarField};
@@ -468,9 +468,7 @@ mod tests {
             .unwrap();
         let signing_key_hex =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
-        let responder_node_key = TxSigner::from_hex_key(&signing_key_hex, ChainConfig::local())
-            .unwrap()
-            .public_key_hex();
+        let responder_node_key = node_public_key_hex(&signing_key_hex).unwrap();
 
         VerifyFixture {
             dealer,
@@ -863,9 +861,7 @@ mod tests {
     const ACK_NODE_ID: u32 = 1;
 
     fn ack_node_key() -> String {
-        TxSigner::from_hex_key(ACK_SIGNING_KEY_HEX, ChainConfig::local())
-            .unwrap()
-            .public_key_hex()
+        node_public_key_hex(ACK_SIGNING_KEY_HEX).unwrap()
     }
 
     fn sample_ack() -> crate::pre::v0::messages::StoredShareAck {

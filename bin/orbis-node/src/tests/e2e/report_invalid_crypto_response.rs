@@ -27,9 +27,6 @@ use test_support::fixture::{
 use tokio::time::Duration;
 use zeroize::Zeroizing;
 
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-use crate::ring_state::RingShareBundle;
-#[cfg(all(feature = "integration-test", feature = "vera"))]
 use crate::ring_state::RingShareBundle;
 
 #[tokio::test]

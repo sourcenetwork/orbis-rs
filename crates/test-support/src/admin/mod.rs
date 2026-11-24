@@ -148,6 +148,3 @@ pub trait BackendAdmin: Send + Sync {
     /// [`BackendAdmin::update_membership`].
     async fn read_document(&self, id: &DocumentId) -> Vec<u8>;
 }
-
-#[cfg(feature = "cosmos")]
-pub mod cosmos;

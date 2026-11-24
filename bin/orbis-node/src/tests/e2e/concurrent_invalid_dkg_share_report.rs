@@ -25,20 +25,6 @@ use crypto::{
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-use crate::{
-    app_state::AppState,
-    dkg::v0::helpers::serialize_commitment_coefficients,
-    reporting::v0::{
-        observation::{InvalidCryptoResponseObservation, ReportObservation},
-        queue_report,
-        types::{
-            ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
-            InvalidCryptoResponse, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
-        },
-    },
-};
-#[cfg(all(feature = "integration-test", feature = "vera"))]
 use crate::{
     app_state::AppState,
     dkg::v0::helpers::serialize_commitment_coefficients,

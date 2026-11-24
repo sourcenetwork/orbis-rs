@@ -1,22 +1,13 @@
-//! In-process backend: real orbis-node instances as tokio tasks over loopback
-//! Iroh, backed by a shared `DummyBulletin`/`DummyAuthZ` (`crate::harness`)
-//! instead of a Dockerized Vera. No Compose project, no chain setup, no metrics
-//! endpoint, no resource sampling (there are no containers to sample), and
-//! `pss_reshare` isn't supported (see `run_stack_in_process`). WAN profiles are
-//! approximated in software by `network::ShapedNetwork`. Counterpart to
-//! `docker.rs` — each `run_*_trials_in_process` method's doc comment says what's
-//! omitted relative to its Docker counterpart and why.
+//! Runs each stack as real orbis-node instances as tokio tasks over loopback
+//! Iroh, backed by a shared `DummyBulletin`/`DummyAuthZ` (`crate::harness`).
+//! Harness nodes expose no metrics endpoint. WAN profiles are approximated in
+//! software by `network::ShapedNetwork`.
 
 use super::*;
 
 impl BenchmarkRunner {
-    /// In-process counterpart of `docker::run_stack_docker`: real orbis-node
-    /// instances as tokio tasks over loopback Iroh, backed by a shared
-    /// `DummyBulletin` instead of a Dockerized Vera. No Compose project, no
-    /// chain setup, no resource sampling (there are no containers to sample).
-    /// `validate()` restricts this backend to the `dkg`, `pre`, `sign`, and
-    /// `pss_refresh` operations; `pss_reshare` is rejected. WAN profiles are
-    /// supported and approximated in software by `network::ShapedNetwork` — see
+    /// Starts the stack's harness network and runs its cases. WAN profiles are
+    /// approximated in software by `network::ShapedNetwork` — see
     /// `run_dkg_trials_in_process`, `run_pre_trials_in_process`,
     /// `run_sign_trials_in_process`, and `run_pss_trials_in_process`.
     pub(super) async fn run_stack_in_process(
@@ -34,7 +25,7 @@ impl BenchmarkRunner {
             loss_percent: stack.profile.loss_percent,
         };
         eprintln!(
-            "[{stack_id}] starting {} in-process nodes (no Docker, no chain, profile={}{})",
+            "[{stack_id}] starting {} in-process nodes (profile={}{})",
             stack.network_size,
             stack.profile.name,
             if shaping.is_noop() {
@@ -296,8 +287,7 @@ impl BenchmarkRunner {
             members.sort_unstable();
             let ring_id = format!("harness-ring-{}", uuid::Uuid::new_v4());
             // Not a PSS-tested ring: a long interval keeps it effectively
-            // never-due, matching Docker's DKG/online rings (`docker::plan_rings`'s
-            // `make(86_400)`).
+            // never-due.
             harness.seed_pending_ring(&ring_id, &members, case.threshold, 86_400, false)?;
             let initiator_position = (initiator_offset + trial) % members.len();
             let initiator = members[initiator_position] - 1;
@@ -371,16 +361,13 @@ impl BenchmarkRunner {
                 error,
                 ring_id: Some(ring_id),
                 ring_pk,
-                metric_deltas: BTreeMap::new(),
             })?;
         }
         Ok(viable)
     }
 
-    /// In-process counterpart of `docker::run_pre_trials`: same request/
-    /// measurement logic (`clients.pre` is backend-agnostic — a plain gRPC
-    /// call), minus `compose.container_failures()` (no containers) and metric
-    /// scraping (no Prometheus endpoint on harness nodes, see `harness.rs`).
+    /// Serial and closed-loop PRE trials through `clients.pre`, a plain gRPC
+    /// call.
     async fn run_pre_trials_in_process(
         &self,
         ctx: &mut TrialContext<'_>,
@@ -630,8 +617,7 @@ impl BenchmarkRunner {
         Ok(viable)
     }
 
-    /// In-process counterpart of `docker::run_sign_trials` — see
-    /// `run_pre_trials_in_process` for what's omitted and why.
+    /// Serial and closed-loop SIGN trials — see `run_pre_trials_in_process`.
     async fn run_sign_trials_in_process(
         &self,
         ctx: &mut TrialContext<'_>,
@@ -754,16 +740,12 @@ impl BenchmarkRunner {
         Ok(viable)
     }
 
-    /// In-process counterpart of `docker::run_pss_trials`. `DirectClients::wait_pss_refresh`
-    /// is already backend-agnostic (pure gRPC `GetRingState` polling), so
-    /// it's reused as-is; the check that the ring's public key survived the
-    /// refresh reads `harness.ring_pk(ring_id)` directly instead of
-    /// `docker::read_ring_with_retry(controller, ...)`. No metrics endpoint on
-    /// this backend (see `harness.rs`'s module docs), so `pss_timing` is called
-    /// with `None` for the metrics-derived scheduler delay — it already
-    /// falls back to the client-observed value (always `0.0` from
-    /// `wait_pss_refresh`) in that case, same as Docker trials where the
-    /// metric happened to be unavailable.
+    /// PSS refresh trials. `DirectClients::wait_pss_refresh` polls
+    /// `GetRingState` over gRPC; the check that the ring's public key survived
+    /// the refresh reads `harness.ring_pk(ring_id)`. Harness nodes expose no
+    /// metrics endpoint, so `pss_timing` is called with `None` for the
+    /// metrics-derived scheduler delay and falls back to the client-observed
+    /// value (always `0.0` from `wait_pss_refresh`).
     async fn run_pss_trials_in_process(
         &self,
         ctx: &mut TrialContext<'_>,
@@ -869,13 +851,10 @@ impl BenchmarkRunner {
     }
 }
 
-/// In-process counterpart of `docker::establish_ring`: picks a fresh, random
-/// `ring_size`-member committee out of the harness network, seeds it as a
-/// pending ring on the shared bulletin, runs DKG, and waits for it to
-/// converge. Always fresh (unlike `establish_ring`, which reuses an
-/// already-finalized on-chain ring across a resumed run) since in-process
-/// state is ephemeral per run to begin with. Returns `(ring_id, members,
-/// ring_pk)`.
+/// Picks a fresh, random `ring_size`-member committee out of the harness
+/// network, seeds it as a pending ring on the shared bulletin, runs DKG, and
+/// waits for it to converge. Always fresh, since harness state is ephemeral
+/// per run. Returns `(ring_id, members, ring_pk)`.
 #[allow(clippy::too_many_arguments)]
 async fn establish_ring_in_process(
     harness: &HarnessNetwork,
@@ -908,16 +887,11 @@ async fn establish_ring_in_process(
     Ok((ring_id, members, ring_pk))
 }
 
-/// In-process counterpart of `docker::prepare_online_fixtures`. `prepare_secret`
-/// and `store_prepared_secret` are already chain-independent (local encryption +
-/// a direct `StoreSecretService` gRPC call), so they're reused as-is; the
-/// chain-only ACP registration calls (`register_object_to_chain_with_config`,
-/// `set_relationship_on_chain_with_config`, `add_policy_to_chain_with_config`)
-/// are dropped entirely rather than replaced — see `harness.rs`'s module docs
-/// for why `DummyAuthZ` makes them unnecessary — and
-/// `post_key_derivation_with_config` is replaced by
-/// `HarnessNetwork::post_key_derivation`, which posts to the shared bulletin
-/// directly instead of building a real chain client.
+/// Prepares PRE/SIGN fixtures: `prepare_secret` and `store_prepared_secret`
+/// (local encryption plus a direct `StoreSecretService` gRPC call), and
+/// `HarnessNetwork::post_key_derivation` for the SIGN key derivation. No ACP
+/// registration is needed — see `harness.rs`'s module docs for why
+/// `DummyAuthZ` makes it unnecessary.
 async fn prepare_online_fixtures_in_process(
     harness: &HarnessNetwork,
     endpoint: &NodeEndpoint,
@@ -992,7 +966,7 @@ async fn prepare_online_fixtures_in_process(
 /// PET counterpart of `prepare_online_fixtures_in_process`'s PRE half — mints
 /// a genuine PET ownership tag (standing in for Bankd, same as
 /// `cli_tool::generate_pet_tag`/`prove_pet_tag_knowledge` already do for the
-/// PET Docker integration test) for a synthetic owner identity, attaches it
+/// PET integration test) for a synthetic owner identity, attaches it
 /// to the stored document, and uses that same identity as both the request's
 /// authenticated actor and the audited `audit_target_object_id`. No ACP
 /// registration/grant calls needed — see `harness.rs`'s module docs:

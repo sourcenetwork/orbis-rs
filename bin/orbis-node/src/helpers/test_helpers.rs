@@ -6,58 +6,23 @@ use crate::app_state::AppState;
 
 pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 
-// `ORBIS_RING_POLICY_YAML`, `create_orbis_ring_policy`, and
-// `wait_for_ring_finalized` moved to `test_support::admin::cosmos` (the
-// shared E2E harness crate, reachable from both `src/tests/*` and
-// `tests/*.rs`). Re-exported here so existing call sites keep compiling
-// unchanged; the YAML constant had no external callers (grep confirmed) so
-// it isn't re-exported — reach it via
-// `test_support::admin::cosmos::ORBIS_RING_POLICY_YAML` if ever needed.
-// `create_ring_governance_with_ring` was also re-exported here but became
-// dead once `reporting.rs` (its last caller) was fully migrated and
-// deleted (harness-unification migration, PR 5f) — removed.
-// `create_ring_on_chain`/`create_ring_on_chain_with_trusted_relays` stayed
-// here; see their doc comments below. The third sibling,
-// `create_ring_on_chain_with_pre_share_endpoints`, was removed once
-// `CosmosAdmin::register_ring`/`RingSpec::pre_share_endpoints` grew a real
-// (not `unimplemented!()`) implementation — that's the shared path now.
-// Only the legacy in-process Cosmos fault-injection harness still imports
-// these compatibility re-exports. Shared E2E scenarios use the backend-neutral
-// admin adapter directly.
-#[cfg(all(
-    feature = "integration-test",
-    feature = "cosmos",
-    feature = "fault-injection"
-))]
-pub use test_support::admin::cosmos::{create_orbis_ring_policy, wait_for_ring_finalized};
-
 use crate::helpers::create_routers::{
     create_router_with_all_handlers, create_router_with_handlers,
 };
 use crate::ring_state::RingIndexEntry;
 use authz::dummy::DummyAuthZ;
 use authz::r#trait::Authz;
-use authz::AuthzImpl;
 use bulletin::{
     dummy::DummyBulletin,
-    r#trait::{Bulletin, BulletinPost, BulletinWriteKind, NodeInfo, RingPayload},
-    BulletinImpl,
+    r#trait::{BulletinPost, NodeInfo, RingPayload},
 };
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-use cli_tool;
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-use common::blockchain::TEST_ACCOUNT_HEX_KEY;
-use common::blockchain::{ChainConfig, ChainConfigBuilder, TxSigner};
 use hex;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
 };
 use network::{NetworkImpl, Router};
-#[cfg(any(
-    all(feature = "integration-test", feature = "cosmos"),
-    all(feature = "integration-test", feature = "vera")
-))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
 use zeroize::Zeroizing;
@@ -88,49 +53,24 @@ pub type TestKeyPair = JwtSigner;
 /// ```rust
 /// #[tokio::test]
 /// async fn test_my_feature() {
-///     let app_state = create_test_app_state(true, true, "my_test").await;
+///     let app_state = create_test_app_state("my_test").await;
 ///     // Use app_state in your test...
 /// }
 /// ```
-pub async fn create_test_app_state(
-    dummy_authz: bool,
-    dummy_bulletin: bool,
-    db_name: &str,
-) -> AppState<DkgImpl> {
-    if dummy_bulletin {
-        let bulletin = Arc::new(
-            DummyBulletin::new()
-                .await
-                .expect("Failed to initialize dummy bulletin"),
-        );
-        create_test_app_state_with_bulletin(dummy_authz, bulletin, db_name).await
-    } else {
-        let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-            BulletinImpl::new(ChainConfigBuilder::default())
-                .await
-                .expect("Failed to initialize bulletin"),
-        );
-        create_test_app_state_with_bulletin_inner(dummy_authz, bulletin, None, db_name).await
-    }
+pub async fn create_test_app_state(db_name: &str) -> AppState<DkgImpl> {
+    let bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    create_test_app_state_with_bulletin(bulletin, db_name).await
 }
 
 /// Create a test AppState with a shared bulletin instance
 ///
 /// Use this when you need multiple nodes to share the same bulletin (e.g., in multi-node tests).
 pub async fn create_test_app_state_with_bulletin(
-    dummy_authz: bool,
     bulletin: Arc<DummyBulletin>,
-    db_name: &str,
-) -> AppState<DkgImpl> {
-    let bulletin_trait: Arc<dyn Bulletin + Send + Sync> = bulletin.clone();
-    create_test_app_state_with_bulletin_inner(dummy_authz, bulletin_trait, Some(bulletin), db_name)
-        .await
-}
-
-async fn create_test_app_state_with_bulletin_inner(
-    dummy_authz: bool,
-    bulletin: Arc<dyn Bulletin + Send + Sync>,
-    dummy_bulletin: Option<Arc<DummyBulletin>>,
     db_name: &str,
 ) -> AppState<DkgImpl> {
     // Initialize network for testing — bind to loopback so iroh advertises
@@ -147,57 +87,35 @@ async fn create_test_app_state_with_bulletin_inner(
     let local_storage = LocalStorageImpl::new("test-password".to_string(), test_db_path(db_name))
         .expect("Failed to create local storage");
     let local_peer_id_hex = hex::encode(network.local_peer_id().as_bytes());
-    let mut node_signing_key = [0u8; 32];
-    loop {
-        getrandom::getrandom(&mut node_signing_key).expect("generate test node signing key");
-        if TxSigner::new(&node_signing_key, ChainConfig::local()).is_ok() {
-            break;
+    let node_signing_key = loop {
+        let mut bytes = [0u8; 32];
+        getrandom::getrandom(&mut bytes).expect("generate test node signing key");
+        if let Ok(key) = k256::ecdsa::SigningKey::from_slice(&bytes) {
+            break key;
         }
-    }
-    let node_signing_key_hex = hex::encode(node_signing_key);
+    };
+    let node_signing_key_hex = hex::encode(node_signing_key.to_bytes());
     local_storage
         .set_encrypted(
             LocalStorageKeys::NodeSigningKey,
             Zeroizing::new(node_signing_key_hex.as_bytes().to_vec()),
         )
         .expect("store test node signing key");
-    let test_node_key = TxSigner::from_hex_key(&node_signing_key_hex, ChainConfig::local())
-        .expect("test node signer")
-        .public_key_hex();
+    let node_key = hex::encode(node_signing_key.verifying_key().to_sec1_bytes());
     let node_info = NodeInfo {
         peer_id: local_peer_id_hex,
         controller_key: "test-controller-key".to_string(),
         whitelisted_policy_ids: vec!["test-policy".to_string()],
         whitelisted_ring_ids: vec![TEST_FRESH_DKG_RING_ID.to_string()],
     };
-    let node_key = if let Some(dummy_bulletin) = dummy_bulletin {
-        dummy_bulletin
-            .set_node_info(test_node_key.clone(), node_info)
-            .expect("Failed to seed test NodeInfo");
-        test_node_key
-    } else {
-        let node_info_payload: Vec<u8> = node_info
-            .try_into()
-            .expect("Failed to serialize test NodeInfo");
-        bulletin
-            .post(BulletinWriteKind::NodeInfo, node_info_payload)
+    bulletin
+        .set_node_info(node_key.clone(), node_info)
+        .expect("Failed to seed test NodeInfo");
+    let authz: Arc<dyn Authz> = Arc::new(
+        DummyAuthZ::new()
             .await
-            .expect("Failed to seed test NodeInfo")
-    };
-    let mut authz: Arc<dyn Authz> = Arc::new(
-        AuthzImpl::new(ChainConfigBuilder::default())
-            .await
-            .expect("Failed to initialize Authz"),
+            .expect("Failed to initialize dummy Authz"),
     );
-
-    if dummy_authz {
-        authz = Arc::new(
-            DummyAuthZ::new()
-                .await
-                .expect("Failed to initialize dummy Authz"),
-        )
-    }
-
     AppState::<DkgImpl>::new(node_key, network, local_storage, authz, bulletin)
 }
 
@@ -215,7 +133,7 @@ async fn create_test_app_state_with_bulletin_inner(
 /// }
 /// ```
 pub async fn create_test_app_state_default(db_name: &str) -> AppState<DkgImpl> {
-    create_test_app_state(true, true, db_name).await
+    create_test_app_state(db_name).await
 }
 
 /// Information about a node in a test network
@@ -371,15 +289,7 @@ fn seed_three_node_dummy_bulletin(
 pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> ThreeNodeNetwork {
     // DKG reshare Phase 4 collects a threshold signature over the bulletin
     // update, so even DKG-focused network tests need the Sign handler available.
-    setup_three_node_network_impl(
-        start_routers,
-        true,
-        true,
-        db_name,
-        TestRouterHandlers::All,
-        vec![],
-    )
-    .await
+    setup_three_node_network_impl(start_routers, db_name, TestRouterHandlers::All, vec![]).await
 }
 
 /// Which protocol handlers the test routers install.
@@ -405,18 +315,10 @@ impl TestRouterHandlers {
 /// Returns the node's state, peer ID, and `address@socket` route string.
 async fn setup_test_node(
     name: &str,
-    dummy_authz: bool,
-    shared_bulletin: Arc<dyn Bulletin + Send + Sync>,
-    dummy_bulletin: Option<Arc<DummyBulletin>>,
+    shared_bulletin: Arc<DummyBulletin>,
     db_name: &str,
 ) -> (AppState<DkgImpl>, network::PeerId, String) {
-    let state = create_test_app_state_with_bulletin_inner(
-        dummy_authz,
-        shared_bulletin,
-        dummy_bulletin,
-        db_name,
-    )
-    .await;
+    let state = create_test_app_state_with_bulletin(shared_bulletin, db_name).await;
     let peer_id = state.network.local_peer_id();
     let address = state
         .network
@@ -473,8 +375,6 @@ fn start_test_router(
 /// the selected protocol handlers.
 async fn setup_three_node_network_impl(
     start_routers: bool,
-    dummy_authz: bool,
-    dummy_bulletin: bool,
     db_name: &str,
     handlers: TestRouterHandlers,
     trusted_auth_relay_dids: Vec<String>,
@@ -484,65 +384,29 @@ async fn setup_three_node_network_impl(
         handlers.label()
     );
 
-    // Create a shared bulletin for all nodes (keep concrete DummyBulletin for test access)
-    let (shared_bulletin, dummy_bulletin_arc): (
-        Arc<dyn Bulletin + Send + Sync>,
-        Option<Arc<DummyBulletin>>,
-    ) = if dummy_bulletin {
-        let db = Arc::new(
-            DummyBulletin::new()
-                .await
-                .expect("Failed to initialize shared dummy bulletin"),
-        );
-        (db.clone(), Some(db))
-    } else {
-        (
-            Arc::new(
-                BulletinImpl::new(ChainConfigBuilder::default())
-                    .await
-                    .expect("Failed to initialize shared bulletin"),
-            ),
-            None,
-        )
-    };
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize shared dummy bulletin"),
+    );
 
     // Create three nodes: Alice, Bob, and Charlie (all sharing the same bulletin)
-    let (alice_state, alice_peer_id, alice_peer_id_with_addr) = setup_test_node(
-        "Alice",
-        dummy_authz,
-        shared_bulletin.clone(),
-        dummy_bulletin_arc.clone(),
-        &format!("{}_1", db_name),
-    )
-    .await;
-    let (bob_state, bob_peer_id, bob_peer_id_with_addr) = setup_test_node(
-        "Bob",
-        dummy_authz,
-        shared_bulletin.clone(),
-        dummy_bulletin_arc.clone(),
-        &format!("{}_2", db_name),
-    )
-    .await;
-    let (charlie_state, charlie_peer_id, charlie_peer_id_with_addr) = setup_test_node(
-        "Charlie",
-        dummy_authz,
-        shared_bulletin,
-        dummy_bulletin_arc.clone(),
-        &format!("{}_3", db_name),
-    )
-    .await;
+    let (alice_state, alice_peer_id, alice_peer_id_with_addr) =
+        setup_test_node("Alice", dummy_bulletin.clone(), &format!("{}_1", db_name)).await;
+    let (bob_state, bob_peer_id, bob_peer_id_with_addr) =
+        setup_test_node("Bob", dummy_bulletin.clone(), &format!("{}_2", db_name)).await;
+    let (charlie_state, charlie_peer_id, charlie_peer_id_with_addr) =
+        setup_test_node("Charlie", dummy_bulletin.clone(), &format!("{}_3", db_name)).await;
 
-    if let Some(dummy_bulletin) = &dummy_bulletin_arc {
-        seed_three_node_dummy_bulletin(
-            dummy_bulletin,
-            [
-                (&alice_state, &alice_peer_id_with_addr),
-                (&bob_state, &bob_peer_id_with_addr),
-                (&charlie_state, &charlie_peer_id_with_addr),
-            ],
-            trusted_auth_relay_dids,
-        );
-    }
+    seed_three_node_dummy_bulletin(
+        &dummy_bulletin,
+        [
+            (&alice_state, &alice_peer_id_with_addr),
+            (&bob_state, &bob_peer_id_with_addr),
+            (&charlie_state, &charlie_peer_id_with_addr),
+        ],
+        trusted_auth_relay_dids,
+    );
 
     let (alice_router, bob_router, charlie_router) = if start_routers {
         (
@@ -573,7 +437,7 @@ async fn setup_three_node_network_impl(
             address: charlie_peer_id_with_addr,
             router: charlie_router,
         },
-        dummy_bulletin: dummy_bulletin_arc,
+        dummy_bulletin: Some(dummy_bulletin),
     }
 }
 
@@ -590,19 +454,9 @@ async fn setup_three_node_network_impl(
 /// A `ThreeNodeNetwork` containing all three nodes with their information
 pub async fn setup_three_node_network_with_pre(
     start_routers: bool,
-    dummy_authz: bool,
-    dummy_bulletin: bool,
     db_name: &str,
 ) -> ThreeNodeNetwork {
-    setup_three_node_network_impl(
-        start_routers,
-        dummy_authz,
-        dummy_bulletin,
-        db_name,
-        TestRouterHandlers::DkgPre,
-        vec![],
-    )
-    .await
+    setup_three_node_network_impl(start_routers, db_name, TestRouterHandlers::DkgPre, vec![]).await
 }
 
 pub async fn setup_three_node_network_with_pre_and_trusted_relays(
@@ -610,8 +464,6 @@ pub async fn setup_three_node_network_with_pre_and_trusted_relays(
     trusted_auth_relay_dids: Vec<String>,
 ) -> ThreeNodeNetwork {
     setup_three_node_network_impl(
-        true,
-        true,
         true,
         db_name,
         TestRouterHandlers::DkgPre,
@@ -628,27 +480,15 @@ pub async fn setup_three_node_network_with_pre_and_trusted_relays(
 ///
 /// # Arguments
 /// * `start_routers` - If true, starts routers for all nodes to accept connections
-/// * `dummy_authz` - If true, uses dummy authorization
-/// * `dummy_bulletin` - If true, uses dummy bulletin
 /// * `db_name` - Base name for the test database
 ///
 /// # Returns
 /// A `ThreeNodeNetwork` containing all three nodes with their information
 pub async fn setup_three_node_network_with_sign(
     start_routers: bool,
-    dummy_authz: bool,
-    dummy_bulletin: bool,
     db_name: &str,
 ) -> ThreeNodeNetwork {
-    setup_three_node_network_impl(
-        start_routers,
-        dummy_authz,
-        dummy_bulletin,
-        db_name,
-        TestRouterHandlers::All,
-        vec![],
-    )
-    .await
+    setup_three_node_network_impl(start_routers, db_name, TestRouterHandlers::All, vec![]).await
 }
 
 pub async fn setup_three_node_network_with_sign_and_trusted_relays(
@@ -656,8 +496,6 @@ pub async fn setup_three_node_network_with_sign_and_trusted_relays(
     trusted_auth_relay_dids: Vec<String>,
 ) -> ThreeNodeNetwork {
     setup_three_node_network_impl(
-        true,
-        true,
         true,
         db_name,
         TestRouterHandlers::All,
@@ -805,13 +643,7 @@ pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
         .unwrap_or_default()
 }
 
-// Backend-neutral (a raw `InfoService.GetNodeInfo` poll) — widened from
-// Cosmos-only once `live_node.rs` (harness-unification migration, PR 6)
-// became the first native caller.
-#[cfg(any(
-    all(feature = "integration-test", feature = "cosmos"),
-    all(feature = "integration-test", feature = "vera")
-))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
     let node_info = cli_tool::query_node_info(endpoint.to_string())
         .await
@@ -851,11 +683,7 @@ async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
 ///     // Nodes are now ready...
 /// }
 /// ```
-// Backend-neutral — see `check_full_grpc_ready`'s own updated comment.
-#[cfg(any(
-    all(feature = "integration-test", feature = "cosmos"),
-    all(feature = "integration-test", feature = "vera")
-))]
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 pub async fn wait_for_nodes_ready(
     endpoints: &[&str],
     max_attempts: u32,
@@ -892,62 +720,4 @@ pub async fn wait_for_nodes_ready(
             }
         }
     }
-}
-
-// ============================================================================
-// Integration-test chain helpers (new DKG flow)
-// ============================================================================
-
-/// Create a ring on-chain as TEST_ACCOUNT_HEX_KEY and return its ring_id.
-///
-/// Stayed here rather than moving to `test_support::admin::cosmos` alongside
-/// its sibling helpers: it calls `cli_tool::create_ring`, and `cli-tool`
-/// hardcodes a default crypto feature (`bls12-381`) that would conflict with a
-/// jubjub build's feature unification if pulled into `test-support` as a
-/// dependency. See `test_support::admin::cosmos`'s doc comment.
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-pub async fn create_ring_on_chain(
-    chain_config: &ChainConfig,
-    node_keys: &[String],
-    threshold: u32,
-    policy_id: &str,
-    nonce: Option<&str>,
-) -> String {
-    create_ring_on_chain_with_trusted_relays(
-        chain_config,
-        node_keys,
-        threshold,
-        policy_id,
-        nonce,
-        vec![],
-        false,
-    )
-    .await
-}
-
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-pub async fn create_ring_on_chain_with_trusted_relays(
-    chain_config: &ChainConfig,
-    node_keys: &[String],
-    threshold: u32,
-    policy_id: &str,
-    nonce: Option<&str>,
-    trusted_auth_relay_dids: Vec<String>,
-    requires_pet: bool,
-) -> String {
-    cli_tool::create_ring(
-        node_keys.to_vec(),
-        threshold,
-        86400,
-        policy_id.to_string(),
-        nonce.map(String::from),
-        network::V0.version,
-        trusted_auth_relay_dids,
-        requires_pet,
-        vec![],
-        chain_config.clone(),
-        TEST_ACCOUNT_HEX_KEY,
-    )
-    .await
-    .expect("create ring on-chain")
 }

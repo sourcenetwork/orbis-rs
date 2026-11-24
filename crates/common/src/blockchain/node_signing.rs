@@ -6,6 +6,18 @@ use k256::ecdsa::{
     Signature as EcdsaSignature, SigningKey, VerifyingKey,
 };
 
+/// Compressed secp256k1 public key hex of a hex-encoded private key: the
+/// node key that verifies [`sign_node_message_with_hex_key`] signatures.
+pub fn node_public_key_hex(hex_key: &str) -> Result<String> {
+    let key_bytes = hex::decode(hex_key)
+        .map_err(|e| BlockchainError::Signing(format!("Invalid hex key: {}", e)))?;
+    let signing_key = SigningKey::from_slice(&key_bytes)
+        .map_err(|e| BlockchainError::Signing(format!("Invalid private key: {}", e)))?;
+    Ok(hex::encode(
+        signing_key.verifying_key().to_sec1_point(true).as_bytes(),
+    ))
+}
+
 /// Sign a node message from a hex-encoded secp256k1 private key.
 pub fn sign_node_message_with_hex_key(hex_key: &str, message: &[u8]) -> Result<Vec<u8>> {
     let key_bytes = hex::decode(hex_key)
@@ -45,7 +57,9 @@ mod tests {
 
     fn public_key_hex(hex_key: &str) -> String {
         let key = SigningKey::from_slice(&hex::decode(hex_key).unwrap()).unwrap();
-        hex::encode(key.verifying_key().to_sec1_point(true).as_bytes())
+        let expected = hex::encode(key.verifying_key().to_sec1_point(true).as_bytes());
+        assert_eq!(node_public_key_hex(hex_key).unwrap(), expected);
+        expected
     }
 
     #[test]

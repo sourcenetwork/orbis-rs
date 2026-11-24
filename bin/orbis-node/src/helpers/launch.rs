@@ -5,8 +5,6 @@ use crate::error::PasswordError;
 use crate::helpers::identity::canonicalize_peer_id;
 use bulletin::r#trait::NodeInfo;
 use clap::{Parser, ValueEnum};
-#[cfg(any(feature = "harness", test))]
-use common::blockchain::{ChainConfig, TxSigner};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
@@ -778,16 +776,14 @@ pub fn db_path(runtime_base_path: &Path, name: &str) -> String {
 #[cfg(any(feature = "harness", test))]
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
-    config: ChainConfig,
     runtime_base_path: &Path,
-) -> Result<TxSigner, bulletin::startup::BulletinStartupError> {
+) -> Result<bulletin::startup::NodeIdentity, bulletin::startup::BulletinStartupError> {
     #[cfg(feature = "fixture-startup")]
     let initial_key = std::env::var("ORBIS_SIGNING_KEY").ok();
     #[cfg(not(feature = "fixture-startup"))]
     let initial_key: Option<String> = None;
-    bulletin::startup::cosmos::prepare_signer(
+    bulletin::vera::startup::initialize_identity(
         &local_storage,
-        config,
         runtime_base_path,
         initial_key.as_deref(),
     )

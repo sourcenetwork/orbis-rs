@@ -546,9 +546,8 @@ mod tests {
     ) -> (Arc<AppState<DkgImpl>>, Arc<DummyBulletin>, String) {
         let db_path = test_db_path(db_name);
         let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("dummy bulletin"));
-        let app_state = Arc::new(
-            create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await,
-        );
+        let app_state =
+            Arc::new(create_test_app_state_with_bulletin(dummy_bulletin.clone(), db_name).await);
 
         let attempt = AttemptKey::test(session_id);
         let node = *DkgImpl::new(1, 1, 2, 0, DkgRole::DealerReceiver)

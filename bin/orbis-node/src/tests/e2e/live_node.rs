@@ -24,26 +24,6 @@
 // `#[cfg(test)]` tree (`src/tests/e2e/mod.rs`). The two import lists stay
 // cfg-gated on the backend the same way `pending_ring_cancellation.rs`
 // gates `RingIndexEntry`, covering a much larger import list.
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-use crate::{
-    app_state::AppState,
-    constants::{
-        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
-        MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
-    },
-    dkg::v0::service::DkgServiceImpl,
-    helpers::test_helpers::{create_ring_on_chain, create_ring_on_chain_with_trusted_relays},
-    helpers::{
-        launch::{create_and_store_node_key, CorsPolicy, LogLevel},
-        test_helpers::{cleanup_db, test_db_path, wait_for_nodes_ready},
-    },
-    info::InfoServiceImpl,
-    init_node,
-    pre::v0::service::PreServiceImpl,
-    sign::v0::service::SignServiceImpl,
-    store_secret::StoreSecretServiceImpl,
-    Args, InitializedNode, NetworkIngressArgs, NodeConfig,
-};
 #[cfg(all(feature = "integration-test", feature = "vera"))]
 use crate::{
     app_state::AppState,
@@ -79,15 +59,6 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::time::Duration;
 use tonic::Request;
-
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-use {
-    authz::AuthzImpl,
-    bulletin::vera_go::startup::MIN_NODE_BALANCE,
-    bulletin::BulletinImpl,
-    common::blockchain::{ChainConfig, VeraGoClient},
-    test_support::VeraGoTestContainer,
-};
 
 #[cfg(all(feature = "integration-test", feature = "vera"))]
 use {
@@ -482,154 +453,6 @@ fn unix_now() -> u64 {
 // =========================================================================
 // Cosmos chain-only bootstrap
 // =========================================================================
-
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-pub struct Chain {
-    pub chain_config: ChainConfig,
-    container: VeraGoTestContainer,
-}
-
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-impl Chain {
-    async fn start() -> Self {
-        let container = VeraGoTestContainer::new();
-        let chain_config = container.chain_config();
-        Self {
-            chain_config,
-            container,
-        }
-    }
-
-    async fn create_ring_policy(&self) -> String {
-        test_support::admin::cosmos::create_orbis_ring_policy(&self.chain_config).await
-    }
-
-    #[allow(clippy::type_complexity)]
-    async fn bootstrap_identity(
-        &self,
-        local_storage: &LocalStorageImpl,
-        runtime_base_path: &Path,
-        _node_index: usize,
-    ) -> (
-        Arc<dyn Bulletin + Send + Sync>,
-        Arc<dyn Authz>,
-        String,
-        String,
-        Option<std::path::PathBuf>,
-    ) {
-        let signer = create_and_store_node_key(
-            local_storage.clone(),
-            self.chain_config.clone(),
-            runtime_base_path,
-        )
-        .expect("create node signing key");
-        let public_address = signer.address();
-        let node_key = signer.public_key_hex();
-
-        cli_tool::fund(public_address.clone(), self.chain_config.clone())
-            .await
-            .expect("fund node account via faucet");
-
-        let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
-            BulletinImpl::with_signer(
-                self.container.chain_config_builder(),
-                signer,
-                Some(MIN_NODE_BALANCE),
-            )
-            .await
-            .expect("BulletinImpl with signer"),
-        );
-        let authz: Arc<dyn Authz> = Arc::new(
-            AuthzImpl::new(self.container.chain_config_builder())
-                .await
-                .expect("AuthzImpl"),
-        );
-
-        (bulletin, authz, node_key, public_address, None)
-    }
-
-    async fn create_ring(
-        &self,
-        node_keys: &[String],
-        threshold: u32,
-        policy_id: &str,
-        nonce: Option<&str>,
-    ) -> String {
-        create_ring_on_chain(&self.chain_config, node_keys, threshold, policy_id, nonce).await
-    }
-
-    async fn create_ring_with_trusted_relays(
-        &self,
-        node_keys: &[String],
-        threshold: u32,
-        policy_id: &str,
-        nonce: Option<&str>,
-        trusted_relay_dids: Vec<String>,
-    ) -> String {
-        create_ring_on_chain_with_trusted_relays(
-            &self.chain_config,
-            node_keys,
-            threshold,
-            policy_id,
-            nonce,
-            trusted_relay_dids,
-            false,
-        )
-        .await
-    }
-
-    async fn create_document_policy(&self) -> String {
-        cli_tool::add_policy_to_chain_with_config(self.chain_config.clone())
-            .await
-            .expect("add document policy")
-    }
-
-    async fn register_object(&self, policy_id: &str, resource: &str, object_id: &str) {
-        cli_tool::register_object_to_chain_with_config(
-            policy_id.to_string(),
-            object_id.to_string(),
-            resource.to_string(),
-            self.chain_config.clone(),
-        )
-        .await
-        .expect("register object");
-    }
-
-    async fn grant(
-        &self,
-        policy_id: &str,
-        resource: &str,
-        object_id: &str,
-        relation: &str,
-        did_seed: &str,
-    ) {
-        cli_tool::set_relationship_on_chain_with_config(
-            policy_id.to_string(),
-            object_id.to_string(),
-            resource.to_string(),
-            relation.to_string(),
-            Some(did_seed.to_string()),
-            self.chain_config.clone(),
-        )
-        .await
-        .expect("grant relationship");
-    }
-
-    async fn read_node_demerits(&self, ring_id: &str, node_key: &str) -> u64 {
-        let client = VeraGoClient::new(self.chain_config.clone())
-            .await
-            .expect("chain client for demerit read");
-        client
-            .orbis_read_node_demerits(ring_id, node_key)
-            .await
-            .expect("read node demerits")
-    }
-
-    async fn wait_for_ring_finalized(&self, ring_id: &str, timeout: Duration) -> String {
-        test_support::admin::cosmos::wait_for_ring_finalized(&self.chain_config, ring_id, timeout)
-            .await
-    }
-}
 
 // =========================================================================
 // Vera chain-only bootstrap

@@ -275,15 +275,17 @@ async fn bring_up_orbis_nodes(
     let services: Vec<&str> = (0..count).map(orbis_service).collect();
     let normal_image = std::env::var_os("ORBIS_VERA_NODE_IMAGE");
     let diagnostic_image = std::env::var_os("ORBIS_VERA_DIAGNOSTIC_IMAGE");
-    let reuse_prebuilt = if unsafe_testing_runtime_enabled {
+    // A non-production build is the diagnostic image whether or not its
+    // runtime opt-in is set, so the opt-in itself can be checked.
+    let reuse_prebuilt = if production_node_build {
+        normal_image.is_some()
+    } else {
         assert!(
             diagnostic_image.is_some() || normal_image.is_none(),
             "ORBIS_VERA_DIAGNOSTIC_IMAGE is required for a diagnostic scenario when \
              ORBIS_VERA_NODE_IMAGE selects a prebuilt production image"
         );
         diagnostic_image.is_some()
-    } else {
-        normal_image.is_some()
     };
     let mut node_env = vec![
         (
@@ -295,7 +297,7 @@ async fn bring_up_orbis_nodes(
             unsafe_testing_runtime_enabled.to_string(),
         ),
     ];
-    if unsafe_testing_runtime_enabled {
+    if !production_node_build {
         if let Some(image) = diagnostic_image {
             node_env.push((
                 "ORBIS_VERA_NODE_IMAGE".to_string(),
