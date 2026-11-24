@@ -44,6 +44,13 @@ VERAD_BINARY=/path/to/verad cargo test -p orbis-node --lib --no-default-features
   tests::e2e::fault_injection -- --ignored --test-threads=1
 ```
 
+CI runs them, with the authz, bulletin and `vera-admin` service tests, in the
+`Native Vera services` job of `.github/workflows/rust.yml`, against a `verad`
+built from the pinned revision. A failed scenario copies its validators' logs
+to `ORBIS_TEST_LOG_DIR` (default `orbis-test-logs` under the system temporary
+directory), which the job uploads as the `native-vera-logs` artifact; set
+`RUST_LOG` to include the Orbis nodes' own logs in the test output.
+
 For Jubjub, change `--crypto` and the Orbis image together. Use normal images,
 without storage KDF or deadline overrides. The Vera fixture provisions valid
 policy and ring state through Vera and keeps the normal PSS interval of 86400.

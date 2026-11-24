@@ -167,6 +167,77 @@ jobs:
         cargo test --locked -p orbis-node --no-default-features --features vera,redb,iroh,${{ matrix.crypto }} --lib bootstrap
         cargo test --locked -p bulletin --no-default-features --features vera --lib vera::
 
+  # The `#[ignore]`d tests that run against a `verad` cluster: authz and
+  # bulletin services, vera-admin, and orbis-node's in-process fault
+  # injection. `verad` is built from the revision the SDK manifests pin.
+  vera-native:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'vera'
+    name: Native Vera services
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
+      VERAD_BINARY: ${{ github.workspace }}/.native/vera/target/release/verad
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Read pinned Vera revision
+      id: vera
+      run: |
+        revision="$(python3 scripts/vera-ref.py)"
+        test "$revision" = "$(cat docker/VERA_REF)"
+        echo "revision=$revision" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v4
+      with:
+        repository: sourcenetwork/vera.rs
+        ref: ${{ steps.vera.outputs.revision }}
+        path: .native/vera
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+    - name: Cache cargo + target
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: vera-native
+        workspaces: |
+          . -> target
+          .native/vera -> target
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler lld clang libclang-dev cmake pkg-config libssl-dev
+    - name: Build verad
+      working-directory: .native/vera
+      run: cargo build --release --locked -p verad --bin verad
+    - name: Authorization service
+      timeout-minutes: 15
+      run: cargo test --locked -p authz --features vera --test vera_service -- --ignored --test-threads=1
+    - name: Bulletin service
+      timeout-minutes: 15
+      run: cargo test --locked -p bulletin --features vera --test vera_service -- --ignored --test-threads=1
+    - name: vera-admin
+      timeout-minutes: 15
+      run: cargo test --locked -p cli-tool --features vera --test vera_admin -- --ignored --test-threads=1
+    - name: Fault injection
+      timeout-minutes: 40
+      env:
+        RUST_LOG: info
+        ORBIS_TEST_LOG_DIR: ${{ runner.temp }}/native-vera-logs
+      run: >-
+        cargo test --locked -p orbis-node --no-default-features
+        --features integration-test,vera,test-support/vera,redb,iroh,bls12-381,fault-injection
+        --lib fault_injection -- --ignored --test-threads=1
+    - name: Keep verad logs of failed tests
+      if: failure()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: native-vera-logs
+        path: ${{ runner.temp }}/native-vera-logs
+        if-no-files-found: ignore
+        retention-days: 14
+
   # Build the orbis-node integration image once and push it to GHCR (cargo-chef
   # in docker/Dockerfile keeps the dependency compile a cached layer). The
   # `integration` shards pull it instead of building it themselves.
