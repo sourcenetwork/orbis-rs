@@ -109,7 +109,7 @@ use vera_environment::VeraTestEnvironment as TestEnvironmentImpl;
 // mechanics behind one method signature.
 mod defra_pre_scenario;
 
-// In-process FaultNetwork qualifications. Isolated from the shared scenario
-// contract: only the Cosmos adapter has this harness today.
-#[cfg(all(feature = "cosmos", feature = "fault-injection"))]
+// In-process FaultNetwork qualifications against a native Vera cluster of
+// `verad` processes. Isolated from the shared scenario contract.
+#[cfg(all(feature = "vera", feature = "fault-injection"))]
 mod fault_injection;
