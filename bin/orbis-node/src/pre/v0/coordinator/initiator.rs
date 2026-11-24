@@ -626,7 +626,9 @@ where
                                 );
                                 continue;
                             };
-                            let Some(accused_node_key) = node_key_for_peer(ring, &peer_id) else {
+                            let Some((accused_node_key, accused_route)) =
+                                ring_member_for_peer(ring, &peer_id)
+                            else {
                                 tracing::error!(
                                     peer_id = %peer_id,
                                     "PRE Coordinator: accepted response from peer without node key"
@@ -637,7 +639,7 @@ where
                                 self.routes.version,
                                 request_id,
                                 accused_node_key,
-                                &peer_id,
+                                accused_route,
                                 &ctx.object_id,
                                 ctx.rdr_pk_bytes.clone(),
                                 ctx.derivation.clone(),
@@ -768,7 +770,9 @@ where
                 );
                 continue;
             };
-            let Some(accused_node_key) = node_key_for_peer(ring, &response.sender_peer_hex) else {
+            let Some((accused_node_key, accused_route)) =
+                ring_member_for_peer(ring, &response.sender_peer_hex)
+            else {
                 tracing::error!(
                     sender_peer = %response.sender_peer_hex,
                     "PRE Coordinator: stored response from peer without node key"
@@ -779,7 +783,7 @@ where
                 self.routes.version,
                 request_id,
                 accused_node_key,
-                &response.sender_peer_hex,
+                accused_route,
                 &ctx.object_id,
                 ctx.rdr_pk_bytes.clone(),
                 ctx.derivation.clone(),
@@ -1276,7 +1280,8 @@ where
             );
             return None;
         };
-        let Some(accused_node_key) = node_key_for_peer(&args.ring, peer_id) else {
+        let Some((accused_node_key, accused_route)) = ring_member_for_peer(&args.ring, peer_id)
+        else {
             tracing::error!(
                 peer_id = %peer_id,
                 "PRE Coordinator: late response from peer without node key"
@@ -1290,7 +1295,7 @@ where
                 routes.version,
                 &args.request_id,
                 accused_node_key,
-                peer_id,
+                accused_route,
                 &args.object_id,
                 args.rdr_pk_bytes.clone(),
                 args.derivation.clone(),
@@ -1509,10 +1514,54 @@ impl PreReportBinding {
 }
 
 fn node_key_for_peer<'a>(ring: &'a RingConfig, peer_id: &str) -> Option<&'a str> {
+    ring_member_for_peer(ring, peer_id).map(|(node_key, _)| node_key)
+}
+
+/// The ring member whose route names `peer_id`'s node, as its node key and
+/// its route exactly as resolved from NodeInfo. A report accuses the route,
+/// not the authenticated sender's bare node ID, because report validation
+/// compares it with the accused node's NodeInfo `peer_id`, which may carry
+/// an `@address` suffix.
+fn ring_member_for_peer<'a>(ring: &'a RingConfig, peer_id: &str) -> Option<(&'a str, &'a str)> {
     let peer_node_part = extract_node_part(peer_id).to_lowercase();
     ring.peer_node_keys
         .iter()
         .zip(ring.peer_ids.iter())
         .find(|(_, route)| extract_node_part(route).to_lowercase() == peer_node_part)
-        .map(|(node_key, _)| node_key.as_str())
+        .map(|(node_key, route)| (node_key.as_str(), route.as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_member_for_authenticated_sender_returns_its_nodeinfo_route() {
+        let node_a = "a".repeat(64);
+        let node_b = "b".repeat(64);
+        let ring = RingConfig {
+            ring_id: "ring".to_string(),
+            ring_pk_bytes: vec![],
+            peer_ids: vec![
+                format!("{node_a}@node1:9001"),
+                format!("{node_b}@node2:9001"),
+            ],
+            peer_node_keys: vec!["node-key-a".to_string(), "node-key-b".to_string()],
+            threshold: 2,
+            total_participants: 2,
+            public_polynomial_hex: String::new(),
+            pre_share_endpoints: vec![],
+        };
+        let route_b = format!("{node_b}@node2:9001");
+
+        assert_eq!(
+            ring_member_for_peer(&ring, &node_b),
+            Some(("node-key-b", route_b.as_str()))
+        );
+        assert_eq!(
+            ring_member_for_peer(&ring, &route_b),
+            Some(("node-key-b", route_b.as_str()))
+        );
+        assert_eq!(ring_member_for_peer(&ring, &"c".repeat(64)), None);
+    }
 }
