@@ -19,7 +19,7 @@ VERA = '8193eac0c0cf19421ad1920dd678963585259d72'
 VERA_VERIFIER = '9de4ac3391caf3b7ac85e317177daa9b9ced8a5a'
 VERIFIER_HEADER_SHA256 = '23a08dade8e2408d567df5bbf4c894689a51e3f24f478809cff5c3a3b9502b15'
 VERA_SDK = '8193eac0c0cf19421ad1920dd678963585259d72'
-DEFRA = '7c6e16dc43a8c1928a16ec1c2d196b3b6a5369fc'
+DEFRA = '19ac5f66dd3ee07d54a00df6ca96875efeab9a92'
 SELECTOR = 'tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
