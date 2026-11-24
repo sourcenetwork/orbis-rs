@@ -179,7 +179,7 @@ jobs:
       contents: read
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
-      VERAD_BINARY: ${{ github.workspace }}/.native/vera/target/release/verad
+      VERAD_BINARY: ${{ github.workspace }}/.native/daemon/target/release/verad
     steps:
     - uses: actions/checkout@v4
       with:
@@ -194,7 +194,7 @@ jobs:
       with:
         repository: sourcenetwork/vera.rs
         ref: ${{ steps.vera.outputs.revision }}
-        path: .native/vera
+        path: .native/daemon
         persist-credentials: false
     - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
     - name: Cache cargo + target
@@ -203,13 +203,13 @@ jobs:
         key: vera-native
         workspaces: |
           . -> target
-          .native/vera -> target
+          .native/daemon -> target
     - name: Install build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y protobuf-compiler lld clang libclang-dev cmake pkg-config libssl-dev
     - name: Build verad
-      working-directory: .native/vera
+      working-directory: .native/daemon
       run: cargo build --release --locked -p verad --bin verad
     - name: Authorization service
       timeout-minutes: 15
