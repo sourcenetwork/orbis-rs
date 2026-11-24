@@ -1,4 +1,4 @@
-//! Backend-neutral DKG, PRE, signing, refresh, and reshare contract.
+//! DKG, PRE, signing, refresh, and reshare contract.
 //!
 //! The fixture and assertions in this file are the product behavior. Backend
 //! adapters may materialize the fixture differently, but must expose the same

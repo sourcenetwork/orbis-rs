@@ -24,7 +24,7 @@ use test_support::fixture::{
 };
 use tokio::time::{sleep, Duration};
 
-// Both backends' live schedule-upgrade path enforces a 600s minimum lead
+// Vera's live schedule-upgrade path enforces a 600s minimum lead
 // between "now" (as the chain sees it) and `activation_time`; the extra 20s
 // covers tx-inclusion lag between capturing `now` here and the chain
 // actually validating the schedule request.

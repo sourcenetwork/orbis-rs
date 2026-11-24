@@ -1,4 +1,4 @@
-//! Backend-neutral Docker E2E scenarios for PET-enabled rings.
+//! Docker E2E scenarios for PET-enabled rings.
 //!
 //! The selected `TestEnvironment` adapter owns chain provisioning; this file
 //! contains only shared DKG, PET, PRE, refresh and reshare behavior.

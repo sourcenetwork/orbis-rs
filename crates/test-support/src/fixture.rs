@@ -295,8 +295,8 @@ pub trait AuthorizationTestDriver {
     async fn create_policy(&self, definition: &str) -> PolicyId;
 
     /// Register an ACP object under `policy` so a later `grant` can target
-    /// it. Both backends always did this as a required first step before
-    /// granting a relationship on a new object — split out as its own
+    /// it. Vera requires this as a first step before granting a
+    /// relationship on a new object — split out as its own
     /// method rather than folded into `grant`, since some callers (e.g. a
     /// ring's own governance object) register without ever granting.
     async fn register_object(&self, policy: &PolicyId, resource: &str, object_id: &str);

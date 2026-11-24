@@ -170,7 +170,7 @@ Integration tests may require Docker (see **`common`** crate **`IntegrationTestN
 The Vera integration is under qualification. Vera verifies the selected BLS or
 Jubjub signature scheme; Defra uses Orbis's augmented BLS suite. Legacy basic-BLS
 signature types and verification paths are removed. Shared fixtures cover the
-backend-neutral scenarios listed below. Defra-specific assertions and several
+scenarios listed below. Defra-specific assertions and several
 deeper PET/recovery invariants removed with the old one-off runner are explicitly
 tracked in [deferred E2E coverage](../../docs/e2e-deferred-coverage.md). Deployment
 qualification still requires sustained load, multi-host networks, crash/power-loss
