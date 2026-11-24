@@ -2,7 +2,7 @@
 
 ## Vera administration
 
-`vera-admin` manages participant nodes and threshold rings.
+`vera-admin` manages participant nodes, threshold rings and signing derivations.
 
 Build the operator tool with `cargo build -p cli-tool --features vera --bin vera-admin`.
 Its trust file is the same shape as the `bulletin` section of orbis-node's
@@ -24,6 +24,18 @@ vera-admin --vera-config vera.json --directory operator --password-file password
 
 Before preparing a request, obtain a `ManageRings` delegation from the policy actor
 to the DID printed by `worker`. The actor needs the corresponding ACP permission.
+`delegate` signs one locally on the actor's machine without contacting the service
+or opening worker storage; it writes the bearer token to a new file readable only
+by its owner and refuses to overwrite an existing one:
+
+```sh
+vera-admin --vera-config vera.json delegate --worker-did "$WORKER_DID" \
+  --scope orbis:ring --expires-at "$UNIX_EXPIRY" --key-file actor-key --output ring-token
+```
+
+`--scope` is `orbis:ring` for ring requests or `orbis:object:store` for signing
+derivations. The key file holds the actor's secp256k1 key in the same forms
+`sign-node` accepts.
 Participant nodes must already be registered. `create.json` contains the SDK's
 `RingCommand` JSON, for example:
 
@@ -68,6 +80,46 @@ file's freshness bound. `--minimum-revision` rejects older evidence. The tool
 checks the configured deployment root before opening any worker store or making
 a submission.
 
+### Signing derivations
+
+A `sign` session names a key derivation registered on Vera for an active ring.
+`derivation.json` contains the SDK's `KeyDerivation` JSON:
+
+```json
+{
+  "ring_id": "<64-character ring ID>",
+  "derivation": "tenant/key",
+  "policy_id": "<64-character policy ID>",
+  "resource": "document",
+  "permission": "sign"
+}
+```
+
+```sh
+vera-admin --vera-config vera.json derivation-id derivation.json
+vera-admin --vera-config vera.json delegate --worker-did "$WORKER_DID" \
+  --scope orbis:object:store --expires-at "$UNIX_EXPIRY" --key-file actor-key \
+  --output object-token
+vera-admin --vera-config vera.json --directory operator --password-file password \
+  prepare-derivation derivation.json --token-file object-token
+vera-admin --vera-config vera.json --directory operator --password-file password submit
+vera-admin --vera-config vera.json --directory operator --password-file password \
+  acknowledge "$SUBMISSION_ID"
+vera-admin --vera-config vera.json derivation "$DERIVATION_ID"
+```
+
+`derivation-id` runs locally and prints the ID that `sign --derivation-id` takes.
+Registration requires an `orbis:object:store` delegation from the actor, who is
+recorded as the derivation's creator, and is refused while the ring is pending
+DKG. A derivation is immutable: registering the same one again is refused. It
+uses the same journal, `submit` and acknowledgement as ring commands.
+`derivation` reads the certified record and prints `derived_public_key`, the key
+Sign signatures under it verify against, computed from the ring's certified
+public key for the curve `vera-admin` was built with (`null` until the ring is
+active).
+
+### Node and controller changes
+
 For node/controller changes, first read the current certified node record. Its
 `sequence` is the value to sign for the next command; registration uses zero.
 Create `node-command.json` using an SDK `NodeCommand`, such as:
@@ -105,7 +157,9 @@ acknowledgement as ring commands.
 The focused process fixture covers creation, certified reads, process-restart
 recovery, rejected requests and acknowledgement guards. A separate node workflow
 covers routes, policy/ring admission, controller transfer and former-controller
-rejection:
+rejection, and a derivation workflow covers local delegation, refusal for a
+pending ring and for a ring-management token, registration and the derived
+public key. CI runs them in the `Native Vera services` job:
 
 ```sh
 VERAD_BINARY=/path/to/verad cargo test -p cli-tool --features vera \
@@ -157,7 +211,7 @@ Passing secrets as plain CLI arguments leaves them visible in shell history and 
 | `store-secret` | One-shot: encrypt locally and store on the node. |
 | `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret and decrypt it. Always generates a fresh ephemeral reader keypair. Options: `--ring-pk`, `--object-id`, `--reader-did-pk` (required), `--derivation`, `--salt`, `--valid-window-start`/`--valid-window-end` (together), `--save-only`. |
 | `retrieve-pre` | Decrypt a response saved by `pre --save-only`. Option: `--pending-json`. |
-| `sign` | Start a threshold Sign session. Options: `--message` (hex), `--derivation-id` (a key derivation registered with Vera), `--reader-did-pk` (required), `--valid-window-start`/`--valid-window-end` (together). |
+| `sign` | Start a threshold Sign session. Options: `--message` (hex), `--derivation-id` (a key derivation registered with `vera-admin prepare-derivation`), `--reader-did-pk` (required), `--valid-window-start`/`--valid-window-end` (together). |
 
 ### Examples
 
