@@ -1,4 +1,4 @@
-//! Shared integration test: verifies the on-chain kick + backup-node
+//! Integration test: verifies the on-chain kick + backup-node
 //! promotion flow. node3 starts with `kick_threshold - 1` demerits seeded
 //! in genesis; a single accepted offline report pushes it over the
 //! threshold, and the chain schedules an auto-reshare that swaps node3 out
@@ -8,15 +8,13 @@
 //! container, so the test asserts the announced pending committee, not the
 //! finalized one.
 //!
-//! Fully backend-neutral — no `#[cfg]` split in this file. `RingView` now
-//! carries `backup_node_keys` portably (both `read_ring` implementations
-//! populate it from their own backend's `reporting` config), so confirming
-//! the promoted key was consumed needs no raw, backend-specific `Ring` read.
-//! `NodeRole::Backup` has live registration support on native
-//! (`VeraTestEnvironment::provision`'s `fixture_node`/`NodeCommand::Register`
-//! path); fixture-driven `node_demerits` is genesis-seeded there too, by
-//! predicting the ring's (and its governing policy's) id before the chain
-//! boots — see that function's own doc comments for the mechanism.
+//! `RingView` carries `backup_node_keys` from the ring's `reporting` config,
+//! so confirming the promoted key was consumed needs no raw `Ring` read.
+//! `NodeRole::Backup` is registered live (`VeraTestEnvironment::provision`'s
+//! `fixture_node`/`NodeCommand::Register` path); fixture-driven
+//! `node_demerits` is genesis-seeded by predicting the ring's (and its
+//! governing policy's) id before the chain boots — see that function's own
+//! doc comments for the mechanism.
 
 use super::report_scenario::{pre_with_retry, store_secret_with_retry, STANDARD_RING_POLICY_YAML};
 use super::{pre_scenario, TestEnvironmentImpl};
@@ -210,12 +208,9 @@ async fn test_report_kick_promotes_backup_node() {
         ring_view.peer_node_keys.contains(&node3_key),
         "active committee is unchanged until the reshare finalizes"
     );
-    // Cosmos represents "the auto-reshare didn't touch the threshold" as
-    // `None`; native's `ReshareTarget.threshold` is a plain (non-optional)
-    // `u32`, so its `new_threshold` is always `Some(_)` once any reshare is
-    // pending — but still the *unchanged* value. Check the actual property
-    // (no override happened) rather than the backend-specific
-    // representation of it.
+    // `ReshareTarget.threshold` is a plain (non-optional) `u32`, so
+    // `new_threshold` is `Some(_)` once any reshare is pending — but still
+    // the *unchanged* value. Check that no override happened.
     assert!(
         ring_view
             .new_threshold

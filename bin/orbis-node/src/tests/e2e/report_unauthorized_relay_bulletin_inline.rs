@@ -1,22 +1,20 @@
-//! Shared integration test: proves `unauthorized_request` reporting works
+//! Integration test: proves `unauthorized_request` reporting works
 //! identically whether the request's document came from the bulletin or
 //! was supplied inline. For the inline sub-case the ciphertext is never
 //! signed into the statement nor put on chain — only the `document_inline`
 //! bool is — and the reporting node re-derives `object_id` from the
-//! document it was forwarded. The inline report being accepted on-chain is
-//! what proves the Vera Go decoder parses the new wire shape (a
-//! `document_inline` bool where the evidence blob used to be). Both
-//! sub-cases share one DKG/network spin-up.
+//! document it was forwarded. The inline report being accepted on-chain
+//! proves Vera parses the wire shape (a `document_inline` bool where the
+//! evidence blob used to be). Both sub-cases share one DKG/network spin-up.
 //!
-//! Fully backend-neutral — no `#[cfg]` split in this file. Same reasoning
-//! as `report_unauthorized_relay.rs`: `NODE1_SIGNING_KEY_HEX` is node1's
-//! real signing key on both backends now, the ring's current state comes
-//! from `BulletinTestDriver::read_ring_state_facts`, and document
-//! registration goes through `register_document`. The inline sub-case's
-//! "what id would this document get if it were stored" question is
-//! answered by `BulletinTestDriver::predict_document_id` — a new, pure/sync
-//! trait method mirroring `register_document`'s shape without the actual
-//! on-chain write, since this sub-case must *not* ever post the document.
+//! As in `report_unauthorized_relay.rs`, `NODE1_SIGNING_KEY_HEX` is node1's
+//! real signing key, the ring's current state comes from
+//! `BulletinTestDriver::read_ring_state_facts`, and document registration
+//! goes through `register_document`. The inline sub-case's "what id would
+//! this document get if it were stored" question is answered by
+//! `BulletinTestDriver::predict_document_id`, which mirrors
+//! `register_document`'s shape without the on-chain write, since this
+//! sub-case must *not* ever post the document.
 
 use super::pre_scenario;
 use super::TestEnvironmentImpl;

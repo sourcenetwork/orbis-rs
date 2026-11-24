@@ -1,4 +1,4 @@
-//! Shared integration test: reshare counterpart to
+//! Integration test: reshare counterpart to
 //! `report_refresh_stall_offline.rs`, same technique — a real
 //! `AbandonedPssSession` is injected through the drain worker's own logic
 //! (`report_abandoned_pss_session`) naming node3 as the silent
@@ -23,8 +23,8 @@
 //! injected report's `ring_state_sha256` (computed from the pending-reshare
 //! snapshot) stale by the time its tx lands on chain.
 //!
-//! Each adapter registers the synthetic offline identity without launching a
-//! process, so the same pending-committee fixture works on both backends.
+//! The adapter registers the synthetic offline identity without launching a
+//! process.
 
 use super::report_scenario::{wait_for_demerits, STANDARD_RING_POLICY_YAML};
 use super::{pre_scenario, TestEnvironmentImpl};

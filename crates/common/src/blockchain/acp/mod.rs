@@ -4,8 +4,6 @@
 //! which manages access control policies for applications.
 //!
 //! - [`types`] — message, query, and domain types.
-//!
-//! Cosmos client operations are provided by the `cosmos` feature.
 
 mod types;
 

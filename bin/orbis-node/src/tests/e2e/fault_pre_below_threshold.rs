@@ -5,16 +5,10 @@
 //! leaving only 1 share out of the required 2. The operation should
 //! return an error quickly (not hang for `PRE_COLLECTION_TIMEOUT`).
 //!
-//! Harness-unification migration, PR 6: migrated off `fault_injection.rs`'s
-//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one.
-//! The original partitioned node 0 from the other two via
-//! `FaultNetworkController::block_peer` — ported here as a direct abort of
-//! both other nodes instead (per this migration's own PR 6 survey: the test
-//! only asserts the *outcome*, insufficient reachable shares, and "node is
-//! dead" is just as unreachable as "node is blocked" for that purpose).
-//! This avoids needing `FaultNetwork` in the shared dual-backend bootstrap
-//! at all — it stays Cosmos-only infrastructure, scoped to this migration's
-//! untouched "Bucket C" tests. Fully dual-backend — no `#[ignore]` needed.
+//! Runs on [`super::live_node`]'s in-process bootstrap. The test asserts only
+//! the outcome, insufficient reachable shares, so aborting the other two
+//! nodes stands in for partitioning node 0 and the bootstrap needs no
+//! `FaultNetwork`.
 
 use super::live_node::setup_ring;
 use tokio::time::Duration;

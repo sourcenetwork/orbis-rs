@@ -10,8 +10,6 @@
 //!   document/key-derivation object-id derivation.
 //! - [`decode`] — decoding typed responses out of Cosmos SDK ABCI broadcast results.
 //!
-//! Cosmos client operations are provided by the `cosmos` feature.
-//!
 //! Each submodule's public items are re-exported here, so external code keeps using
 //! `common::blockchain::orbis::<Item>` rather than reaching into a submodule directly.
 

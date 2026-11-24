@@ -1,17 +1,9 @@
-//! Backend-neutral chain administration operations shared by E2E scenarios.
+//! Chain administration operations used by E2E scenarios.
 //!
-//! One narrow trait, generalizing the pattern already proven by
-//! `pet_dkg_contract::Backend` (paired-DKG verification shared across Cosmos
-//! and native Vera): a shared signature, implemented once per backend.
-//!
-//! `CosmosAdmin` (this crate, [`cosmos`]) implements it directly against
-//! `common`'s Cosmos chain client. Native's implementation does **not** live
-//! here — it lives in `bin/orbis-node/src/tests/e2e/vera_environment.rs`, alongside the
-//! `vera-client`/`vera-domain`/`alloy-primitives`/`k256`/`acp-light-client`
-//! dependencies its protocol-level calls need. Pulling those into this crate
-//! would be a much larger, riskier dependency change than a behavior-preserving
-//! move warrants; the trait boundary here is what lets the native impl live
-//! elsewhere while still satisfying `&dyn BackendAdmin` callers.
+//! The implementation lives in `bin/orbis-node/src/tests/e2e/vera_environment.rs`,
+//! alongside the `vera-client`/`vera-domain`/`alloy-primitives`/`k256`/
+//! `acp-light-client` dependencies its protocol-level calls need; the trait
+//! boundary keeps those dependencies out of this crate.
 
 use std::time::Duration;
 
@@ -25,8 +17,8 @@ pub struct RingId(pub String);
 pub struct DocumentId(pub String);
 
 /// The ring's finalized key material. Single-field today (the main signing
-/// key); both backends also expose a PET key via [`RingView::pet_pk`] once a
-/// ring is read back.
+/// key); the PET key is exposed via [`RingView::pet_pk`] once a ring is read
+/// back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RingKeys(pub String);
 
@@ -56,9 +48,8 @@ pub struct RingView {
     pub threshold: u32,
     pub requires_pet: bool,
     pub pet_pk: Option<String>,
-    /// Pending-finalization confirmation count. Cosmos clears this to 0 at
-    /// finalization; native's reconciliation model has no equivalent list and
-    /// always reports 0.
+    /// Pending-finalization confirmation count. Vera's reconciliation model has
+    /// no confirmation list and always reports 0.
     pub confirmations: usize,
     /// The target committee/threshold of an announced-but-not-yet-effective
     /// reshare — empty/`None` when none is pending. `peer_node_keys`/
@@ -82,12 +73,9 @@ impl RingView {
 /// state — e.g. forging a signed statement that must hash to the same
 /// `ring_state_sha256` a real responder would independently compute when
 /// verifying it. Deliberately narrower than exposing `bulletin::r#trait::
-/// RingPayload` itself across this trait: that type isn't reachable from
-/// this crate under a plain `native` build (no `bulletin` dependency at
-/// all there), so each backend's own environment (which *does* have
-/// `bulletin` reachable, just via a different feature) computes
-/// `state_sha256` internally and only this already-hashed, backend-neutral
-/// summary crosses the trait boundary.
+/// RingPayload` itself across this trait: this crate has no `bulletin`
+/// dependency, so the environment computes `state_sha256` internally and
+/// only this already-hashed summary crosses the trait boundary.
 #[derive(Clone, Debug)]
 pub struct RingStateFacts {
     pub ring_pk: String,
@@ -129,13 +117,11 @@ pub trait BackendAdmin: Send + Sync {
 
     async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingKeys;
 
-    /// Not yet backed by either backend as a standalone operation — both
-    /// Cosmos and native currently do this inline inside monolithic test
-    /// bodies (see Phase C of the harness-unification plan). Implementations
-    /// may `unimplemented!()` until that extraction happens.
+    /// Not backed as a standalone operation; tests do this inline.
+    /// Implementations may `unimplemented!()`.
     async fn update_membership(&self, ring: &RingId, new_members: Vec<String>, new_threshold: u32);
 
-    /// Not yet backed by either backend as a standalone operation; see
+    /// Not backed as a standalone operation; see
     /// [`BackendAdmin::update_membership`].
     async fn store_document(
         &self,
@@ -144,7 +130,7 @@ pub trait BackendAdmin: Send + Sync {
         reader_dids: &[String],
     ) -> DocumentId;
 
-    /// Not yet backed by either backend as a standalone operation; see
+    /// Not backed as a standalone operation; see
     /// [`BackendAdmin::update_membership`].
     async fn read_document(&self, id: &DocumentId) -> Vec<u8>;
 }

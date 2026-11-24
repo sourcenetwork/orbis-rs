@@ -138,11 +138,9 @@ pub enum SubCommands {
     },
 
     /// Derive the secp256k1 public key and did:key for --signing-key. Pure local
-    /// computation, no network calls. Vera resolves ACP actor identity for
-    /// signed transactions (e.g. create-ring's `create_ring` permission check)
-    /// from this same derivation -- use this to find out, ahead of time, which
-    /// DID needs a relation granted (via `set-relationship-on-chain --actor-pubkey`)
-    /// before such a transaction will be authorized.
+    /// computation, no network calls. Vera resolves the ACP actor of a request
+    /// signed with this key from this same derivation, so this names the DID
+    /// that needs a relation granted before such a request is authorized.
     DeriveSignerDid,
     /// Prepare a secret for storage (encrypt locally, output JSON for later use)
     PrepareSecret {
@@ -249,7 +247,7 @@ pub enum SubCommands {
         /// Message to sign (hex encoded)
         #[clap(long)]
         message: String,
-        /// Derivation ID (post ID returned by post-key-derivation)
+        /// Derivation ID of a key derivation registered with Vera
         #[clap(long)]
         derivation_id: String,
         /// A private key to generate a reader DID for JWT

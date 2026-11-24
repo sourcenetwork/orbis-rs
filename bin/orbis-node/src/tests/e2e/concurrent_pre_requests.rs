@@ -1,12 +1,10 @@
 //! Three simultaneous PRE decryptions of the same ciphertext must all
 //! complete and return the original plaintext.
 //!
-//! Harness-unification migration, PR 6: migrated off `concurrent.rs`'s
-//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one.
-//! Exercises `PreResponseManager` under concurrent load — all three requests
-//! are in flight simultaneously, each collecting threshold re-encryption
-//! shares from the responder nodes. Fully dual-backend — no `#[ignore]`
-//! needed on either side.
+//! Runs on [`super::live_node`]'s in-process bootstrap. Exercises
+//! `PreResponseManager` under concurrent load — all three requests are in
+//! flight simultaneously, each collecting threshold re-encryption shares
+//! from the responder nodes.
 
 use super::live_node::setup_ring;
 

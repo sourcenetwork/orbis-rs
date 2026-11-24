@@ -1664,8 +1664,7 @@ async fn test_sign_policy_check_policy_access_at_uses_supplied_timestamp() {
 
 /// check_policy_access must deny access when the current time falls outside the valid_window.
 ///
-/// The authz mock here validates the window exactly as VeraGoAuth does — it deserializes
-/// the AccessCheckRequest and returns false when `now < window.start || now > window.end`.
+/// The authz mock here deserializes the AccessCheckRequest and returns false when `now < window.start || now > window.end`.
 /// Passing `end: 1` (epoch + 1 s) guarantees the window is in the past.
 #[tokio::test]
 async fn test_sign_policy_check_policy_access_expired_valid_window() {

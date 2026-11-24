@@ -61,8 +61,7 @@ the hook and workflow; run-scoped images and labels bind that fixture separately
 from the unchanged normal runtime. Source review or a passing older fixture does
 not qualify changed pins, cold-cache builds or deployment resource limits.
 
-The reuse is the existing native fixture setup and Docker lifecycle, not a port
-of the older Cosmos `bin/orbis-node/src/tests/e2e/integration.rs` bodies. No production
+The reuse is the existing Vera fixture setup and Docker lifecycle. No production
 runtime or backend trait implementation is added. The exact ignored selector
 spins up four normal Vera containers and three normal Orbis containers
 through `VeraTestNetwork` and the gateway fixture's own Orbis node startup.

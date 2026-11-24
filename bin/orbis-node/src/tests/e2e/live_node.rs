@@ -1,29 +1,20 @@
-//! Shared in-process node bootstrap for the `concurrent`/`fault_injection`
-//! test families (harness-unification migration, PR 6).
+//! In-process node bootstrap for the `concurrent_*`/`fault_*` tests.
 //!
 //! Spins up real orbis nodes IN-PROCESS (no Docker node images) against a
-//! chain-only Docker container — Cosmos/Vera via [`test_support::VeraGoTestContainer`],
-//! native Vera via [`test_support::VeraTestNetwork`] directly (not through
-//! `VeraNetworkAdapter`, which also launches `node1..4` Docker images this
-//! layer doesn't want). Every per-node gRPC server is a bare
+//! chain-only Vera network, [`test_support::VeraTestNetwork`] directly (not
+//! through `VeraNetworkAdapter`, which also launches `node1..4` Docker
+//! images this layer doesn't want). Every per-node gRPC server is a bare
 //! `tonic::transport::Server` built from an `InitializedNode`
 //! ([`spawn_test_grpc_server`]), giving test code a direct, in-process handle
 //! to each node's `Network`/`AppState` — the thing Docker-Compose's
 //! `stop_node`/`UnsafeTestingService` can't offer, and the reason this family
 //! of tests doesn't use `TestEnvironmentImpl`.
 //!
-//! `#[allow(dead_code)]`: only [`setup_live_node_network`]'s one current
-//! consumer (`concurrent_simultaneous_dkg.rs`) is migrated so far — most of
-//! `Chain`'s surface (`node_keys`, `policy_id`) and the 4-node shape are here
-//! for the next migration batch (the other 10 Bucket A/B tests in
-//! `concurrent.rs`/`fault_injection.rs`), not yet exercised. Same precedent as
-//! `vera_environment.rs`'s own module-level `#![allow(dead_code)]`.
+//! `#[allow(dead_code)]`: not every consumer uses all of `Chain`'s surface.
 #![allow(dead_code)]
 
 // `crate::` is the `orbis-node` lib. This module is part of that lib's
-// `#[cfg(test)]` tree (`src/tests/e2e/mod.rs`). The two import lists stay
-// cfg-gated on the backend the same way `pending_ring_cancellation.rs`
-// gates `RingIndexEntry`, covering a much larger import list.
+// `#[cfg(test)]` tree (`src/tests/e2e/mod.rs`).
 #[cfg(all(feature = "integration-test", feature = "vera"))]
 use crate::{
     app_state::AppState,
@@ -79,14 +70,12 @@ use {
 pub struct LiveNodeHandle {
     pub grpc_endpoint: String,
     pub peer_addr: String,
-    /// The node's on-chain identity key (compressed secp256k1 pubkey hex) --
-    /// NOT `public_address` (Cosmos's bech32 funding address; native's own
-    /// `public_address` happens to equal `node_key`, but Cosmos's doesn't).
+    /// The node's on-chain identity key (compressed secp256k1 pubkey hex).
     pub node_key: String,
     pub public_address: String,
     db_path: String,
-    /// Native only: the node's own journal/worker-store directory, cleaned up
-    /// alongside `db_path`. Always `None` on Cosmos.
+    /// The node's own journal/worker-store directory, cleaned up alongside
+    /// `db_path`.
     extra_cleanup_dir: Option<std::path::PathBuf>,
     pub app_state: Arc<AppState<DkgImpl>>,
     task: tokio::task::JoinHandle<()>,
@@ -115,7 +104,7 @@ impl LiveNodeHandle {
 }
 
 /// Three (or more) in-process orbis nodes backed by a real, chain-only Vera
-/// container — Cosmos/SourceHub or native, picked at compile time.
+/// network.
 pub struct LiveNodeNetwork {
     pub nodes: Vec<LiveNodeHandle>,
     policy_id: String,
@@ -130,8 +119,7 @@ impl LiveNodeNetwork {
 
     /// Create a ring on-chain over every node in this network. `nonce`
     /// distinguishes otherwise-identical rings (same members/threshold/
-    /// policy) the way `create_ring_on_chain`'s own `nonce` parameter does on
-    /// Cosmos — `None` reuses this layer's fixed default.
+    /// policy) — `None` reuses this layer's fixed default.
     pub async fn create_ring(&self, threshold: u32, nonce: Option<&str>) -> String {
         self.chain
             .create_ring(&self.node_keys, threshold, &self.policy_id, nonce)
@@ -163,8 +151,7 @@ impl LiveNodeNetwork {
 
     /// Create a fresh document-access ACP policy (`document`/`creator`/
     /// `reader`/`read`/`write`) — independent of this network's ring-
-    /// creation policy, same as the original Cosmos-only tests always kept
-    /// them separate.
+    /// creation policy.
     pub async fn create_document_policy(&self) -> String {
         self.chain.create_document_policy().await
     }
@@ -196,9 +183,7 @@ impl LiveNodeNetwork {
     }
 
     /// Read a ring's full bulletin-posted [`RingPayload`] via node 0's own
-    /// in-process `Bulletin` handle — backend-neutral (`Bulletin::read` +
-    /// `RingPayload::try_from` are shared trait/type machinery), so this
-    /// needs no cfg-split.
+    /// in-process `Bulletin` handle (`Bulletin::read` + `RingPayload::try_from`).
     pub async fn read_ring_payload(&self, ring_id: &str) -> RingPayload {
         let post = self
             .node(0)
@@ -449,10 +434,6 @@ fn unix_now() -> u64 {
         .expect("system clock before unix epoch")
         .as_secs()
 }
-
-// =========================================================================
-// Cosmos chain-only bootstrap
-// =========================================================================
 
 // =========================================================================
 // Vera chain-only bootstrap

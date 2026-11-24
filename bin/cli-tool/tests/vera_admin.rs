@@ -120,7 +120,7 @@ async fn change_node(
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn vera_admin_controls_nodes_with_signed_current_authority() {
     let deployment = 9078;
     let trusted = *KeySet::builder()
@@ -309,7 +309,7 @@ async fn vera_admin_controls_nodes_with_signed_current_authority() {
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn vera_admin_provisions_ring_and_recovers_exact_results() {
     let deployment = 9077;
     let trusted = *KeySet::builder()

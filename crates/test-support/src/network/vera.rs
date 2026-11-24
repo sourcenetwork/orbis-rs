@@ -1,15 +1,12 @@
-//! Native arm of the dispatch wrapper: a validator cluster
-//! ([`crate::VeraTestNetwork`]) plus Orbis node containers, both on the
+//! A validator cluster ([`crate::VeraTestNetwork`]) plus Orbis node
+//! containers, both on the
 //! *same* Docker Compose project (`docker/docker-compose-vera-integration-test.yml`),
 //! brought up in two stages because each Orbis node's `services.json` fixture
 //! needs the chain's deployment root — only known once the validators have
 //! produced a block.
 //!
-//! Scoped the same way `CosmosNetwork` is: this brings nodes up and connects
-//! them to the chain, nothing more. Policy/ring/node-authorization setup
-//! Backend-specific policy/ring/node-authorization setup happens after the
-//! network exists, exactly like Cosmos's `test_helpers.rs` functions run
-//! after `CosmosNetwork::builder().build()` returns.
+//! This brings nodes up and connects them to the chain, nothing more.
+//! Policy/ring/node-authorization setup happens after the network exists.
 
 use crate::compose::{
     compose_command, localhost_url, published_port_with_env, report_compose_failure, stop_compose,
@@ -440,9 +437,8 @@ async fn bring_up_orbis_nodes(
     (nodes, node_env)
 }
 
-/// Poll every node's gRPC port until reachable, matching
-/// `CosmosNetwork::all_services_healthy`'s plain TCP-connect approach rather
-/// than parsing Compose's own healthcheck status.
+/// Poll every node's gRPC port until reachable with a plain TCP connect,
+/// rather than parsing Compose's own healthcheck status.
 async fn wait_for_grpc_ready(cluster: &VeraTestNetwork, nodes: &[VeraOrbisNode]) {
     tokio::time::timeout(Duration::from_secs(120), async {
         loop {

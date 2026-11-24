@@ -1,22 +1,15 @@
-//! Shared helpers for the `report_*.rs` family of on-chain-report tests
-//! (originally `reporting.rs`, fully migrated and deleted — harness-
-//! unification migration, PR 5f). Backend-neutral retry wrappers around the
-//! plain `cli_tool` v0 calls, plus `wait_for_demerits`, the cross-backend
-//! pass/fail signal for a report actually landing — replacing Cosmos's
-//! `ReportEventSubscription` (a Tendermint-WebSocket subscription with no
-//! native equivalent).
+//! Helpers for the `report_*.rs` family of on-chain-report tests: retry
+//! wrappers around the plain `cli_tool` v0 calls, plus `wait_for_demerits`,
+//! the pass/fail signal for a report actually landing.
 
 use super::TestEnvironmentImpl;
 use test_support::admin::RingId;
 use test_support::fixture::BulletinTestDriver;
 use tokio::time::{sleep, Duration, Instant};
 
-/// Shared policy shape for every `reporting.rs` test that needs a real,
+/// Policy shape for every `report_*.rs` test that needs a real,
 /// live-provisioned ring: `ring_policy`/`creator`/`create_ring` and
-/// `ring`/`operator`/`update_ring` are unused by Cosmos (its ring
-/// materializer always substitutes its own content-addressed governance
-/// policy regardless of what `RingFixture.policy` names) but required by
-/// native — ring creation needs the submitter to hold `creator` on a
+/// `ring`/`operator`/`update_ring` are required because ring creation needs the submitter to hold `creator` on a
 /// `ring_policy` object (`VeraTestEnvironment::provision` registers/
 /// grants that automatically per distinct policy, but only once the
 /// policy itself defines the resource), and `RingCommand::Create` itself
@@ -162,10 +155,8 @@ pub(super) async fn sign_with_retry(
 }
 
 /// Poll `node_key`'s demerit points on `ring` until they reach `expected`,
-/// confirming an accepted report actually landed on chain. Replaces
-/// Cosmos's `ReportEventSubscription`-based wait — coarser (no per-report
-/// metadata), but the same underlying claim (accepted reports accumulate
-/// demerits for the accused node) and portable to both backends.
+/// confirming an accepted report actually landed on chain: accepted reports
+/// accumulate demerits for the accused node.
 pub(super) async fn wait_for_demerits(
     environment: &TestEnvironmentImpl,
     ring: &RingId,

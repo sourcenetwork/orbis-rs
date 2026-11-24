@@ -340,7 +340,7 @@ impl NativeChain {
     }
 }
 
-/// Fault reports the chain accepted: the native backend's `submit_report`
+/// Fault reports the chain accepted: Vera's `submit_report`
 /// returns only after a certified successful receipt, so a submission is
 /// recorded here only once Vera has accepted it.
 #[derive(Clone, Default)]

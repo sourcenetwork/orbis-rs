@@ -1,10 +1,7 @@
 //! Two DKG sessions initiated simultaneously on the same in-process network
 //! must both complete independently without cross-session interference.
 //!
-//! Harness-unification migration, PR 6: the first test migrated off
-//! `concurrent.rs`'s own Cosmos-only in-process bootstrap onto
-//! [`super::live_node`]'s shared one. Fully dual-backend — no `#[ignore]`
-//! needed on either side.
+//! Runs on [`super::live_node`]'s in-process bootstrap.
 
 use super::live_node::setup_live_node_network;
 use std::time::Duration;

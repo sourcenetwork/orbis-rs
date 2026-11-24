@@ -4,16 +4,9 @@
 //! test at all) must be accepted as a valid `invalid_crypto_response`
 //! report and assess exactly one demerit.
 //!
-//! Harness-unification migration, PR 6: migrated off `concurrent.rs`'s
-//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one.
-//! The original Cosmos-only pass/fail signal (`ReportEventSubscription`, a
-//! Tendermint-WS subscription with no native equivalent) is replaced with
-//! polling [`super::live_node::LiveNodeNetwork::read_node_demerits`] --
-//! the same dual-backend simplification the `reporting.rs` migration
-//! established (trading per-report metadata assertions for a portable
-//! demerit-count check; the thing actually under test -- a forged report
-//! is accepted and demerits the right node -- is preserved exactly).
-//! Fully dual-backend -- no `#[ignore]` needed.
+//! Runs on [`super::live_node`]'s in-process bootstrap. Acceptance is
+//! observed by polling [`super::live_node::LiveNodeNetwork::read_node_demerits`]:
+//! a forged report is accepted and demerits the right node.
 
 use super::live_node::{setup_ring, LiveNodeNetwork};
 use bulletin::r#trait::RingPayload;

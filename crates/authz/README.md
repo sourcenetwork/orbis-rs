@@ -2,7 +2,7 @@
 
 Async **authorization** behind a small trait: given opaque **`permission`** bytes and a **`subject`** (caller identity string), decide whether access is allowed.
 
-The default implementation talks to **Vera** over the shared **`common`** service client and evaluates **ACP** (access-control policy) membership. A **dummy** allow-all backend exists only for tests.
+The implementation verifies **Vera** permission proofs and evaluates **ACP** (access-control policy) membership locally. A **dummy** allow-all backend exists only for tests.
 
 ## `Authz` trait
 
@@ -20,9 +20,9 @@ pub trait Authz: Send + Sync {
 
 Callers serialize their intent into **`permission`**; the implementation defines the encoding. For Vera, that encoding is JSON for [`AccessCheckRequest`](src/request.rs).
 
-## Native authorization
+## Vera authorization
 
-The `native` feature exposes `native::VeraAuth`. Connect it with a service
+The `vera` feature (default) exposes `vera::VeraAuth`. Connect it with a service
 endpoint, independently provisioned consensus key and deployment root, and an
 explicit maximum evidence age. Connection verifies the first revision against
 that root. Current checks verify bounded permission proofs locally, enforce the
@@ -38,16 +38,16 @@ qualification requirement.
 
 Requests reject unknown and duplicate fields. Timestamp/window pairing and
 inclusion retain the existing consumer behavior; tier remains metadata and does
-not select a different policy evaluator. Native node startup selects this
+not select a different policy evaluator. Node startup selects this
 implementation at compile time (the `authz-vera` build feature); the
 node's `--services-config` `authz` section supplies its endpoint, deployment
 root and consensus key.
 
-Native failures are defined in [`native::error`](src/native/error.rs). The shared
-`AuthZError` wraps that concrete error only when `native` is enabled, preserving
+Vera failures are defined in [`vera::error`](src/vera/error.rs). The shared
+`AuthZError` wraps that concrete error only when `vera` is enabled, preserving
 client, decoding, identity, clock and anchor-parsing sources.
 
-The focused service fixture requires a built native node:
+The focused service fixture requires a built `verad`:
 
 ```bash
 VERAD_BINARY=/path/to/verad cargo test -p authz --features vera --test vera_service -- --ignored
@@ -57,31 +57,10 @@ VERAD_BINARY=/path/to/verad cargo test -p authz --features vera --test vera_serv
 
 | Feature | Default | Purpose |
 |---------|---------|---------|
-| `vera` | **yes** | [`VeraGoAuth`](src/vera/mod.rs) and re-export **`AuthzImpl`** = `VeraGoAuth`. |
-| `native` | no | Certified current checks and exact revision anchors. |
+| `vera` | **yes** | [`VeraAuth`](src/vera/mod.rs): certified current checks and exact revision anchors. |
+| `startup` | no | `AuthzFactory`/`PreparedAuthz` traits. |
+| `select-vera` | no | Re-exports `AuthzFactoryImpl` = `VeraAuthzFactory` for the node's services composer. |
 | `test-helpers` | no | [`dummy::DummyAuthZ`](src/dummy/mod.rs) — always returns **`true`**; **not for production**. |
-
-Disable defaults only if you wire another `Authz` implementation at the application layer:
-
-```bash
-cargo build -p authz --no-default-features
-```
-
-## Vera implementation (`feature = "vera-go"`)
-
-**`VeraGoAuth`** holds a [`VeraGoClient`](../common) (from the workspace `common` crate) and implements **`check`** by:
-
-1. Deserializing **`permission`** as JSON **`AccessCheckRequest`** (`policy_id`, `resource`, `object_id`, `permission`, optional `tier`, `timestamp`, optional **`ValidWindow`**).
-2. Optionally enforcing a **validity window**: if both **`valid_window`** and **`timestamp`** are set, the timestamp must lie in `[start, end]`; if only one of them is set, **`check`** returns **`InvalidRequest`**.
-3. Building an **`AccessRequest`** for the chain (actor = **`subject`**, object = resource + id, operation permission) and calling **`acp_verify_access`** for the given **`policy_id`**.
-
-Helper **`get_policy`** loads a policy record by id (for inspection or tooling).
-
-Construction: **`VeraGoAuth::new(ChainConfigBuilder)`** — async, connects the client.
-
-**Name string** (for logging / diagnostics): **`"authz/vera-go"`**.
-
-Integration tests in [`src/vera/tests.rs`](src/vera/tests.rs) use Docker (**Vera** test container); they are serial to avoid port conflicts.
 
 ## Dummy implementation (`feature = "test-helpers"`)
 
@@ -89,31 +68,10 @@ Integration tests in [`src/vera/tests.rs`](src/vera/tests.rs) use Docker (**Vera
 
 ## Errors
 
-[`AuthZError`](src/error.rs): **`Authentication`**, **`InvalidRequest`**, **`ChainError`**, **`NotFound`**.
-
-## Dependencies
-
-- **`async-trait`**, **`serde`** / **`serde_json`**
-- **`thiserror`**
-- **`common`** (workspace) — chain config, **`VeraGoClient`**, ACP types
+[`AuthZError`](src/error.rs): **`Native`** (wrapping `vera::Error`), **`Authentication`**, **`InvalidRequest`**, **`ChainError`**, **`NotFound`**.
 
 ## Tests
 
 ```bash
-# Unit tests that do not need Docker
 cargo test -p authz
-
-# Default feature includes vera; Docker-backed tests run with `cargo test` if present
 ```
-
-Vera integration tests require a running **Docker** environment as used by **`VeraGoTestContainer`** in the `common` crate.
-
-## Re-exports
-
-With **`vera`** enabled, the crate root re-exports:
-
-```rust
-pub use vera_go::VeraGoAuth as AuthzImpl;
-```
-
-Application code can depend on **`authz::AuthzImpl`** when building the node with default features.

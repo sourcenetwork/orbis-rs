@@ -1,12 +1,10 @@
 //! DKG must complete when `StartDkg` is invoked on any ring participant,
 //! not just the one driving the overall flow.
 //!
-//! Harness-unification migration, PR 6: migrated off `concurrent.rs`'s
-//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one.
-//! Verifies the Phase 1 fix: every participant starts phase 1 upon
-//! receiving `SessionInit` without waiting for the initiator to drive them.
-//! The four-node setup lets us confirm DKG completes even when initiated
-//! from the last node. Fully dual-backend -- no `#[ignore]` needed.
+//! Runs on [`super::live_node`]'s in-process bootstrap. Every participant
+//! starts phase 1 upon receiving `SessionInit` without waiting for the
+//! initiator to drive them; the four-node setup confirms DKG completes even
+//! when initiated from the last node.
 
 use proto::info_service::{info_service_client::InfoServiceClient, GetRingStateRequest};
 use tonic::Request;

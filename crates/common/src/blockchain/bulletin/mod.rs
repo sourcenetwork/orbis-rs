@@ -6,8 +6,6 @@
 //! - [`types`] — message, query, and domain types.
 //! - [`ids`] — the (currently unused — see its module doc) ring-reshare finalize sign
 //!   doc and hash-bytes builder.
-//!
-//! Cosmos client operations are provided by the `cosmos` feature.
 
 mod ids;
 mod types;

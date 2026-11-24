@@ -5,12 +5,9 @@
 //! it, and confirms the ring reverts to its original committee/threshold
 //! with the original committee still able to Sign.
 //!
-//! Fully backend-neutral — no `#[cfg]` split in this file. Tendermint/Cosmos
-//! has a real `CancelRingReshareByAcp` chain message; Commonware/native now
-//! has the equivalent `vera-modules::vera::rings::types::RingUpdate::
-//! CancelReshare` variant, wired through `BulletinTestDriver::cancel_reshare`.
-//! Native's fixture materializer already supports a never-running
-//! `NodeRole::Offline` node (live `NodeCommand::Register`, not genesis).
+//! Cancellation is Vera's `RingUpdate::CancelReshare`, wired through
+//! `BulletinTestDriver::cancel_reshare`. The never-running node is a
+//! `NodeRole::Offline` fixture (live `NodeCommand::Register`, not genesis).
 //!
 //! Run with:
 //!   cargo test -p orbis-node --features integration-test -- test_cancel_stuck_reshare_reverts_ring_and_preserves_signing --nocapture

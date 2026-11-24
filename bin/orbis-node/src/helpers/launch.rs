@@ -182,11 +182,9 @@ impl CorsPolicy {
 pub struct Args {
     /// Node services configuration (JSON file): an `authz` section and a
     /// `bulletin` section, each in the shape the build's compiled-in
-    /// `AuthzFactoryImpl`/`BulletinFactoryImpl` expects. Omit to use every
-    /// field's default (works for the vera/cosmos backends against a
-    /// default-everything local chain; the native backends have no sensible
-    /// default endpoint or trust root, so omitting this for a native build
-    /// fails fast with a clear missing-field error).
+    /// `AuthzFactoryImpl`/`BulletinFactoryImpl` expects. Vera has no sensible
+    /// default endpoint or trust root, so omitting this fails fast with a
+    /// clear missing-field error.
     #[arg(long, value_name = "PATH")]
     pub services_config: Option<PathBuf>,
     /// Address to bind the server to

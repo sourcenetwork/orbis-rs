@@ -3,7 +3,6 @@ target/
 .github/
 docker/*
 !docker/VERA_REF
-!docker/VERA_GO_REF
 !docker/grafana
 !docker/grafana/dashboards
 !docker/grafana/dashboards/orbis.json

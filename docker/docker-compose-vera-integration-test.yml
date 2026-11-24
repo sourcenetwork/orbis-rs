@@ -1,15 +1,11 @@
-# Docker Compose for native-Vera-backend integration tests
-# Spins up a 4-validator native Vera devnet + 3 orbis nodes (native backend),
-# all on service-name networking (no network_mode: host) with health checks.
+# Docker Compose for Vera integration tests
+# Spins up a 4-validator Vera devnet + 3 orbis nodes, all on service-name
+# networking (no network_mode: host) with health checks.
 #
-# Unlike docker-compose-integration-test.yml (the Cosmos/SourceHub backend),
-# every port here is a FIXED container-internal port: each service runs in its
+# Every port here is a FIXED container-internal port: each service runs in its
 # own network namespace (bridge networking), so there is no shared port space
-# to avoid collisions in — unlike the old ContainerNode-per-validator harness,
-# which used `network_mode: host` and therefore needed unique ephemeral ports
-# reserved up front. Host-side access (for the test process) still goes
-# through Docker's own ephemeral published-port mapping, same as the Cosmos
-# file.
+# to avoid collisions in. Host-side access (for the test process) goes through
+# Docker's own ephemeral published-port mapping.
 #
 # To use the pinned native Vera chain revision:
 #   VERA_REF=$(cat docker/VERA_REF) ORBIS_INTEGRATION_CRYPTO=jubjub \
@@ -138,17 +134,15 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        BACKEND: vera
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
         # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
         # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
         # on at least ARM64 hosts this makes the built orbis-node binary
         # unable to execute in its own runtime image ("GLIBC_2.38 not
-        # found"). CI's `image` job already pins this exact tag for the
-        # native backend for the same reason (.github/workflows/rust.yml);
-        # this applies the same pin here so local Trust gateway and shared native
-        # runs don't hit it too.
+        # found"). CI's `image` job pins this exact tag for the same reason
+        # (.github/workflows/rust.yml); this applies the same pin here so
+        # local runs don't hit it too.
         RUST_IMAGE: "${ORBIS_VERA_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
     environment:
@@ -195,17 +189,15 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        BACKEND: vera
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
         # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
         # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
         # on at least ARM64 hosts this makes the built orbis-node binary
         # unable to execute in its own runtime image ("GLIBC_2.38 not
-        # found"). CI's `image` job already pins this exact tag for the
-        # native backend for the same reason (.github/workflows/rust.yml);
-        # this applies the same pin here so local Trust gateway and shared native
-        # runs don't hit it too.
+        # found"). CI's `image` job pins this exact tag for the same reason
+        # (.github/workflows/rust.yml); this applies the same pin here so
+        # local runs don't hit it too.
         RUST_IMAGE: "${ORBIS_VERA_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
     environment:
@@ -252,17 +244,15 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        BACKEND: vera
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
         # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
         # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
         # on at least ARM64 hosts this makes the built orbis-node binary
         # unable to execute in its own runtime image ("GLIBC_2.38 not
-        # found"). CI's `image` job already pins this exact tag for the
-        # native backend for the same reason (.github/workflows/rust.yml);
-        # this applies the same pin here so local Trust gateway and shared native
-        # runs don't hit it too.
+        # found"). CI's `image` job pins this exact tag for the same reason
+        # (.github/workflows/rust.yml); this applies the same pin here so
+        # local runs don't hit it too.
         RUST_IMAGE: "${ORBIS_VERA_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
     environment:
@@ -310,17 +300,15 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        BACKEND: vera
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
         # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
         # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
         # on at least ARM64 hosts this makes the built orbis-node binary
         # unable to execute in its own runtime image ("GLIBC_2.38 not
-        # found"). CI's `image` job already pins this exact tag for the
-        # native backend for the same reason (.github/workflows/rust.yml);
-        # this applies the same pin here so local Trust gateway and shared native
-        # runs don't hit it too.
+        # found"). CI's `image` job pins this exact tag for the same reason
+        # (.github/workflows/rust.yml); this applies the same pin here so
+        # local runs don't hit it too.
         RUST_IMAGE: "${ORBIS_VERA_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
     environment:
@@ -363,9 +351,8 @@ services:
   # Defra-backed PRE share storage (ring `pre_share_endpoints`). Opt-in: only
   # brought up when `VeraNetworkAdapter::start_configured`'s `defra` flag
   # is set, which adds it to the explicit `docker compose up -d` service
-  # list — there is no profile gate here (unlike the Cosmos compose file's
-  # `--profile defra`) since nothing else in this file declares a profile
-  # either; native's own services are always named explicitly.
+  # list — there is no profile gate, since every service in this file is
+  # named explicitly.
   defra:
     image: ${DEFRA_INTEGRATION_IMAGE:-orbis-defra-integration:local}
     build:
@@ -373,19 +360,17 @@ services:
       dockerfile: Dockerfile.defra-integration
       args:
         DEFRA_REF: ${DEFRA_REF:-main}
-    # `--workers 2 --worker-priority nice:10`: see the Cosmos compose file's
-    # own `defra` service comment for why -- same fix, same reason, both
-    # backends.
+    # `--workers 2 --worker-priority nice:10`: defra's default (`--workers
+    # auto`, one worker per core, at a `SCHED_RR 50` real-time priority) is
+    # sized for real traffic, and starves the sibling orbis node containers'
+    # DKG prepare phase badly enough to blow `DKG_PREPARATION_TIMEOUT`.
     command: ["--rootdir", "/data", "--url", "0.0.0.0:9181", "--no-keyring=true", "start", "--store", "memory", "--no-p2p=true", "--workers", "2", "--worker-priority", "nice:10"]
     ports:
       - "127.0.0.1::9181"
     networks:
       orbis-vera-integration-network:
-        # Statically assigned (see `host_ip`/`VeraTestNetwork::defra_ip`),
-        # unlike the Cosmos compose file's Defra service, which discovers its
-        # address via the bridge network's auto-assigned gateway IP — this
-        # network's addresses are all pre-assigned instead, so the same
-        # address is known before this container even starts.
+        # Statically assigned (see `host_ip`/`VeraTestNetwork::defra_ip`), so
+        # the address is known before this container even starts.
         ipv4_address: ${ORBIS_VERA_DEFRA_IP}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9181/health-check"]

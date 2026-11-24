@@ -37,7 +37,7 @@ orbis-rs/
 │   ├── authn/          # JWT + did:key verification
 │   ├── authz/          # Policy checks (Vera ACP)
 │   ├── bulletin/       # Bulletin board (Vera)
-│   ├── common/       # Vera chain client + Docker test harnesses
+│   ├── common/       # Wire types, node signatures, Vera client config
 │   ├── crypto/       # DKG, PRE, threshold signing
 │   ├── local-storage/# Encrypted key-value storage
 │   ├── network/      # QUIC / iroh P2P abstraction
@@ -120,7 +120,7 @@ flowchart TB
   ct --> proto
 ```
 
-**`common`** is the Vera / Cosmos client shared by **`authz`** and **`bulletin`**. **`crypto`** is swappable (e.g. BLS12-381 vs jubjub) via Cargo features; **`network`** provides QUIC; **`local-storage`** holds encrypted key material on disk.
+**`common`** holds the wire types and Vera client configuration shared by **`authz`** and **`bulletin`**. **`crypto`** is swappable (e.g. BLS12-381 vs jubjub) via Cargo features; **`network`** provides QUIC; **`local-storage`** holds encrypted key material on disk.
 
 ## Crates
 
@@ -162,7 +162,7 @@ Encrypted local key-value storage for persisting node secrets.
 
 ### [`common`](crates/common/)
 
-Vera blockchain client (**`VeraGoClient`**, **`ChainConfig`**, **`TxSigner`**), ACP/bulletin helpers, and Docker-based test containers. See [`crates/common/README.md`](crates/common/README.md).
+Orbis wire types and ids, node message signatures, and the Vera client configuration and deployment trust shared by `authz` and `bulletin`. See [`crates/common/README.md`](crates/common/README.md).
 
 ### [`proto`](crates/proto/)
 
@@ -205,10 +205,10 @@ cargo build --no-default-features --features=<alternative>
 | `network` | `iroh` | `IrohNetwork` | QUIC-based P2P (iroh) | Yes |
 | `crypto` | `bls12-381` | `DKG, PRE, SIGN` | BLS12-381 curve | Yes |
 | `crypto` | `jubjub` | `DKG, PSS, PRE, SIGN, PET` | zkcrypto Jubjub subgroup | No |
-| `authz` | `vera` | `VeraGoAuth` | Vera authorization | Yes |
-| `authz` | `dummy` | `DummyAuthZ` | Permissive (testing only) | No |
-| `bulletin` | `vera` | `VeraGoBulletin` | Bulletin board backends | Yes |
-| `bulletin` | `dummy` | `DummyBulletin` | Permissive (testing only) | No |
+| `authz` | `vera` | `VeraAuth` | Vera authorization | Yes |
+| `authz` | `test-helpers` | `DummyAuthZ` | Permissive (testing only) | No |
+| `bulletin` | `vera` | `VeraBulletin` | Vera bulletin | Yes |
+| `bulletin` | `dummy-type` | `DummyBulletin` | In-memory (testing only) | No |
 
 
 ### Example: Switching Storage Backend
@@ -391,84 +391,17 @@ cargo check
 # Run with tracing
 RUST_LOG=debug cargo run -p orbis-node
 
-# Docker 3 node network (for testing only)
-docker compose -f docker/docker-compose.3-node.yml up
-
-# With default impl
-docker compose -f docker/docker-compose-integration-test.yml build
-
-# Docker for integration test with different impl
-ORBIS_INTEGRATION_CRYPTO=jubjub docker compose -f docker/docker-compose-integration-test.yml build
-
-# Metrics network test (3 nodes + Prometheus + Grafana)
-docker compose -f docker/docker-compose-metrics-network-test.yml up --build
-
-# follow test logs 
-docker compose -f docker/docker-compose-integration-test.yml logs -f node1 node2 node3                                                                                                                                            
+# Docker E2E scenarios against a Vera cluster
+scripts/test-e2e.sh --crypto bls12-381
 ```
 
-### Cross-commit storage upgrade gate
-
-The upgrade harness verifies that production-feature nodes from a target
-revision can reopen redb databases created by a baseline revision, continue
-PRE and SIGN, and complete a threshold-2 reshare from nodes 1/2/3 to 1/2/4.
-SourceHub remains live throughout the cutover and only each node's
-`/data/dbs` volume survives container replacement.
-
-```bash
-scripts/test-upgrade.sh \
-  --from <baseline-ref> \
-  --to <target-ref-or-WORKTREE> \
-  --crypto both
-```
-
-Both revisions must contain the `orbis-upgrade-driver` v1 contract, so the
-commit introducing this harness is the compatibility floor. Use
-`--keep-on-failure` to retain a failed local Compose project, or `--dry-run`
-to validate ref resolution and worktree fingerprinting without Docker. Raw
-manifests, image/ref metadata, logs, phase timings, and redb snapshots are
-written under `target/upgrade-tests/` unless `--output` is provided.
-Run `scripts/test-upgrade-unit.sh` for the shell syntax, ref-resolution, and
-argument-validation checks without starting Docker.
-
-When `docker/VERA_GO_REF` differs between the baseline and target revisions the
-baseline chain cannot verify the target's threshold signatures, so the harness
-switches to `--fresh-target-chain`: it tears the whole stack down, brings
-SourceHub up on the target ref alongside the target Orbis images, and re-runs
-`prepare` before `verify`. This does not exercise chain-state continuity
-across the upgrade (a follow-up will add an in-place `verad` swap). Force it
-on with `--fresh-target-chain` / off with `--no-fresh-target-chain`, or pin
-the target chain with `--to-vera-go-ref <git-ref>`.
-
-The **Upgrade Compatibility** GitHub Actions workflow runs automatically for
-pull requests targeting `develop`, comparing the immutable PR base SHA with
-the immutable PR head SHA. BLS12-381 and Jubjub run as independent jobs.
-The workflow also supports manual dispatch with explicit baseline and target
-refs. Both revisions must support the selected curve. When a PR baseline predates
-Jubjub, that upgrade job is marked not applicable / not tested; changing curves
-requires fresh DKG rather than upgrading the existing ring state.
+The E2E scenarios drive [`docker/docker-compose-vera-integration-test.yml`](docker/docker-compose-vera-integration-test.yml)
+through `test-support`; see [`docs/e2e-backends.md`](docs/e2e-backends.md).
 
 ### Metrics & Monitoring
 
-The metrics compose file (`docker/docker-compose-metrics-network-test.yml`) spins up 3 Orbis nodes alongside Prometheus and Grafana.
-
-**Ports:**
-
-| Service    | Host Port | Description              |
-|------------|-----------|--------------------------|
-| Grafana    | 3000      | Dashboard UI             |
-| Prometheus | 9099      | Metrics scrape endpoint  |
-| node1      | 9091      | Node metrics (`/metrics`)|
-| node2      | 9092      | Node metrics (`/metrics`)|
-| node3      | 9093      | Node metrics (`/metrics`)|
-
-Grafana is auto-provisioned on startup:
-- **Prometheus data source** is pre-configured pointing at `http://prometheus:9090`
-- **Orbis Node Metrics** dashboard loads automatically under the **Orbis** folder
-
-Open [http://localhost:3000](http://localhost:3000), log in with `admin` / `admin`, and the dashboard will be ready.
-
-Provisioning files live in `docker/grafana/` and are mounted into the container at startup.
+`--metrics-addr` serves Prometheus metrics at `/metrics`. Grafana provisioning
+files and the **Orbis Node Metrics** dashboard live in `docker/grafana/`.
 
 To load these dashboards into a Grafana instance that doesn't support file-based provisioning (e.g. a Kubernetes Grafana, where there's no host volume to mount), use `docker/grafana/sync-dashboards.sh push` instead — it uploads the dashboard JSON over Grafana's HTTP API. Point it at another instance with `GRAFANA_URL` (and `GRAFANA_API_KEY`, or `GRAFANA_USER`/`GRAFANA_PASSWORD`). Run `sync-dashboards.sh dump` to pull dashboard edits made in the Grafana UI back into the repo. See the script header for full usage.
 
@@ -486,11 +419,8 @@ report a vulnerability. In brief:
 - Only public keys and metadata appear in trace output
 - Local storage uses AES-256-GCM with Argon2 key derivation
 - All share transmissions include nonces and session IDs to prevent replay attacks
-- Nodes **fully trust their configured Vera endpoints** (no light-client
-  verification of chain reads) — production nodes must run their own Vera
-  full node; plaintext `http://` to a non-local host is refused at startup
-  unless explicitly overridden. See
-  [Chain endpoint trust](bin/orbis-node/README.md#chain-endpoint-trust-hard-requirement)
+- Nodes verify Vera reads against an independently configured consensus key
+  and deployment root; see [`SECURITY.md`](SECURITY.md)
 
 ## License
 
@@ -502,8 +432,7 @@ It requires companion artifacts and is not part of the default lifecycle selecti
 
 The opt-in [hosted gateway scope](docs/vera-trust-hosted.md) reuses
 `VeraTestNetwork` and the gateway fixture's own Orbis node startup to launch Docker Vera
-and Orbis for that exact fixture. Existing Cosmos `integration.rs` test bodies
-are not ported or invoked by this scope.
+and Orbis for that exact fixture.
 
 [Backend boundaries and Docker E2E tests](docs/e2e-backends.md) describes the
 shared paired-DKG assertions and Vera fixture setup.

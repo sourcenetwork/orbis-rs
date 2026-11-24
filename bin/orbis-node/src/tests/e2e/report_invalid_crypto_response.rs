@@ -1,12 +1,8 @@
-//! Shared integration test: a node signing cryptographically-invalid
+//! Integration test: a node signing cryptographically-invalid
 //! responses (its own stored share is corrupted) fires on-chain
 //! `invalid_crypto_response` reports for both PRE and Sign.
 //!
-//! Report detection/submission is backend-neutral production code (same
-//! reasoning as `report_offline_pre_sign.rs`), so this is written as one
-//! real test on both backends, verified via `report_scenario::
-//! wait_for_demerits`/`try_wait_for_demerits` instead of Cosmos's
-//! `ReportEventSubscription`.
+//! Verified via `report_scenario::wait_for_demerits`/`try_wait_for_demerits`.
 
 use super::report_scenario::{
     pre_with_retry, store_secret_with_retry, try_wait_for_demerits, wait_for_demerits,

@@ -1,5 +1,5 @@
-//! Docker Compose subprocess helpers shared by [`super::VeraGoTestContainer`],
-//! [`super::CosmosNetwork`], and [`super::VeraNetworkAdapter`].
+//! Docker Compose subprocess helpers used by [`super::VeraTestNetwork`] and
+//! [`super::VeraNetworkAdapter`].
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,9 +34,8 @@ pub(super) fn compose_command(compose_file: &str, project_name: &str) -> Command
 }
 
 // `published_port`/`localhost_url`/`report_compose_failure`/`stop_compose`
-// are shared by `CosmosNetwork`/`VeraGoTestContainer` (Cosmos) and
-// `VeraTestNetwork`/`VeraNetworkAdapter` (native, Phase B of the
-// harness-unification plan) — both drive a real multi-service Compose file.
+// are used by `VeraTestNetwork`/`VeraNetworkAdapter`, which drive a real
+// multi-service Compose file.
 #[cfg(feature = "vera")]
 fn parse_published_port(output: &str) -> Option<u16> {
     output
