@@ -1,7 +1,7 @@
 //! Converts PRE's wire-level WebAuthn assertion into the shared evidence
 //! type. Authentication itself is dispatched generically — see
 //! `authn::endpoints::pre::PreEndpoint` and
-//! `orbis_webauthn::resolve_request_auth`, called directly from
+//! `crate::helpers::auth::resolve_request_auth`, called directly from
 //! `pre::v0::service::stages` and `pre::v0::coordinator::handlers`.
 
 use orbis_webauthn::WebAuthnEvidence;

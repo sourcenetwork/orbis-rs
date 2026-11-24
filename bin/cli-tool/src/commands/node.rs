@@ -749,10 +749,11 @@ pub fn build_passkey_pre_challenge(
 /// decrypts the result.
 ///
 /// The transcript signed here must match, field for field, what each ring
-/// node will independently rebuild from the synthetic token
-/// `pre::v0::webauthn_auth::verify_and_build_token` produces server-side —
-/// in particular `jwt_issued_time` comes from `pending`'s client-chosen
-/// `issued_at`, never from verification-time "now".
+/// node will independently rebuild from the synthetic token orbis-node's
+/// `helpers::auth::resolve_request_auth` produces server-side via its
+/// WebAuthn path (`authn::endpoints::pre::PreEndpoint`) — in particular
+/// `jwt_issued_time` comes from `pending`'s client-chosen `issued_at`,
+/// never from verification-time "now".
 pub async fn finish_passkey_pre(
     endpoint: String,
     pending: PendingPasskeyPre,

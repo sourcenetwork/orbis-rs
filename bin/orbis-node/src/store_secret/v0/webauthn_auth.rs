@@ -1,7 +1,7 @@
 //! Converts StoreSecret's wire-level WebAuthn assertion into the shared
 //! evidence type. Authentication itself is dispatched generically — see
 //! `authn::endpoints::store_secret::StoreSecretEndpoint` and
-//! `orbis_webauthn::resolve_request_auth`, called directly from
+//! `crate::helpers::auth::resolve_request_auth`, called directly from
 //! `store_secret::v0::service`.
 //!
 //! Unlike Sign/PRE, StoreSecret has no peer fan-out — it's a single-node

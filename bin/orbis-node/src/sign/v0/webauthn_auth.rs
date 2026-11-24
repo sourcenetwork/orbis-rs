@@ -1,7 +1,7 @@
 //! Converts Sign's wire-level WebAuthn assertion into the shared evidence
 //! type. Authentication itself is dispatched generically — see
 //! `authn::endpoints::sign::SignEndpoint` and
-//! `orbis_webauthn::resolve_request_auth`, called directly from
+//! `crate::helpers::auth::resolve_request_auth`, called directly from
 //! `sign::v0::service::stages` and `sign::v0::coordinator::handlers`.
 
 use orbis_webauthn::WebAuthnEvidence;
