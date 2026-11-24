@@ -22,6 +22,7 @@ members = [
     "bin/example-integrations/passkey-sign",
     "bin/example-integrations/yubikey-sign",
     "bin/example-integrations/email-decrypt",
+    "bin/example-integrations/dev",
 ]
 
 [workspace.lints.clippy]

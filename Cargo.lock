@@ -7465,6 +7465,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "orbis-dev-cluster"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "anyhow",
+ "clap",
+ "cli-tool",
+ "hex",
+ "k256 0.14.0",
+ "proto",
+ "test-support",
+ "tokio",
+ "vera-client",
+ "vera-crypto",
+ "vera-domain",
+ "vera-harness",
+]
+
+[[package]]
 name = "orbis-email"
 version = "0.0.1"
 dependencies = [

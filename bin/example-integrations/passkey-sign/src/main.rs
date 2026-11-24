@@ -73,6 +73,7 @@ struct AppState {
 async fn main() {
     let args = Args::parse();
     let addr = args.addr.clone();
+    let origin = args.origin.clone();
     let state = Arc::new(AppState {
         orbis_endpoint: args.orbis_endpoint,
         rp_id: args.rp_id,
@@ -95,7 +96,13 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("bind HTTP listener");
-    println!("passkey-sign reference app listening on http://{addr}");
+    println!("passkey-sign reference app listening on {addr}");
+    println!(
+        "Open {origin} in your browser — WebAuthn requires the page's actual \
+         origin to match --origin/--rp-id exactly, so a different host/port \
+         (e.g. the bind address above, if it differs) will fail registration \
+         with a SecurityError."
+    );
     axum::serve(listener, app).await.expect("serve");
 }
 
