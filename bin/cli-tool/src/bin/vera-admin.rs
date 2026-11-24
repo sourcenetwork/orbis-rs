@@ -10,12 +10,11 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use vera_client::threshold_objects::KeyDerivation;
 use vera_client::{
     nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, SignedNodeRequest},
     rings::encode_ring_command,
     rings::RingCommand,
-    threshold_objects::{encode_threshold_object, ObjectKind, ThresholdObject},
+    threshold_objects::{encode_threshold_object, KeyDerivation, ObjectKind, ThresholdObject},
     NativeWorker, VeraClient, VERA_ADDRESS,
 };
 use vera_domain::NativeTx;
