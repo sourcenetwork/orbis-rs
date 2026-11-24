@@ -131,7 +131,7 @@ impl VeraTestNetwork {
             .iter()
             .enumerate()
             .map(|(i, key)| ValidatorConfig {
-                evm_address: format!("{:?}", vera_node::validator_address(key)),
+                address: format!("{:?}", vera_node::validator_address(key)),
                 consensus_pubkey: hex::encode(key.encode()),
                 p2p_address: format!("{}:{VERA_P2P_PORT}", validator_ips[i]),
             })
