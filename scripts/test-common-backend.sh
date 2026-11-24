@@ -4,10 +4,10 @@ umask 077
 work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/orbis-common-backend.XXXXXX")
 for backend in vera shared; do
   flags=(--features vera)
-  expected=21
+  expected=9
   if [[ "$backend" == shared ]]; then
     flags=(--no-default-features)
-    expected=19
+    expected=7
   fi
   if ! cargo +1.99.1 test --locked --jobs 2 -p common --lib "${flags[@]}" > "$work/$backend-tests.log" 2>&1; then
     echo "common backend=$backend tests=failed; diagnostics remain private" >&2

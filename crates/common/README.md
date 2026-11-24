@@ -1,6 +1,6 @@
 # Common crate
 
-Shared Orbis wire types, object IDs, node message signatures, and the Vera client configuration used by **`authz`**, **`bulletin`**, **`orbis-node`** and **`cli-tool`**.
+Shared Orbis object IDs, node message signatures, and the Vera client configuration used by **`authz`**, **`bulletin`**, **`orbis-node`** and **`cli-tool`**.
 
 ## `blockchain` module
 
@@ -8,9 +8,7 @@ Shared Orbis wire types, object IDs, node message signatures, and the Vera clien
 
 | Item | Role |
 |------|------|
-| [`acp`](src/blockchain/acp/mod.rs) | Access-control policy types |
-| [`bulletin`](src/blockchain/bulletin/mod.rs) | Bulletin message types and ids |
-| [`orbis`](src/blockchain/orbis/mod.rs) | Ring, document and key-derivation types and ids |
+| [`orbis`](src/blockchain/orbis/mod.rs) | Document and key-derivation ids and the reshare finalize sign doc |
 | [`node_signing`](src/blockchain/node_signing.rs) | secp256k1 node message signatures (`sign_node_message_with_hex_key`, `verify_node_message`, `node_public_key_hex`) |
 | [`vera`](src/blockchain/vera/mod.rs) (`vera` feature) | `VeraChainConfig`/`VeraConfig`, deployment-trust bootstrap and the worker-key store shared by `authz::vera` and `bulletin::vera` |
 

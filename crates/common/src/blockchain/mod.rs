@@ -1,10 +1,8 @@
-//! Shared Orbis wire types, object IDs, and node message signatures.
+//! Shared Orbis object IDs and node message signatures.
 //!
 //! The `vera` feature provides `VeraConfig` and deployment-trust bootstrap
 //! for the Vera backend.
 
-pub mod acp;
-pub mod bulletin;
 mod error;
 mod node_signing;
 pub mod orbis;
