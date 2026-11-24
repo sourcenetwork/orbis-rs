@@ -95,4 +95,6 @@ mod unsafe_testing_gate;
 // In-process FaultNetwork qualifications against a native Vera cluster of
 // `verad` processes. Isolated from the shared scenario contract.
 #[cfg(all(feature = "vera", feature = "fault-injection"))]
+mod cluster_logs;
+#[cfg(all(feature = "vera", feature = "fault-injection"))]
 mod fault_injection;

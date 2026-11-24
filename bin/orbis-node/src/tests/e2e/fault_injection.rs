@@ -504,6 +504,12 @@ struct FaultableThreeNodeNetwork {
     chain: NativeChain,
 }
 
+impl Drop for NativeChain {
+    fn drop(&mut self) {
+        super::cluster_logs::retain_on_panic(&self.cluster);
+    }
+}
+
 /// Build and spawn a gRPC server from an `InitializedNode`.
 fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHandle<()> {
     let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
