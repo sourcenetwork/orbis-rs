@@ -173,12 +173,12 @@ async fn main() -> Result<()> {
     {
         let command: NodeCommand = serde_json::from_slice(&read_bounded(command, 48 * 1024)?)?;
         let bytes = read_bounded(key_file, 128)?;
-        let encoded = if bytes.len() == 32 {
-            bytes.as_slice()
+        let key = if bytes.len() == 32 {
+            vera_client::Secp256k1SigningKey::from_slice(&bytes).context("raw node signing key")?
         } else {
-            bytes.trim_ascii()
+            let encoded = bytes.trim_ascii();
+            decode_node_signing_key(encoded.strip_prefix(b"0x").unwrap_or(encoded))?
         };
-        let key = decode_node_signing_key(encoded)?;
         let signed = sign_node_request(
             NodeRequest {
                 deployment_root: config.root,
