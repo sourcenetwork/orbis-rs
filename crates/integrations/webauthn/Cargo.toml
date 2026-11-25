@@ -3,6 +3,7 @@ name = "orbis-webauthn"
 description = "Passkey and FIDO2 security-key integration for Orbis flows"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 readme = "README.md"
 

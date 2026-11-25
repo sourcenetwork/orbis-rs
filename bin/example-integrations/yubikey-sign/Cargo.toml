@@ -3,6 +3,7 @@ name = "yubikey-sign"
 description = "YubiKey signing reference application scaffold"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 readme = "README.md"
 

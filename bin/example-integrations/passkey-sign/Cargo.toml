@@ -3,6 +3,7 @@ name = "passkey-sign"
 description = "Passkey signing reference application"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 readme = "README.md"
 

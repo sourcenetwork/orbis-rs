@@ -3,6 +3,7 @@ name = "orbis-dev-cluster"
 description = "Spins up and seeds a local, Docker-backed native Vera cluster for trying the example-integrations apps"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 readme = "README.md"
 
