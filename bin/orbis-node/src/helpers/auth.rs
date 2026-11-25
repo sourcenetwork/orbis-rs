@@ -59,12 +59,18 @@ pub fn resolve_request_auth<E: orbis_webauthn::WebAuthnEndpoint>(
     clock_skew_leeway_secs: u64,
 ) -> Result<BearerToken<E::Claims>, String> {
     if let Some(evidence) = webauthn_evidence {
+        // Matches `JtiReplayGuard::retention`'s own cap exactly: evidence whose
+        // validity period this function accepts must not outlive what the
+        // replay cache can still remember it for, or single-use protection
+        // silently stops applying once the cache forgets it.
+        let max_lifetime_secs = max_token_lifetime_secs.saturating_add(clock_skew_leeway_secs);
         return orbis_webauthn::verify_endpoint_auth::<E>(
             fields,
             evidence,
             rp_id,
             origin,
             current_time,
+            max_lifetime_secs,
         )
         .map_err(|e| e.to_string());
     }
@@ -157,7 +163,7 @@ mod tests {
             client_data_json: assertion.client_data_json,
             signature: assertion.signature,
             issued_at: 1_700_000_000,
-            expiry: 2_000_000_000,
+            expiry: 1_700_000_200,
             nonce: vec![1; 16],
         }
     }
