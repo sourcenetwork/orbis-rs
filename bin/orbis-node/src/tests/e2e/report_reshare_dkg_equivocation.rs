@@ -1,22 +1,27 @@
-//! Integration test: verifies the reshare DKG-commitment
+//! Shared integration test: verifies the reshare DKG-commitment
 //! equivocation relay path — a pure-new receiver (node4) receives two
 //! conflicting, signed commitments from an old-committee dealer (node3) and
 //! relays them to the current committee, which re-verifies, threshold-signs
 //! an `invalid_crypto_response` report, and submits it while the reshare is
 //! still pending.
 //!
-//! `NODE3_SIGNING_KEY_HEX` is node3's real signing key (fixture identities
-//! are deterministic — see `crates/bulletin/src/vera/fixture_startup.rs`),
-//! so forging evidence "as node3" needs no key resolution.
+//! Fully backend-neutral — no `#[cfg]` split in this file. `NODE3_SIGNING_KEY_HEX`
+//! is node3's real signing key on *both* backends now (native's own node
+//! identities are deterministic too, matching Cosmos's `ORBIS_SIGNING_KEY`
+//! scheme — see `crates/bulletin/src/native/fixture_startup.rs`), so
+//! forging evidence "as node3" needs no backend-specific key resolution.
 //! `NODE_KEY_OFFLINE` is only ever a never-acking placeholder identity in
-//! `new_peer_node_keys` (as in `report_reshare_stall_offline.rs`) — a
-//! reshare's target list doesn't require its entries to be pre-registered.
+//! `new_peer_node_keys` (same reasoning as `report_reshare_stall_offline.rs`'s
+//! own identical, unconditional use of this constant) — reshare's target
+//! list doesn't require its entries to be pre-registered, so the same
+//! hardcoded hex string works unconditionally on either backend.
 //!
 //! The ring's current `RingPayload` (needed to build the forged evidence)
-//! comes from `BulletinTestDriver::read_ring_state_facts`, which computes
-//! `ring_state_sha256` from the authoritative ring-payload reconstruction,
-//! matching what a real responder independently computes when verifying
-//! this evidence.
+//! comes from `BulletinTestDriver::read_ring_state_facts`, not a
+//! Cosmos-only raw cli-tool bulletin read — each backend computes
+//! `ring_state_sha256` from its own authoritative ring-payload
+//! reconstruction, guaranteed to match what a real responder independently
+//! computes when verifying this evidence.
 
 use super::pre_scenario;
 use super::TestEnvironmentImpl;

@@ -1,30 +1,51 @@
 # Common crate
 
-Shared Orbis object IDs, node message signatures, and the Vera client configuration used by **`authz`**, **`bulletin`**, **`orbis-node`** and **`cli-tool`**.
+Shared **Vera (Cosmos / Tendermint) blockchain** client code, configuration, and **test harnesses** that spin up Docker Compose stacks. Used by **`authz`**, **`bulletin`**, **`orbis-node`**, and integration tests.
 
 ## `blockchain` module
 
-[`src/blockchain/mod.rs`](src/blockchain/mod.rs) exposes:
+[`src/blockchain/mod.rs`](src/blockchain/mod.rs) re-exports:
 
 | Item | Role |
 |------|------|
-| [`orbis`](src/blockchain/orbis/mod.rs) | Document and key-derivation ids and the reshare finalize sign doc |
-| [`node_signing`](src/blockchain/node_signing.rs) | secp256k1 node message signatures (`sign_node_message_with_hex_key`, `verify_node_message`, `node_public_key_hex`) |
-| [`vera`](src/blockchain/vera/mod.rs) (`vera` feature) | `VeraChainConfig`/`VeraConfig`, deployment-trust bootstrap and the worker-key store shared by `authz::vera` and `bulletin::vera` |
+| [`ChainConfig`](src/blockchain/config.rs) / [`ChainConfigBuilder`](src/blockchain/config.rs) | RPC, REST, gRPC URLs, gas, chain ID, account prefix |
+| [`VeraGoClient`](src/blockchain/client.rs) | Queries + tx broadcast; optional [`TxSigner`](src/blockchain/signer.rs) for signed txs |
+| [`TxSigner`](src/blockchain/signer.rs) | secp256k1 signing for Cosmos-style transactions |
+| [`acp`](src/blockchain/acp.rs) | Access-control policy types and verify/query helpers (used by `authz`) |
+| [`bulletin`](src/blockchain/bulletin.rs) | Bulletin-board chain messages (used by `bulletin` crate) |
+| [`bank`](src/blockchain/bank.rs), [`events`](src/blockchain/events.rs) | Bank transfers and event subscriptions as needed by the client |
 
-[`src/startup.rs`](src/startup.rs) (`startup` feature) holds the startup-progress types shared by the `authz` and `bulletin` factory traits.
+Typical wiring: build a **`ChainConfig`** (often via **`ChainConfigBuilder::default()`** with `.grpc_url()`, `.rpc_url()`, `.rest_url()`, `.denom()`), then **`VeraGoClient::new`** or **`VeraGoClient::with_signer`**.
+
+## Test-only helpers (crate root)
+
+[`src/lib.rs`](src/lib.rs) also defines:
+
+- **`VeraGoTestContainer`** — Starts `docker/docker-compose-vera-go-test.yml` under a unique Compose project, discovers Docker-assigned RPC/REST/gRPC host ports, waits for health, and tears down only its own project. Use `chain_config()` or the URL accessors for connections.
+- **`IntegrationTestNetwork`** — Starts `docker/docker-compose-integration-test.yml` (Vera + three orbis nodes) under a unique Compose project and exposes the dynamically assigned Vera and node endpoints. **`ORBIS_INTEGRATION_CRYPTO`** remains synchronized with compile-time `bls12-381` / `jubjub` features.
+
+Both require **Docker** and **`curl`** on the host. Independent Cargo test processes may run their Docker stacks concurrently because project names and published host ports are isolated.
 
 ## Features
 
 | Feature | Purpose |
 |---------|---------|
-| `vera` | Vera client configuration and deployment trust |
-| `startup` | Shared factory startup types |
-| `test-helpers` | Test-only helpers reachable from dependent crates' tests |
+| `bls12-381` | Compile-time marker for crypto alignment in tests (e.g. integration test env defaults). |
+| `jubjub` | Same for jubjub builds. |
+
+These flags do not change `blockchain` APIs by themselves; they coordinate with **`orbis-node`** / **`cli-tool`** feature sets.
+
+## Dependencies (high level)
+
+- **Cosmos / Tendermint:** `cosmrs`, `tendermint`, `tendermint-rpc`, `prost`, `tonic`
+- **HTTP:** `reqwest`
+- **Keys:** `k256`, `bip32`
+- **Async:** `tokio`, `async-trait`, `backoff`, `futures`
 
 ## Tests
 
 ```bash
-cargo test -p common --features vera
-cargo test -p common --no-default-features
+cargo test -p common
 ```
+
+Docker-backed tests live under [`src/blockchain/tests.rs`](src/blockchain/tests.rs) and in **`authz`** / **`bulletin`** crates that depend on **`VeraGoTestContainer`**.

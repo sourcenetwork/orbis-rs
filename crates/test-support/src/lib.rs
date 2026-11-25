@@ -7,27 +7,45 @@
 //! health probes shell out to both, and a missing binary surfaces indirectly as
 //! a "failed to become healthy" panic rather than a clear error.
 //!
-//! - [`compose`] — Docker Compose subprocess helpers.
-//! - [`network`] — [`VeraNetworkAdapter`], the chain-plus-orbis-node-instances
-//!   lifecycle type `VeraTestEnvironment` constructs.
-//! - `container` / `vera_network` — Vera containers with explicit stop, crash
-//!   and restart control, enabled with the `vera` feature.
-//! - [`fixture`] — [`fixture::ScenarioFixture`]/[`fixture::TestEnvironment`]
-//!   vocabulary. The `TestEnvironment` implementation lives in
-//!   `bin/orbis-node/src/tests/e2e/vera_environment.rs`.
-//! - [`node_readiness`] — `InfoService`-polling helper.
+//! - [`compose`] — Docker Compose subprocess helpers shared by the two below.
+//! - [`vera_go_container`] — [`VeraGoTestContainer`], a standalone Vera chain (Cosmos only).
+//! - [`network`] — [`CosmosNetwork`]/[`VeraNetworkAdapter`], each backend's
+//!   own chain-plus-orbis-node-instances lifecycle type. Each backend's
+//!   `TestEnvironment` implementation constructs its own directly — no
+//!   shared runtime-dispatch wrapper; backend selection happens once, at
+//!   compile time, via which concrete environment a test registers.
+//! - `container` / `vera_network` — native containers with explicit stop, crash
+//!   and restart control, enabled with the `native` feature.
+//! - [`fixture`] — backend-neutral [`fixture::ScenarioFixture`]/
+//!   [`fixture::TestEnvironment`] vocabulary.
+//! - [`environment`] (`cosmos` feature) — [`CosmosTestEnvironment`], the
+//!   compile-time-selected `fixture::TestEnvironment` for Cosmos. Native's
+//!   counterpart lives outside this crate; see that module's doc comment.
+//! - [`node_readiness`] — shared `InfoService`-polling helper both
+//!   `TestEnvironment` implementations use.
 
 mod compose;
+#[cfg(feature = "cosmos")]
+mod environment;
 pub mod fixture;
 mod network;
 pub mod node_readiness;
 
 pub use admin::BackendAdmin;
-#[cfg(feature = "vera")]
+#[cfg(any(feature = "cosmos", feature = "vera"))]
 pub use compose::{build_cli_tool_sidecar_image, run_sidecar_container};
+#[cfg(feature = "cosmos")]
+pub use environment::CosmosTestEnvironment;
+#[cfg(feature = "cosmos")]
+pub use network::CosmosNetwork;
 pub use network::NodeInfo;
 #[cfg(all(unix, feature = "vera"))]
 pub use network::VeraNetworkAdapter;
+
+#[cfg(feature = "cosmos")]
+mod vera_go_container;
+#[cfg(feature = "cosmos")]
+pub use vera_go_container::VeraGoTestContainer;
 
 pub mod admin;
 

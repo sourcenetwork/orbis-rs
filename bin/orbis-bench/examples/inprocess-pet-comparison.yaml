@@ -11,6 +11,7 @@ crypto: bls12-381
 # comparable rows for the same case: how much the 3-round PET blind equality
 # test (commit/reveal/decrypt, inside start_pre) adds on top of plain PRE's
 # own reencryption round.
+backend: in-process
 
 networks:
   - network_size: 4

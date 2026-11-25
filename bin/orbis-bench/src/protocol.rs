@@ -1,10 +1,12 @@
 use anyhow::{anyhow, bail, Context, Result};
 use authn::{create_authenticated_request, JwtSigner};
+use common::blockchain::VeraGoClient;
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, GroupAffine, PreImpl, ScalarField, SignImpl};
 use proto::info_service::{
-    info_service_client::InfoServiceClient, GetPetRingStateRequest, GetPetRingStateResponse,
-    GetRingStateRequest, GetRingStateResponse,
+    info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse,
+    GetPetRingStateRequest, GetPetRingStateResponse, GetRingStateRequest, GetRingStateResponse,
+    NodeStatus,
 };
 use proto::v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest};
 use proto::v0::pre::{pre_service_client::PreServiceClient, StartPreRequest};
@@ -19,7 +21,103 @@ use tonic::transport::Channel;
 #[derive(Clone, Debug)]
 pub struct NodeEndpoint {
     pub index: usize,
+    pub service: String,
     pub grpc_url: String,
+    pub metrics_url: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct NodeIdentity {
+    pub endpoint: NodeEndpoint,
+    pub public_address: String,
+    pub peer_id: String,
+    pub p2p_address: String,
+    pub node_key: String,
+}
+
+impl NodeIdentity {
+    pub fn docker_p2p_address(&self) -> Result<String> {
+        let (peer, address) = self
+            .p2p_address
+            .split_once('@')
+            .ok_or_else(|| anyhow!("invalid Iroh address {:?}", self.p2p_address))?;
+        let (_, port) = address
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow!("invalid Iroh socket {:?}", self.p2p_address))?;
+        Ok(format!("{peer}@{}:{port}", self.endpoint.service))
+    }
+}
+
+pub async fn discover_node_identity(
+    endpoint: NodeEndpoint,
+    deadline: Duration,
+) -> Result<NodeIdentity> {
+    let response = timeout(deadline, async {
+        loop {
+            match InfoServiceClient::connect(endpoint.grpc_url.clone()).await {
+                Ok(mut client) => match client.get_node_info(GetNodeInfoRequest {}).await {
+                    Ok(response) => return Ok::<_, anyhow::Error>(response.into_inner()),
+                    Err(_) => sleep(Duration::from_millis(250)).await,
+                },
+                Err(_) => sleep(Duration::from_millis(250)).await,
+            }
+        }
+    })
+    .await
+    .context("timed out waiting for bootstrap Info service")??;
+    identity_from_response(endpoint, response)
+}
+
+fn identity_from_response(
+    endpoint: NodeEndpoint,
+    response: GetNodeInfoResponse,
+) -> Result<NodeIdentity> {
+    if response.node_key.is_empty() || response.public_address.is_empty() {
+        bail!(
+            "node {} bootstrap info omitted its signing identity",
+            endpoint.index
+        );
+    }
+    Ok(NodeIdentity {
+        endpoint,
+        public_address: response.public_address,
+        peer_id: response.peer_id,
+        p2p_address: response.p2p_address,
+        node_key: response.node_key,
+    })
+}
+
+pub async fn wait_nodes_ready(
+    nodes: &[NodeEndpoint],
+    deadline: Duration,
+) -> Result<Vec<NodeIdentity>> {
+    timeout(deadline, async {
+        loop {
+            let mut identities = Vec::with_capacity(nodes.len());
+            let mut all_ready = true;
+            for endpoint in nodes {
+                let response = match InfoServiceClient::connect(endpoint.grpc_url.clone()).await {
+                    Ok(mut client) => client.get_node_info(GetNodeInfoRequest {}).await.ok(),
+                    Err(_) => None,
+                };
+                let Some(response) = response.map(tonic::Response::into_inner) else {
+                    all_ready = false;
+                    break;
+                };
+                if response.status != NodeStatus::Ready as i32 {
+                    all_ready = false;
+                    break;
+                }
+                identities.push(identity_from_response(endpoint.clone(), response)?);
+            }
+            if all_ready {
+                return Ok::<_, anyhow::Error>(identities);
+            }
+            sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .context("timed out waiting for all nodes to become ready")?
 }
 
 pub struct DirectClients {
@@ -235,6 +333,75 @@ impl DirectClients {
             .await
             .into_iter()
             .collect()
+    }
+
+    pub async fn wait_ring_finalized_everywhere(
+        &self,
+        vera: &VeraGoClient,
+        ring_id: &str,
+        members: &[usize],
+        deadline: Duration,
+    ) -> Result<String> {
+        timeout(deadline, async {
+            let mut last_progress = Instant::now()
+                .checked_sub(Duration::from_secs(10))
+                .unwrap_or_else(Instant::now);
+            loop {
+                let ring = match crate::runner::read_ring_with_retry(vera, ring_id).await {
+                    Ok(ring) => ring,
+                    Err(error) => {
+                        if last_progress.elapsed() >= Duration::from_secs(10) {
+                            eprintln!(
+                                "ring {ring_id}: Vera read failed, retrying until timeout: {error:#}"
+                            );
+                            last_progress = Instant::now();
+                        }
+                        sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                };
+                if let Some(ring) = ring.filter(|ring| !ring.ring_pk.is_empty()) {
+                    match self.ring_states(members, &ring.ring_pk).await {
+                        Ok(states) => {
+                            let expected_polynomial = states
+                                .first()
+                                .map(|state| state.public_polynomial.as_str())
+                                .filter(|polynomial| !polynomial.is_empty());
+                            if expected_polynomial.is_some()
+                                && states.iter().all(|state| {
+                                    Some(state.public_polynomial.as_str()) == expected_polynomial
+                                })
+                            {
+                                return Ok::<_, anyhow::Error>(ring.ring_pk);
+                            }
+                            if last_progress.elapsed() >= Duration::from_secs(10) {
+                                eprintln!(
+                                    "ring {ring_id}: on-chain finalization observed; waiting for matching local state on {} committee nodes",
+                                    members.len()
+                                );
+                                last_progress = Instant::now();
+                            }
+                        }
+                        Err(error) => {
+                            if last_progress.elapsed() >= Duration::from_secs(10) {
+                                eprintln!(
+                                    "ring {ring_id}: on-chain finalization observed; local-state verification pending: {error:#}"
+                                );
+                                last_progress = Instant::now();
+                            }
+                        }
+                    }
+                } else if last_progress.elapsed() >= Duration::from_secs(10) {
+                    eprintln!("ring {ring_id}: waiting for Vera finalization");
+                    last_progress = Instant::now();
+                }
+                sleep(Duration::from_millis(500)).await;
+            }
+        })
+        .await
+        .with_context(|| {
+            format!("ring {ring_id} did not finalize on-chain and on every committee node")
+        })?
     }
 
     pub async fn wait_pss_refresh(
@@ -505,4 +672,29 @@ fn unix_ms() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_only_the_host_part_of_an_iroh_address() {
+        let identity = NodeIdentity {
+            endpoint: NodeEndpoint {
+                index: 7,
+                service: "node-007".into(),
+                grpc_url: "http://127.0.0.1:1".into(),
+                metrics_url: "http://127.0.0.1:2/metrics".into(),
+            },
+            public_address: "vera1...".into(),
+            peer_id: "peer".into(),
+            p2p_address: "abcdef@0.0.0.0:4242".into(),
+            node_key: "key".into(),
+        };
+        assert_eq!(
+            identity.docker_p2p_address().unwrap(),
+            "abcdef@node-007:4242"
+        );
+    }
 }

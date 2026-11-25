@@ -5,6 +5,8 @@ use crate::error::PasswordError;
 use crate::helpers::identity::canonicalize_peer_id;
 use bulletin::r#trait::NodeInfo;
 use clap::{Parser, ValueEnum};
+#[cfg(any(feature = "harness", test))]
+use common::blockchain::{ChainConfig, TxSigner};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
@@ -182,9 +184,11 @@ impl CorsPolicy {
 pub struct Args {
     /// Node services configuration (JSON file): an `authz` section and a
     /// `bulletin` section, each in the shape the build's compiled-in
-    /// `AuthzFactoryImpl`/`BulletinFactoryImpl` expects. Vera has no sensible
-    /// default endpoint or trust root, so omitting this fails fast with a
-    /// clear missing-field error.
+    /// `AuthzFactoryImpl`/`BulletinFactoryImpl` expects. Omit to use every
+    /// field's default (works for the vera/cosmos backends against a
+    /// default-everything local chain; the native backends have no sensible
+    /// default endpoint or trust root, so omitting this for a native build
+    /// fails fast with a clear missing-field error).
     #[arg(long, value_name = "PATH")]
     pub services_config: Option<PathBuf>,
     /// Address to bind the server to
@@ -774,14 +778,16 @@ pub fn db_path(runtime_base_path: &Path, name: &str) -> String {
 #[cfg(any(feature = "harness", test))]
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
+    config: ChainConfig,
     runtime_base_path: &Path,
-) -> Result<bulletin::startup::NodeIdentity, bulletin::startup::BulletinStartupError> {
+) -> Result<TxSigner, bulletin::startup::BulletinStartupError> {
     #[cfg(feature = "fixture-startup")]
     let initial_key = std::env::var("ORBIS_SIGNING_KEY").ok();
     #[cfg(not(feature = "fixture-startup"))]
     let initial_key: Option<String> = None;
-    bulletin::vera::startup::initialize_identity(
+    bulletin::startup::cosmos::prepare_signer(
         &local_storage,
+        config,
         runtime_base_path,
         initial_key.as_deref(),
     )

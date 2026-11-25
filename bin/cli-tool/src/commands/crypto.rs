@@ -4,6 +4,7 @@
 //! function here is a pure, local computation.
 
 use anyhow::{anyhow, Result};
+use common::blockchain::ChainConfig;
 use crypto::context::{CiphertextContext, PetTagBinding};
 use crypto::r#trait::{
     Dkg, EncryptionProof, Pet, PetTag, Secret, TagKnowledgeProof, ThresholdDealer,
@@ -13,6 +14,8 @@ use crypto::{
     DkgImpl, GroupAffine as G1Affine, PetImpl, PreImpl as ThresholdDealerNode, ScalarField as Fr,
 };
 use sha2::{Digest, Sha256};
+
+use super::chain::tx_signer;
 
 /// Prepared secret ready for storage - can be reused for retries
 /// This contains the encrypted data and proof, which are deterministic
@@ -298,8 +301,9 @@ pub(crate) fn secp256k1_pubkey_to_did(pubkey_hex: &str) -> Result<String> {
 /// time, which DID needs an ACP relation granted (e.g. `ring_creator`) before
 /// a transaction signed with this key -- such as `create-ring` -- will be
 /// authorized.
-pub fn derive_signer_did(signing_key_hex: &str) -> Result<(String, String)> {
-    let public_key_hex = common::blockchain::node_public_key_hex(signing_key_hex.trim())?;
+pub fn derive_signer_did(signing_key_hex: &str, config: ChainConfig) -> Result<(String, String)> {
+    let signer = tx_signer(signing_key_hex, config)?;
+    let public_key_hex = signer.public_key_hex();
     let did = secp256k1_pubkey_to_did(&public_key_hex)?;
     Ok((public_key_hex, did))
 }

@@ -6,7 +6,9 @@
 //! to recover the full signature, so `store_prepared_secret` should
 //! complete successfully.
 //!
-//! Runs on [`super::live_node`]'s in-process bootstrap.
+//! Harness-unification migration, PR 6: migrated off `fault_injection.rs`'s
+//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one.
+//! Fully dual-backend — no `#[ignore]` needed.
 
 use super::live_node::setup_ring;
 use tokio::time::Duration;

@@ -1,11 +1,16 @@
-//! Node readiness: poll an Orbis node's `InfoService` until it reports
-//! [`NodeStatus::Ready`], returning its [`NodeInfo`]. Used by the
-//! `TestEnvironment` in `bin/orbis-node/src/tests/e2e/vera_environment.rs`.
+//! Backend-neutral node readiness: poll an Orbis node's `InfoService` until
+//! it reports [`NodeStatus::Ready`], returning its [`NodeInfo`]. Both
+//! [`crate::environment::CosmosTestEnvironment`] and the native
+//! `TestEnvironment` (`bin/orbis-node/src/tests/e2e/vera_environment.rs`,
+//! which depends on this crate) use this instead of each hand-rolling an
+//! `InfoServiceClient` poll loop.
 //!
 //! Deliberately built directly on `proto`/`tonic` rather than
 //! `cli_tool::query_node_info` (which does the same thing) — `cli-tool`
 //! hardcodes a default crypto feature that would conflict with a jubjub
-//! build's feature unification if pulled into this crate.
+//! build's feature unification if pulled into this crate; see
+//! `admin/cosmos.rs`'s doc comment for the same reasoning applied to ring
+//! creation.
 
 use crate::network::NodeInfo;
 use proto::info_service::{info_service_client::InfoServiceClient, GetNodeInfoRequest, NodeStatus};

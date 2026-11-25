@@ -1,8 +1,9 @@
 #![cfg(feature = "vera")]
-//! Regression coverage for the Compose-driven Vera topology
+//! Phase B regression coverage for the Compose-driven native topology
 //! (`docker/docker-compose-vera-integration-test.yml`). Requires Docker;
-//! set `VERA_REF=<40-char sha>` to build a revision other than
-//! `docker/VERA_REF`.
+//! run with `VERA_REF=<40-char sha matching your vera-client dep rev>` if
+//! `docker/VERA_GO_REF`'s pinned commit isn't fetchable from your network (see
+//! the Phase B report — that mismatch is pre-existing, not introduced here).
 
 #[tokio::test]
 async fn native_validator_cluster_reaches_height_three() {

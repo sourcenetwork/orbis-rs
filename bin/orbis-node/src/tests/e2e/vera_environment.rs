@@ -50,8 +50,11 @@ use vera_modules::acp::{types::PolicyMarshalingType, AcpModule, GENESIS_POLICY_C
 const DEPLOYMENT: u64 = 9000;
 /// Deterministic secp256k1 node identities, now that `ORBIS_SIGNING_KEY` in
 /// `docker/docker-compose-vera-integration-test.yml` fixes each running
-/// node's identity by compose topology (raw secret bytes `[0,...,0,N]`).
-/// Needed to predict a ring's id before genesis
+/// node's identity by compose topology. Same raw secret bytes
+/// (`[0,...,0,N]`) and so the same resulting pubkeys as Cosmos's own
+/// `NODE_KEYS` in `crates/test-support/src/environment.rs` — not shared
+/// directly since that module lives in a crate without native's chain
+/// client dependencies. Needed to predict a ring's id before genesis
 /// exists (for fixture-driven `node_demerits` seeding), since live node
 /// identities aren't known until after the cluster boots.
 const NODE_KEYS: [&str; 4] = [
@@ -66,7 +69,8 @@ const OFFLINE_NODE_SECRET: [u8; 32] = [
 const BACKUP_NODE_SECRET: [u8; 32] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
 ];
-/// Placeholder peer for the offline node. The node id is 64 hex characters, so committee
+/// Same placeholder as the Cosmos genesis peer (`OFFLINE_NODE_PEER_ID` in
+/// `crates/test-support`). The node id is 64 hex characters, so committee
 /// route resolution accepts it, and it is not an iroh public key, so a dial
 /// fails before any network I/O.
 const OFFLINE_NODE_PEER: &str =
@@ -111,8 +115,9 @@ impl DefraTestDriver for VeraTestEnvironment {
         self.network.defra_url()
     }
 
-    /// No bridge-network gateway-IP lookup: the project network pre-assigns
-    /// every address statically (see `VeraTestNetwork::defra_container_url`).
+    /// Unlike Cosmos's equivalent, this doesn't need a bridge-network
+    /// gateway-IP lookup — native's own project network pre-assigns every
+    /// address statically (see `VeraTestNetwork::defra_container_url`).
     fn defra_container_url(&self) -> Option<String> {
         self.network.defra_container_url()
     }
@@ -126,7 +131,8 @@ impl DefraTestDriver for VeraTestEnvironment {
 /// eventually have, computable before the cluster (or even genesis) exists.
 /// `Running`/`Offline`/`Backup` identities are all deterministic today
 /// (`NODE_KEYS`, `OFFLINE_NODE_SECRET`, `BACKUP_NODE_SECRET`), so this never
-/// needs a live chain read.
+/// needs a live chain read — unlike Cosmos, which doesn't need this at all
+/// (its genesis-seeded ring/node ids are caller-chosen, not content-derived).
 fn deterministic_node_key(node_ref: &NodeRef) -> String {
     match node_ref {
         NodeRef::Running(index) => NODE_KEYS[*index].to_string(),
@@ -226,7 +232,7 @@ async fn create_policy(
 }
 
 /// Pure — no I/O. Builds the exact `RingConfig` the chain will hash into a
-/// ring's id, from the same `RingSpec`/`ReportingConfig`
+/// ring's id, from the same backend-neutral `RingSpec`/`ReportingConfig`
 /// inputs `create_ring` below takes for live creation. Also used by
 /// `provision()` to *predict* a fixture ring's id before genesis exists
 /// (for fixture-driven `node_demerits` seeding) — kept as one shared
@@ -239,16 +245,18 @@ fn build_ring_config(spec: &RingSpec, reporting: ReportingConfig) -> RingConfig 
         policy_id: spec.policy_id.0.clone(),
         peer_node_keys: members,
         threshold: spec.threshold,
-        // Rings are created through the live production command, whose
-        // validator rejects short PSS intervals. Fixtures may still ask for a
-        // short interval; the `force_refresh_due` diagnostic hook provides
-        // those test semantics without weakening the live chain
-        // configuration.
+        // Native creates rings through the live production command, whose
+        // validator rejects short PSS intervals. Shared fixtures may use a
+        // short interval because the Cosmos adapter can seed it in genesis;
+        // native's `force_refresh_due` diagnostic hook provides the same test
+        // semantics without weakening the live chain configuration.
         pss_interval: spec.pss_interval.as_secs().max(86_400),
         current_version: 0,
         requires_pet: spec.requires_pet,
-        // `spec.nonce` is a string; the ring-id derivation nonce is a
-        // fixed-size byte array and is not derived from it.
+        // `spec.nonce` is Cosmos-shaped (a string); native's ring-id
+        // derivation nonce is a fixed-size byte array and isn't threaded
+        // through yet — matches the legacy native workflow's hardcoded
+        // `[2; 32]`.
         nonce: [2; 32],
         trusted_auth_relay_dids: (!spec.trusted_auth_relay_dids.is_empty())
             .then_some(spec.trusted_auth_relay_dids.clone()),
@@ -259,7 +267,8 @@ fn build_ring_config(spec: &RingSpec, reporting: ReportingConfig) -> RingConfig 
 
 /// Shared by `provision()` (fixture-driven rings) and
 /// `BulletinTestDriver::register_ring` (a standalone, callable-after-
-/// provision ring creation).
+/// provision ring creation — unlike Cosmos, native has no genesis-timing
+/// problem, so both paths can share this one real implementation).
 #[allow(clippy::too_many_arguments)]
 async fn create_ring(
     client: &VeraClient,
@@ -300,8 +309,9 @@ impl TestEnvironment for VeraTestEnvironment {
         // Fixture-driven document/key-derivation materialization isn't
         // implemented yet — those records need a finalized ring (live DKG,
         // which only happens in the scenario itself, after provisioning).
-        // `node_demerits` *is* handled below, via genesis seeding (predict
-        // the id, don't create the ring).
+        // `node_demerits` *is* handled below, via genesis seeding (same
+        // "predict the id, don't create the ring" approach Cosmos's own
+        // `node_demerits_genesis_json` uses).
         assert!(
             fixture.documents.is_empty() && fixture.key_derivations.is_empty(),
             "VeraTestEnvironment::provision: fixture-driven document/key-derivation \
@@ -448,13 +458,15 @@ impl TestEnvironment for VeraTestEnvironment {
         .unwrap();
         let worker = BlsSigner::new(7u64.into(), DEPLOYMENT).unwrap();
 
-        // Full "http://host:port" URLs — `wait_for_nodes_ready` builds its own
-        // `tonic::transport::Endpoint` rather than taking a bare host:port
-        // the way `vera_client`'s helpers in this file do.
+        // Full "http://host:port" URLs — `wait_for_nodes_ready` connects with
+        // these directly (same convention `CosmosTestEnvironment` uses; it
+        // builds its own `tonic::transport::Endpoint` rather than taking a
+        // bare host:port the way `vera_client`'s helpers in this file do).
         let endpoints: Vec<String> = network.node_endpoints();
         let nodes = wait_for_nodes_ready(&endpoints).await;
 
-        // `fixture.policies`/`relationships` are created live. Calling the chain
+        // `fixture.policies`/`relationships` are fully live on native — no
+        // genesis-timing concern the way Cosmos has. Calling the chain
         // client directly (rather than `self.create_policy`/`self.grant`)
         // since `Self` hasn't been constructed yet at this point.
         // Policies already genesis-seeded above (predicted via
@@ -478,8 +490,9 @@ impl TestEnvironment for VeraTestEnvironment {
             policies.insert(policy.id.clone(), id);
         }
         // A scenario may name a ring policy without separately caring about
-        // its concrete policy fixture; such governance policies are created
-        // here.
+        // its concrete policy fixture. Cosmos materializes such governance
+        // policies internally; native does the equivalent here so the
+        // scenario vocabulary stays backend-neutral.
         for ring in &fixture.rings {
             if policies.contains_key(&ring.policy) {
                 continue;
@@ -869,7 +882,9 @@ impl BulletinTestDriver for VeraTestEnvironment {
         confirmed(&self.client, granted.transaction_hash, &self.trusted).await;
 
         // Every running node must be authorized for the policy before it
-        // can join the ring; nodes are authorized by policy beforehand.
+        // can join the ring — unlike Cosmos, which only knows the ring id
+        // (and so whitelists by it) after creation, native authorizes by
+        // policy beforehand.
         let now = unix_now();
         for info in self.nodes() {
             for command in [
@@ -993,8 +1008,11 @@ impl BulletinTestDriver for VeraTestEnvironment {
         .unwrap_or_else(|_| panic!("Timed out waiting for ring {} to be finalized", ring.0))
     }
 
-    /// There is no direct admin document write: the only way to store a
-    /// document is the real `StoreSecret` gRPC flow the scenarios exercise.
+    /// Native has no equivalent of Cosmos's generic `bulletin::vera` post
+    /// primitive to reuse for a direct, backend-admin-shortcut document
+    /// write — the only way to store a document is the real `StoreSecret`
+    /// gRPC flow this scenario already exercises. Same as before PR 4: not a
+    /// regression, this was always `Capability::Unsupported` on native.
     async fn store_document(
         &self,
         _ring: &RingId,
@@ -1188,8 +1206,9 @@ impl BulletinTestDriver for VeraTestEnvironment {
         }
     }
 
-    /// A live-created ring has no short-`pss_interval` escape hatch, so
-    /// force a refresh due by backdating each member's persisted
+    /// Native has no short-`pss_interval` escape hatch for a live-created
+    /// ring (unlike Cosmos's genesis seed) — so, same as the pre-migration
+    /// adapters, force a refresh due by backdating each member's persisted
     /// bundle through the `UnsafeTestingService` diagnostic hook instead of
     /// waiting out the real interval. A member whose container is already
     /// stopped is left alone: its scheduler is not running, and the live

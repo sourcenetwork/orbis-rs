@@ -1,4 +1,4 @@
-//! Integration test: exercises the **organic** PSS-refresh-discovers
+//! Shared integration test: exercises the **organic** PSS-refresh-discovers
 //! -offline path, distinct from `report_refresh_stall_offline.rs` (which
 //! injects a synthetic `AbandonedPssSession` report directly). Here, a real
 //! refresh ceremony is made due by backdating every running node's
@@ -9,14 +9,17 @@
 //! reachability check discovers and reports it — no test-only
 //! report-injection RPC involved.
 //!
-//! The ring uses a day-long interval and backdates the running members only
-//! after node3 has stopped. A 5-second interval would already be inside the
-//! 10-second scheduler grace window, so the refresh would start as soon as
-//! DKG stores the bundle. A ceremony that passes Prepare before the stop
-//! reports that later death only at the 15-minute attempt deadline.
+//! Both backends use a day-long interval and backdate the running members
+//! only after node3 has stopped. A 5-second Cosmos interval is already
+//! inside the 10-second scheduler grace window, so the refresh starts as
+//! soon as DKG stores the bundle. A ceremony that passes Prepare before the
+//! stop reports that later death only at the 15-minute attempt deadline.
 //!
-//! The pass/fail signal is `report_scenario::wait_for_demerits`: the right
-//! node actually got demerited.
+//! The pass/fail signal is `report_scenario::wait_for_demerits` rather than
+//! Cosmos's `ReportEventSubscription` — same simplification as every other
+//! migrated `reporting.rs` test, trading the event's richer per-report
+//! metadata (report_id/reporter_node_key) for a portable, dual-backend check
+//! that the right node actually got demerited.
 
 use super::report_scenario::STANDARD_RING_POLICY_YAML;
 use super::{pre_scenario, TestEnvironmentImpl};
@@ -85,9 +88,9 @@ async fn test_refresh_offline_triggers_on_chain_report() {
         leader_key,
         leader_key == node3_key
     );
-    // Logging a 5s interval next to the day-long one shows whether a short
-    // interval would already have been due before the stop, which a longer
-    // demerit wait cannot repair.
+    // A 5s interval is the old Cosmos fixture. Logging it next to the
+    // day-long interval shows whether that fixture was already due before
+    // the stop, which a longer demerit wait cannot repair.
     log_refresh_clocks("before stop", environment.nodes(), &keys.main, pss_interval).await;
 
     // Stop node3 before any bundle is made due. The scheduler polls every

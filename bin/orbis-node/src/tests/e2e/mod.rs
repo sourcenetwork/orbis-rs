@@ -1,11 +1,26 @@
-//! E2E scenarios against Vera.
+//! Backend-neutral E2E scenarios.
 //!
-//! This module is the whole integration-test tree. Scenario modules describe
-//! behavior through `TestEnvironmentImpl`, bound below to the Vera adapter.
+//! This module is the whole integration-test tree. A build selects exactly
+//! one production backend feature, and that choice is bound to
+//! `TestEnvironmentImpl` below. Scenario modules describe behavior once;
+//! they do not mention `cosmos` or `native`.
 
-#[cfg(not(feature = "vera"))]
-compile_error!("the E2E harness requires the `vera` feature");
+#[cfg(not(any(feature = "cosmos", feature = "vera")))]
+compile_error!("the E2E harness requires exactly one backend feature: `cosmos` or `native`");
 
+#[cfg(all(feature = "cosmos", feature = "vera"))]
+compile_error!("the E2E harness requires exactly one backend feature: `cosmos` or `native`");
+
+#[cfg(any(
+    all(feature = "authz-vera", feature = "bulletin-vera-go"),
+    all(feature = "authz-vera-go", feature = "bulletin-vera")
+))]
+compile_error!(
+    "the E2E harness currently provisions one coherent chain pair; mixed authz/bulletin production builds remain supported, but need a two-chain test adapter"
+);
+
+// Backend-neutral scenarios. A backend with a real capability gap keeps the
+// same scenario visible and ignored, rather than defining a second test body.
 // Curve-specific variants follow the production crypto features.
 mod cancel_ring_reshare;
 mod concurrent_delegated_dkg;
@@ -63,8 +78,11 @@ mod report_invalid_crypto_response;
 #[cfg(feature = "jubjub")]
 mod report_invalid_sign_share_frost;
 
-// Vera adapter. These modules provision state and perform chain operations;
-// they are not scenarios themselves.
+#[cfg(all(feature = "cosmos", not(feature = "vera")))]
+use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
+
+// Native Vera adapter. These modules provision state and perform chain
+// operations; they are not a second copy of the shared scenarios.
 #[cfg(feature = "vera")]
 mod policy_generations;
 #[cfg(feature = "vera")]
@@ -73,8 +91,8 @@ mod vera_confirmation;
 mod vera_environment;
 #[cfg(feature = "vera")]
 mod vera_trust_gateway;
-// Share-bundle codec. A stopped node's store is read from disk; a live store
-// is backdated through the diagnostic RPC.
+// Share-bundle codec. Native reads a stopped node's store from disk; both
+// backends backdate a live store through the diagnostic RPC.
 #[allow(dead_code)]
 mod stored_bundle;
 // Node startup for the hosted Trust gateway. The external runner launches
@@ -82,19 +100,16 @@ mod stored_bundle;
 #[cfg(feature = "vera")]
 mod vera_lifecycle;
 
-#[cfg(feature = "vera")]
+#[cfg(all(feature = "vera", not(feature = "cosmos")))]
 use vera_environment::VeraTestEnvironment as TestEnvironmentImpl;
 
-// Real Defra container over a real ring's `pre_share_endpoints`.
+// Real Defra container over a real ring's `pre_share_endpoints`. Part of
+// the shared contract on both backends: `BulletinTestDriver::register_ring`/
+// `RingSpec::pre_share_endpoints` hides each backend's own ring-creation
+// mechanics behind one method signature.
 mod defra_pre_scenario;
 
-// Image and runtime gating of the diagnostic service.
-#[cfg(feature = "vera")]
-mod unsafe_testing_gate;
-
-// In-process FaultNetwork qualifications against a native Vera cluster of
-// `verad` processes. Isolated from the shared scenario contract.
-#[cfg(all(feature = "vera", feature = "fault-injection"))]
-mod cluster_logs;
-#[cfg(all(feature = "vera", feature = "fault-injection"))]
+// In-process FaultNetwork qualifications. Isolated from the shared scenario
+// contract: only the Cosmos adapter has this harness today.
+#[cfg(all(feature = "cosmos", feature = "fault-injection"))]
 mod fault_injection;

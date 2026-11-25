@@ -48,7 +48,7 @@ revision, registered peer keys/addresses, scoped relay grant sequence and the
 first OIDC provider's reserved loopback address. Go returns two private results
 for nonces `[71; 32]` and `[72; 32]`. Rust rejects unexpected fields, modes, counts,
 ring IDs, configurations or paired keys. Both descriptor and result contract are
-version 1; there is no fallback to injected authenticated principals.
+version 1; there is no fallback to Cosmos or injected authenticated principals.
 
 Retain evidence with `ORBIS_VERA_E2E_DIR`, `VERA_E2E_DIR` and `VERA_E2E_KEEP=1`.
 The descriptor, operation IDs, complete Go output, passwords, logs and stores stay

@@ -1,23 +1,46 @@
-//! Benchmark orchestration: resolves an `Experiment` into stacks/cases, runs
-//! each stack as real orbis-node instances in this process (`in_process`), and
-//! manages shared run-level bookkeeping (the manifest, resume, interruption,
-//! host metadata). Trial plumbing lives in `trial`.
+//! Benchmark orchestration: resolves an `Experiment` into stacks/cases, runs each
+//! stack against whichever execution backend it's configured for, and manages
+//! shared run-level bookkeeping (the manifest, resume, interruption, host
+//! metadata). The two backends' own logic lives in `docker` (Docker Compose +
+//! a real chain) and `in_process` (real orbis-node instances as tokio tasks,
+//! no Docker, no chain); what's shared between them lives in `trial`.
 
+mod docker;
 mod in_process;
 mod trial;
 
 use trial::*;
 
-use crate::config::{Experiment, Operation, RingCase, StackPlan, PSS_GRACE_PERIOD_SECS};
+/// Re-exported so `protocol.rs` can keep calling `crate::runner::read_ring_with_retry`
+/// without needing to know it now lives in the Docker backend module.
+pub(crate) use docker::read_ring_with_retry;
+
+use crate::compose::{
+    node_service, write_stack_files, ComposeInput, RingDefinition, CONTROLLER_PUBLIC_KEY,
+    RING_GOVERNANCE_POLICY_ID,
+};
+#[cfg(test)]
+use crate::config::NetworkProfile;
+use crate::config::{
+    ExecutionBackend, Experiment, Operation, RingCase, StackPlan, PSS_GRACE_PERIOD_SECS,
+};
+use crate::docker::{image_digest, DockerCompose};
 use crate::harness::{HarnessNetwork, HARNESS_POLICY_ID};
+use crate::metrics::{aggregate, delta, retain_benchmark_metrics, scrape, MetricSnapshot};
 use crate::protocol::{
-    sign_call, DirectClients, NodeEndpoint, PreFixture, PssRefreshTimeout, SignFixture,
+    discover_node_identity, sign_call, wait_nodes_ready, DirectClients, NodeEndpoint, NodeIdentity,
+    PreFixture, PssRefreshTimeout, SignFixture,
 };
 use crate::report::generate_report;
 use crate::results::{
     read_trials, HostMetadata, ResultStore, RunManifest, RunStatus, SetupFailureRecord, TrialRecord,
 };
-use anyhow::{Context, Result};
+use crate::setup::{
+    create_ring_governance_policy, create_rings_on_chain, fund_nodes, register_ring_governance,
+    update_peer_addresses,
+};
+use anyhow::{bail, Context, Result};
+use common::blockchain::{orbis::Ring, ChainConfig, TxSigner, VeraGoClient, TEST_ACCOUNT_HEX_KEY};
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::{Dkg, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoSerialize, DkgImpl, PreImpl, SignImpl};
@@ -26,24 +49,32 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{RngCore, SeedableRng};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::watch;
-use tokio::time::{timeout, Instant};
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, timeout, Instant};
+
+/// Protocol version stamped on rings created for this benchmark. Matches
+/// `network::V0.version` without pulling in the network crate just for one
+/// constant.
+const RING_PROTOCOL_VERSION: u64 = 0;
 
 #[derive(Clone, Debug, Default)]
 pub struct RunOptions {
     pub resume: Option<PathBuf>,
+    pub keep_network: bool,
     pub stop_after_two_non_viable_sizes: bool,
 }
 
 pub struct BenchmarkRunner {
     experiment: Experiment,
     options: RunOptions,
+    repository_root: PathBuf,
 }
 
 #[derive(Debug)]
@@ -80,6 +111,7 @@ impl BenchmarkRunner {
         Ok(Self {
             experiment,
             options,
+            repository_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
         })
     }
 
@@ -122,13 +154,22 @@ impl BenchmarkRunner {
                 status: RunStatus::Running,
                 experiment: self.experiment.clone(),
                 host: host_metadata(),
+                vera_go_ref: self.experiment.vera_go_ref.clone(),
+                node_image: None,
+                vera_image: None,
                 crypto_implementation: format!(
                     "dkg={}; pre={}; sign={}",
                     <DkgImpl as Dkg>::name(),
                     <PreImpl as ThresholdDealer>::name(),
                     <SignImpl as ThresholdSigner>::name()
                 ),
-                warnings: vec!["In-process measurements run every node as a task in one process on one host, sharing its scheduler and CPU cores; they are not a universal protocol maximum and do not include deployment or Vera overhead.".into()],
+                stack_projects: Vec::new(),
+                profile_calibration: BTreeMap::new(),
+                setup_batch_evidence: BTreeMap::new(),
+                warnings: vec![match self.experiment.backend {
+                    ExecutionBackend::Docker => "Single-host Docker measurements include host scheduling and resource contention; they are not a universal protocol maximum.".into(),
+                    ExecutionBackend::InProcess => "In-process measurements run every node as a task in one process on one host, sharing its scheduler and CPU cores; they are not a universal protocol maximum and do not include container or chain overhead.".into(),
+                }],
             };
             (ResultStore::create(run_dir, &manifest)?, manifest)
         };
@@ -180,6 +221,10 @@ impl BenchmarkRunner {
                 short_id(&manifest.run_id),
                 stack.stack_index
             );
+            if !manifest.stack_projects.contains(&stack_id) {
+                manifest.stack_projects.push(stack_id.clone());
+                store.update_manifest(&manifest)?;
+            }
             eprintln!(
                 "[{}/{}] stack {}: profile={}, nodes={}, cases={}",
                 stack_position + 1,
@@ -279,7 +324,12 @@ impl BenchmarkRunner {
         completed: &HashSet<TrialKey>,
         interrupt_rx: &mut watch::Receiver<bool>,
     ) -> Result<StackRunOutcome> {
-        self.run_stack_in_process(store, manifest, stack, stack_id, completed, interrupt_rx)
+        if self.experiment.backend == ExecutionBackend::InProcess {
+            return self
+                .run_stack_in_process(store, manifest, stack, stack_id, completed, interrupt_rx)
+                .await;
+        }
+        self.run_stack_docker(store, manifest, stack, stack_id, completed, interrupt_rx)
             .await
     }
 }
@@ -356,6 +406,9 @@ fn host_metadata() -> HostMetadata {
             .map(|kib| kib.saturating_mul(1_024)),
         git_commit,
         git_dirty,
+        docker_version: command_output("docker", &["version", "--format", "{{.Server.Version}}"]),
+        docker_info: command_output("docker", &["info", "--format", "{{json .}}"])
+            .and_then(|text| serde_json::from_str(&text).ok()),
     }
 }
 

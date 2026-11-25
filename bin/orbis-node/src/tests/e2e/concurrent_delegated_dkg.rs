@@ -1,7 +1,11 @@
 //! DKG triggered via a relay-signed delegated-auth token must succeed the
 //! same as a direct node-operator call.
 //!
-//! Runs on [`super::live_node`]'s in-process bootstrap.
+//! Harness-unification migration, PR 6: migrated off `concurrent.rs`'s
+//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one.
+//! `authn::DkgClaims`/the delegated-auth-token signing path is backend-
+//! neutral production code (no chain-specific logic), so this is fully
+//! dual-backend -- no `#[ignore]` needed.
 
 use authn::{create_authenticated_request, DkgClaims, JwtSigner};
 use proto::v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest};

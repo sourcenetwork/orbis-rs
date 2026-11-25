@@ -1,0 +1,517 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPOSITORY_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+COMPOSE_FILE="$REPOSITORY_ROOT/docker/docker-compose-upgrade-test.yml"
+
+FROM_REF=
+TO_REF=
+CRYPTO=both
+OUTPUT=
+KEEP_ON_FAILURE=0
+DRY_RUN=0
+# auto: enable when the target's docker/VERA_GO_REF differs from the baseline's.
+FRESH_TARGET_CHAIN=auto
+TO_VERA_GO_REF_OVERRIDE=
+TEMP_ROOT=
+FROM_CONTEXT=
+TO_CONTEXT=
+CURRENT_PROJECT=
+CURRENT_OUTPUT=
+CURRENT_IMAGE=
+WORKTREES=()
+
+NODE_SERVICES=(node-001 node-002 node-003 node-004)
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/test-upgrade.sh --from <git-ref> --to <git-ref|WORKTREE> [options]
+
+Options:
+  --crypto <bls12-381|jubjub|both>  Crypto implementation(s), default: both
+  --output <directory>                Evidence directory
+  --keep-on-failure                   Leave the failed Compose project running
+  --dry-run                           Resolve inputs without building or starting Docker
+  --fresh-target-chain               Rebuild SourceHub from the target revision's
+                                     docker/VERA_GO_REF and re-run `prepare` on the
+                                     target stack (no chain-state migration).
+  --no-fresh-target-chain            Force the Orbis-only cutover even when the
+                                     baseline and target docker/VERA_GO_REF differ.
+  --to-vera-go-ref <git-ref>            Explicit target SourceHub ref; implies
+                                     --fresh-target-chain.
+  -h, --help                          Show this help
+
+Both committed revisions must contain the upgrade-driver v1 contract. WORKTREE
+is accepted only for --to and includes committed, modified, and untracked files.
+Both revisions must support the selected curve. A curve change requires fresh
+DKG and cannot be tested as an upgrade of an existing ring.
+
+By default the shared SourceHub container is never recreated during the
+cutover, so the target Orbis nodes are exercised against the baseline chain.
+When docker/VERA_GO_REF differs between the two revisions the baseline chain
+cannot verify the target's threshold signatures; --fresh-target-chain (the
+default in that case) tears the whole stack down, brings SourceHub up on the
+target ref, and re-runs `prepare` before `verify`. This does not test that
+baseline chain state survives an upgrade.
+EOF
+}
+
+die() {
+  echo "upgrade harness: $*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --from)
+      [[ $# -ge 2 ]] || die "--from requires a value"
+      FROM_REF=$2
+      shift 2
+      ;;
+    --to)
+      [[ $# -ge 2 ]] || die "--to requires a value"
+      TO_REF=$2
+      shift 2
+      ;;
+    --crypto)
+      [[ $# -ge 2 ]] || die "--crypto requires a value"
+      CRYPTO=$2
+      shift 2
+      ;;
+    --output)
+      [[ $# -ge 2 ]] || die "--output requires a value"
+      OUTPUT=$2
+      shift 2
+      ;;
+    --keep-on-failure)
+      KEEP_ON_FAILURE=1
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --fresh-target-chain)
+      FRESH_TARGET_CHAIN=1
+      shift
+      ;;
+    --no-fresh-target-chain)
+      FRESH_TARGET_CHAIN=0
+      shift
+      ;;
+    --to-vera-go-ref)
+      [[ $# -ge 2 ]] || die "--to-vera-go-ref requires a value"
+      TO_VERA_GO_REF_OVERRIDE=$2
+      FRESH_TARGET_CHAIN=1
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "$FROM_REF" ]] || die "--from is required"
+[[ -n "$TO_REF" ]] || die "--to is required"
+[[ "$FROM_REF" != WORKTREE ]] || die "WORKTREE is supported only for --to"
+case "$CRYPTO" in
+  bls12-381|jubjub|both) ;;
+  *) die "--crypto must be bls12-381, jubjub, or both" ;;
+esac
+
+require_command git
+require_command shasum
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  require_command docker
+fi
+
+FROM_SHA=$(git -C "$REPOSITORY_ROOT" rev-parse --verify "${FROM_REF}^{commit}") \
+  || die "cannot resolve baseline ref: $FROM_REF"
+
+worktree_fingerprint() {
+  local root=$1
+  {
+    git -C "$root" rev-parse HEAD
+    git -C "$root" diff --binary HEAD -- .
+    while IFS= read -r -d '' file; do
+      printf '%s\0' "$file"
+      shasum -a 256 "$root/$file"
+    done < <(git -C "$root" ls-files --others --exclude-standard -z)
+  } | shasum -a 256 | awk '{print $1}'
+}
+
+if [[ "$TO_REF" == WORKTREE ]]; then
+  TO_SHA=$(git -C "$REPOSITORY_ROOT" rev-parse HEAD)
+  TO_FINGERPRINT=$(worktree_fingerprint "$REPOSITORY_ROOT")
+  TO_DESCRIPTION="WORKTREE@$TO_SHA+$TO_FINGERPRINT"
+else
+  TO_SHA=$(git -C "$REPOSITORY_ROOT" rev-parse --verify "${TO_REF}^{commit}") \
+    || die "cannot resolve target ref: $TO_REF"
+  TO_FINGERPRINT=$TO_SHA
+  TO_DESCRIPTION=$TO_SHA
+fi
+
+if [[ "$CRYPTO" == both ]]; then
+  CRYPTO_RUNS=(bls12-381 jubjub)
+else
+  CRYPTO_RUNS=("$CRYPTO")
+fi
+
+# Check before Docker builds and before reporting a successful dry run.
+for crypto in "${CRYPTO_RUNS[@]}"; do
+  if ! git -C "$REPOSITORY_ROOT" show "$FROM_SHA:crates/crypto/Cargo.toml" \
+    | grep -Eq "^${crypto}[[:space:]]*="; then
+    die "baseline $FROM_SHA does not support $crypto; select a baseline with this curve. Changing curves requires a fresh ring and DKG, not a state upgrade"
+  fi
+  if [[ "$TO_REF" == WORKTREE ]]; then
+    target_manifest=$(cat "$REPOSITORY_ROOT/crates/crypto/Cargo.toml")
+  else
+    target_manifest=$(git -C "$REPOSITORY_ROOT" show "$TO_SHA:crates/crypto/Cargo.toml")
+  fi
+  if ! grep -Eq "^${crypto}[[:space:]]*=" <<<"$target_manifest"; then
+    die "target $TO_DESCRIPTION does not support $crypto; changing curves requires a fresh ring and DKG, not a state upgrade"
+  fi
+done
+
+if [[ -z "$OUTPUT" ]]; then
+  RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+  OUTPUT="$REPOSITORY_ROOT/target/upgrade-tests/${RUN_STAMP}-${FROM_SHA:0:8}-${TO_FINGERPRINT:0:8}"
+fi
+mkdir -p "$OUTPUT"
+OUTPUT=$(cd "$OUTPUT" && pwd)
+
+echo "baseline: $FROM_REF -> $FROM_SHA"
+echo "target:   $TO_REF -> $TO_DESCRIPTION"
+echo "crypto:   $CRYPTO"
+echo "fresh target chain: $FRESH_TARGET_CHAIN"
+echo "evidence: $OUTPUT"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  exit 0
+fi
+
+TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/orbis-upgrade.XXXXXX")
+
+remove_worktrees() {
+  local worktree
+  for worktree in "${WORKTREES[@]:-}"; do
+    git -C "$REPOSITORY_ROOT" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+  done
+  if [[ -n "$TEMP_ROOT" && -d "$TEMP_ROOT" ]]; then
+    rmdir "$TEMP_ROOT" >/dev/null 2>&1 || true
+  fi
+}
+
+compose() {
+  docker compose --project-name "$CURRENT_PROJECT" --file "$COMPOSE_FILE" "$@"
+}
+
+collect_diagnostics() {
+  [[ -n "$CURRENT_PROJECT" && -n "$CURRENT_OUTPUT" ]] || return 0
+  mkdir -p "$CURRENT_OUTPUT/logs"
+  compose ps --all >"$CURRENT_OUTPUT/logs/compose-ps.txt" 2>&1 || true
+  compose logs --no-color >"$CURRENT_OUTPUT/logs/compose.log" 2>&1 || true
+}
+
+archive_databases() {
+  local stage=$1
+  local destination="$CURRENT_OUTPUT/databases/$stage"
+  local service
+  mkdir -p "$destination"
+  for service in "${NODE_SERVICES[@]}"; do
+    compose cp "$service:/data/dbs/orbis.redb" "$destination/$service.redb"
+    shasum -a 256 "$destination/$service.redb" >"$destination/$service.redb.sha256"
+  done
+}
+
+assert_nodes_stopped_cleanly() {
+  local stage=$1
+  local service container exit_code
+  for service in "${NODE_SERVICES[@]}"; do
+    container=$(compose ps --all --quiet "$service")
+    [[ -n "$container" ]] || die "$stage: $service container is missing"
+    exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container")
+    printf '%s_%s=%q\n' "${stage//-/_}" "${service//-/_}" "$exit_code" \
+      >>"$CURRENT_OUTPUT/container-exit-codes.env"
+    [[ "$exit_code" == 0 ]] || die "$stage: $service did not stop cleanly (exit $exit_code)"
+  done
+}
+
+cleanup_current_project() {
+  compose --profile driver down --volumes --remove-orphans >/dev/null 2>&1 || true
+  CURRENT_PROJECT=
+  CURRENT_OUTPUT=
+  CURRENT_IMAGE=
+}
+
+on_exit() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ -n "$CURRENT_PROJECT" ]]; then
+    collect_diagnostics
+    if [[ "$status" -ne 0 && "$KEEP_ON_FAILURE" -eq 1 ]]; then
+      echo "failed Compose project retained: $CURRENT_PROJECT" >&2
+      echo "evidence directory: $CURRENT_OUTPUT" >&2
+    else
+      if [[ "$status" -ne 0 ]]; then
+        compose stop --timeout 30 "${NODE_SERVICES[@]}" >/dev/null 2>&1 || true
+        archive_databases failure >/dev/null 2>&1 || true
+      fi
+      cleanup_current_project
+    fi
+  fi
+  remove_worktrees
+  exit "$status"
+}
+trap on_exit EXIT INT TERM
+
+FROM_CONTEXT="$TEMP_ROOT/from"
+git -C "$REPOSITORY_ROOT" worktree add --detach "$FROM_CONTEXT" "$FROM_SHA" >/dev/null
+WORKTREES+=("$FROM_CONTEXT")
+
+if [[ "$TO_REF" == WORKTREE ]]; then
+  TO_CONTEXT=$REPOSITORY_ROOT
+else
+  TO_CONTEXT="$TEMP_ROOT/to"
+  git -C "$REPOSITORY_ROOT" worktree add --detach "$TO_CONTEXT" "$TO_SHA" >/dev/null
+  WORKTREES+=("$TO_CONTEXT")
+fi
+
+require_contract() {
+  local context=$1
+  local label=$2
+  [[ -f "$context/bin/orbis-bench/src/bin/orbis-upgrade-driver.rs" ]] \
+    || die "$label revision predates the upgrade-driver v1 compatibility floor"
+  [[ -f "$context/docker/Dockerfile.upgrade-test" ]] \
+    || die "$label revision does not contain docker/Dockerfile.upgrade-test"
+}
+require_contract "$FROM_CONTEXT" baseline
+require_contract "$TO_CONTEXT" target
+
+VERA_GO_REF=$(tr -d '[:space:]' <"$FROM_CONTEXT/docker/VERA_GO_REF")
+[[ -n "$VERA_GO_REF" ]] || die "baseline docker/VERA_GO_REF is empty"
+VERA_GO_TAG_HASH=$(printf '%s' "$VERA_GO_REF" | shasum -a 256 | awk '{print $1}')
+VERA_IMAGE="orbis-upgrade-sourcehub:${VERA_GO_TAG_HASH:0:12}"
+
+# Resolve the target SourceHub ref. Default the mode to "fresh target chain"
+# whenever it differs from the baseline, since the baseline chain then cannot
+# verify the target's threshold signatures.
+if [[ -n "$TO_VERA_GO_REF_OVERRIDE" ]]; then
+  TARGET_VERA_GO_REF_INPUT=$TO_VERA_GO_REF_OVERRIDE
+elif [[ -f "$TO_CONTEXT/docker/VERA_GO_REF" ]]; then
+  TARGET_VERA_GO_REF_INPUT=$(tr -d '[:space:]' <"$TO_CONTEXT/docker/VERA_GO_REF")
+else
+  TARGET_VERA_GO_REF_INPUT=
+fi
+
+if [[ "$FRESH_TARGET_CHAIN" == auto ]]; then
+  if [[ -n "$TARGET_VERA_GO_REF_INPUT" && "$TARGET_VERA_GO_REF_INPUT" != "$VERA_GO_REF" ]]; then
+    FRESH_TARGET_CHAIN=1
+    echo "note: docker/VERA_GO_REF differs (baseline=$VERA_GO_REF target=$TARGET_VERA_GO_REF_INPUT);" \
+      "enabling --fresh-target-chain" >&2
+  else
+    FRESH_TARGET_CHAIN=0
+  fi
+fi
+
+TO_VERA_GO_REF=$VERA_GO_REF
+TO_VERA_IMAGE=$VERA_IMAGE
+if [[ "$FRESH_TARGET_CHAIN" -eq 1 ]]; then
+  [[ -n "$TARGET_VERA_GO_REF_INPUT" ]] \
+    || die "fresh target chain requested but target has no docker/VERA_GO_REF (pass --to-vera-go-ref)"
+  [[ -f "$TO_CONTEXT/docker/Dockerfile.vera-go-integration" ]] \
+    || die "target revision does not contain docker/Dockerfile.vera-go-integration"
+  TO_VERA_GO_REF=$TARGET_VERA_GO_REF_INPUT
+  TO_VERA_GO_TAG_HASH=$(printf '%s' "$TO_VERA_GO_REF" | shasum -a 256 | awk '{print $1}')
+  TO_VERA_IMAGE="orbis-upgrade-sourcehub:${TO_VERA_GO_TAG_HASH:0:12}"
+fi
+
+run_phase() {
+  local label=$1
+  shift
+  local started ended status
+  started=$(date +%s)
+  printf '%s start %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label" \
+    | tee -a "$CURRENT_OUTPUT/phase-timings.log"
+  set +e
+  "$@"
+  status=$?
+  set -e
+  ended=$(date +%s)
+  printf '%s finish %s status=%s duration_secs=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label" "$status" "$((ended - started))" \
+    | tee -a "$CURRENT_OUTPUT/phase-timings.log"
+  return "$status"
+}
+
+VERA_BUILD_OUTPUT="$OUTPUT/sourcehub-build"
+mkdir -p "$VERA_BUILD_OUTPUT"
+CURRENT_OUTPUT=$VERA_BUILD_OUTPUT
+run_phase build-sourcehub docker build \
+  --file "$FROM_CONTEXT/docker/Dockerfile.vera-go-integration" \
+  --tag "$VERA_IMAGE" \
+  --build-arg "VERA_GO_REF=$VERA_GO_REF" \
+  "$FROM_CONTEXT/docker"
+docker image inspect --format '{{.Id}}' "$VERA_IMAGE" \
+  >"$VERA_BUILD_OUTPUT/image-id.txt"
+if [[ "$FRESH_TARGET_CHAIN" -eq 1 && "$TO_VERA_IMAGE" != "$VERA_IMAGE" ]]; then
+  run_phase build-sourcehub-target docker build \
+    --file "$TO_CONTEXT/docker/Dockerfile.vera-go-integration" \
+    --tag "$TO_VERA_IMAGE" \
+    --build-arg "VERA_GO_REF=$TO_VERA_GO_REF" \
+    "$TO_CONTEXT/docker"
+  docker image inspect --format '{{.Id}}' "$TO_VERA_IMAGE" \
+    >"$VERA_BUILD_OUTPUT/target-image-id.txt"
+fi
+CURRENT_OUTPUT=
+
+run_crypto_upgrade() {
+  local crypto=$1
+  local from_image="orbis-upgrade-driver:${FROM_SHA:0:12}-${crypto}"
+  local to_image="orbis-upgrade-driver:${TO_FINGERPRINT:0:12}-${crypto}"
+  local project_crypto=${crypto//[^a-zA-Z0-9]/-}
+
+  CURRENT_OUTPUT="$OUTPUT/$crypto"
+  CURRENT_PROJECT="orbis-upgrade-$$-$project_crypto"
+  CURRENT_IMAGE=$from_image
+  mkdir -p "$CURRENT_OUTPUT"
+  cp "$COMPOSE_FILE" "$CURRENT_OUTPUT/compose.yaml"
+  {
+    printf 'FROM_REF=%q\n' "$FROM_REF"
+    printf 'FROM_SHA=%q\n' "$FROM_SHA"
+    printf 'TO_REF=%q\n' "$TO_REF"
+    printf 'TO_SHA=%q\n' "$TO_SHA"
+    printf 'TO_FINGERPRINT=%q\n' "$TO_FINGERPRINT"
+    printf 'CRYPTO=%q\n' "$crypto"
+    printf 'VERA_GO_REF=%q\n' "$VERA_GO_REF"
+    printf 'VERA_IMAGE=%q\n' "$VERA_IMAGE"
+    printf 'FRESH_TARGET_CHAIN=%q\n' "$FRESH_TARGET_CHAIN"
+    printf 'TO_VERA_GO_REF=%q\n' "$TO_VERA_GO_REF"
+    printf 'TO_VERA_IMAGE=%q\n' "$TO_VERA_IMAGE"
+    printf 'BASELINE_IMAGE=%q\n' "$from_image"
+    printf 'TARGET_IMAGE=%q\n' "$to_image"
+    printf 'COMPOSE_PROJECT=%q\n' "$CURRENT_PROJECT"
+  } >"$CURRENT_OUTPUT/resolved-refs.env"
+
+  run_phase build-baseline-driver docker build \
+    --file "$FROM_CONTEXT/docker/Dockerfile.upgrade-test" \
+    --tag "$from_image" \
+    --build-arg "CRYPTO_FEATURE=$crypto" \
+    "$FROM_CONTEXT"
+  run_phase build-target-driver docker build \
+    --file "$TO_CONTEXT/docker/Dockerfile.upgrade-test" \
+    --tag "$to_image" \
+    --build-arg "CRYPTO_FEATURE=$crypto" \
+    "$TO_CONTEXT"
+  {
+    printf 'VERA_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$VERA_IMAGE")"
+    printf 'TO_VERA_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$TO_VERA_IMAGE")"
+    printf 'BASELINE_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$from_image")"
+    printf 'TARGET_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$to_image")"
+  } >>"$CURRENT_OUTPUT/resolved-refs.env"
+
+  export ORBIS_UPGRADE_VERA_GO_IMAGE=$VERA_IMAGE
+  export ORBIS_UPGRADE_IMAGE=$from_image
+  export ORBIS_UPGRADE_OUTPUT=$CURRENT_OUTPUT
+  compose config >"$CURRENT_OUTPUT/compose-rendered-baseline.yaml"
+
+  run_phase start-baseline compose up --detach --wait --wait-timeout 600 \
+    sourcehub "${NODE_SERVICES[@]}"
+  local sourcehub_container
+  sourcehub_container=$(compose ps --quiet sourcehub)
+  [[ -n "$sourcehub_container" ]] || die "SourceHub container was not created"
+  printf 'VERA_CONTAINER=%q\n' "$sourcehub_container" \
+    >>"$CURRENT_OUTPUT/container-ids.env"
+  local service
+  for service in "${NODE_SERVICES[@]}"; do
+    printf 'BASELINE_%s=%q\n' "${service//-/_}" "$(compose ps --quiet "$service")" \
+      >>"$CURRENT_OUTPUT/container-ids.env"
+  done
+  run_phase prepare-baseline compose run --rm --no-deps driver prepare \
+    --manifest /artifacts/fixture-v1.json \
+    --baseline-sha "$FROM_SHA" \
+    --crypto "$crypto" \
+    --sourcehub-ref "$VERA_GO_REF"
+
+  run_phase stop-baseline compose stop --timeout 30 "${NODE_SERVICES[@]}"
+  assert_nodes_stopped_cleanly baseline
+  run_phase archive-baseline archive_databases pre-cutover
+
+  export ORBIS_UPGRADE_IMAGE=$to_image
+  CURRENT_IMAGE=$to_image
+
+  if [[ "$FRESH_TARGET_CHAIN" -eq 1 ]]; then
+    # No chain-state migration: SourceHub keeps no volume, so tear the whole
+    # baseline stack down, bring the target stack up on the target SourceHub
+    # ref plus target Orbis images, and re-run `prepare` so the fixtures
+    # describe target-chain state before `verify` exercises the reshare.
+    cp "$CURRENT_OUTPUT/fixture-v1.json" \
+      "$CURRENT_OUTPUT/fixture-v1.baseline.json" 2>/dev/null || true
+    export ORBIS_UPGRADE_VERA_GO_IMAGE=$TO_VERA_IMAGE
+    run_phase teardown-baseline-stack \
+      compose --profile driver down --volumes --remove-orphans
+    compose config >"$CURRENT_OUTPUT/compose-rendered-target.yaml"
+    run_phase start-target compose up --detach --wait --wait-timeout 600 \
+      sourcehub "${NODE_SERVICES[@]}"
+    local target_sourcehub_container
+    target_sourcehub_container=$(compose ps --quiet sourcehub)
+    [[ -n "$target_sourcehub_container" ]] \
+      || die "target SourceHub container was not created"
+    [[ "$target_sourcehub_container" != "$sourcehub_container" ]] \
+      || die "SourceHub was not recreated for the fresh target chain"
+    printf 'TARGET_VERA_CONTAINER=%q\n' "$target_sourcehub_container" \
+      >>"$CURRENT_OUTPUT/container-ids.env"
+    for service in "${NODE_SERVICES[@]}"; do
+      printf 'TARGET_%s=%q\n' "${service//-/_}" "$(compose ps --quiet "$service")" \
+        >>"$CURRENT_OUTPUT/container-ids.env"
+    done
+    run_phase prepare-target compose run --rm --no-deps driver prepare \
+      --manifest /artifacts/fixture-v1.json \
+      --baseline-sha "$TO_SHA" \
+      --crypto "$crypto" \
+      --sourcehub-ref "$TO_VERA_GO_REF"
+  else
+    compose config >"$CURRENT_OUTPUT/compose-rendered-target.yaml"
+    run_phase start-target compose up --detach --no-deps --force-recreate \
+      --wait --wait-timeout 600 "${NODE_SERVICES[@]}"
+    [[ "$(compose ps --quiet sourcehub)" == "$sourcehub_container" ]] \
+      || die "SourceHub was recreated during the Orbis-only cutover"
+    for service in "${NODE_SERVICES[@]}"; do
+      local baseline_container target_container baseline_key
+      baseline_key="BASELINE_${service//-/_}"
+      baseline_container=$(sed -n "s/^${baseline_key}=//p" "$CURRENT_OUTPUT/container-ids.env")
+      target_container=$(compose ps --quiet "$service")
+      [[ -n "$target_container" && "$target_container" != "$baseline_container" ]] \
+        || die "$service was not recreated with the target image"
+      printf 'TARGET_%s=%q\n' "${service//-/_}" "$target_container" \
+        >>"$CURRENT_OUTPUT/container-ids.env"
+    done
+  fi
+
+  run_phase verify-target compose run --rm --no-deps driver verify \
+    --manifest /artifacts/fixture-v1.json \
+    --result /artifacts/verification-v1.json \
+    --target-sha "$TO_DESCRIPTION"
+
+  run_phase stop-target compose stop --timeout 30 "${NODE_SERVICES[@]}"
+  assert_nodes_stopped_cleanly target
+  run_phase archive-target archive_databases post-reshare
+  collect_diagnostics
+  cleanup_current_project
+}
+
+for crypto in "${CRYPTO_RUNS[@]}"; do
+  run_crypto_upgrade "$crypto"
+done
+
+echo "upgrade compatibility verified; evidence: $OUTPUT"

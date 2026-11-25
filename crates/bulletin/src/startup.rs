@@ -5,6 +5,8 @@
 //! whichever two implementations a build selected with no backend-specific
 //! branching of its own.
 
+#[cfg(feature = "cosmos-identity")]
+pub mod cosmos;
 mod services;
 
 pub use services::{
@@ -96,12 +98,18 @@ pub enum BulletinStartupError {
         #[source]
         source: std::io::Error,
     },
-    #[cfg(feature = "vera")]
+    #[cfg(any(feature = "cosmos-identity", feature = "vera"))]
     #[error("signing identity storage failed")]
     Storage(#[from] local_storage::error::LocalStorageError),
-    #[cfg(feature = "vera")]
+    #[cfg(any(feature = "cosmos-identity", feature = "vera"))]
     #[error("signing identity entropy failed")]
     Entropy(#[from] getrandom::Error),
+    #[cfg(feature = "cosmos-identity")]
+    #[error("stored signing identity is not UTF-8")]
+    Encoding(#[from] std::str::Utf8Error),
+    #[cfg(feature = "cosmos-identity")]
+    #[error("chain signing identity failed")]
+    Signer(#[from] common::blockchain::BlockchainError),
     #[cfg(feature = "vera")]
     #[error("native worker initialization failed")]
     NativeWorker(#[from] vera_client::ClientError),

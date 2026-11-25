@@ -1,11 +1,17 @@
-//! Integration test: a node going offline mid-PRE/Sign fires an
+//! Shared integration test: a node going offline mid-PRE/Sign fires an
 //! on-chain `node_offline` report and accumulates demerits against it.
 //!
-//! The node-offline detection-and-reporting logic
-//! (`crate::reporting::v0::registry::node_offline`) operates on the generic
-//! `bulletin` trait. Verification is via `report_scenario::wait_for_demerits`,
-//! polling the chain's own demerit count: accepted reports accumulate
-//! demerits for the accused node.
+//! The node-offline detection-and-reporting logic itself
+//! (`crate::reporting::v0::registry::node_offline`) is backend-neutral
+//! production code — it operates on the generic `bulletin` trait, not
+//! either chain directly — so this is written as one real, non-ignored
+//! test on both backends. Verification is via `report_scenario::
+//! wait_for_demerits` (polling the chain's own demerit count) rather than
+//! Cosmos's `ReportEventSubscription` (a Tendermint-WebSocket subscription
+//! with no native equivalent): a coarser signal than the original's
+//! per-report event metadata, but the same underlying claim — accepted
+//! reports accumulate demerits for the accused node — proven on both
+//! backends instead of asserted only on one.
 
 use super::report_scenario::{
     pre_with_retry, sign_with_retry, store_secret_with_retry, STANDARD_RING_POLICY_YAML,
@@ -25,8 +31,15 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
     let ring = FixtureId::new("ring");
     let policy = FixtureId::new("policy");
     // A *separate* FixtureId from `policy`, same policy content, for the
-    // ring's own governance slot: ring creation needs a real, hex-encoded
-    // policy of its own.
+    // ring's own governance slot. Cosmos's ring materializer always
+    // overwrites whatever `RingFixture.policy` resolves to with its own
+    // content-addressed governance policy (confirmed: reusing `policy` for
+    // both caused the *document* ACP lookup to resolve to that governance
+    // policy too, since the overwrite is keyed by the ring's policy
+    // `FixtureId`, not by whether something else already claimed it) — so
+    // `ring_policy`'s own real id is always discarded there and only
+    // matters to native, which has no such substitution and genuinely
+    // needs a real, hex-encoded policy for ring creation.
     let ring_policy = FixtureId::new("ring-policy");
     let fixture = ScenarioFixture {
         nodes: (0..3)

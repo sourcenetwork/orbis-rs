@@ -1,4 +1,4 @@
-//! Integration test: verifies the reshare bad-DKG-share relay path —
+//! Shared integration test: verifies the reshare bad-DKG-share relay path —
 //! a pure-new receiver (node4) that gets provably-bad reshare evidence
 //! relays it to the current committee, which re-verifies, threshold-signs an
 //! `invalid_crypto_response` report, and lands it on chain while the reshare
@@ -14,12 +14,18 @@
 //! test. (A bad dealer in a reshare that *does* complete is intentionally
 //! unreportable: it is being rotated out anyway.)
 //!
-//! `NODE3_SIGNING_KEY_HEX` is node3's real (deterministic fixture) signing
-//! key, `NODE_KEY_OFFLINE` is only ever a never-acking placeholder identity
-//! (as in `report_reshare_stall_offline.rs`), and the ring's current
-//! `RingPayload` comes from `BulletinTestDriver::read_ring_state_facts`.
-//! `NodeRole::Offline` is registered live (`VeraTestEnvironment::provision`'s
-//! `fixture_node`/`NodeCommand::Register` path).
+//! Fully backend-neutral — no `#[cfg]` split in this file. Same reasoning
+//! as `report_reshare_dkg_equivocation.rs`: `NODE3_SIGNING_KEY_HEX` is
+//! node3's real signing key on both backends now (native's own identities
+//! are deterministic too), `NODE_KEY_OFFLINE` is only ever a never-acking
+//! placeholder identity (same unconditional use as
+//! `report_reshare_stall_offline.rs`'s own), and the ring's current
+//! `RingPayload` comes from `BulletinTestDriver::read_ring_state_facts`
+//! rather than a Cosmos-only raw cli-tool bulletin read. `NodeRole::Offline`
+//! already has live registration support on native
+//! (`VeraTestEnvironment::provision`'s `fixture_node`/`NodeCommand::Register`
+//! path) — contrary to this file's own previous doc comment, that was never
+//! actually missing by the time this was ported.
 
 use super::pre_scenario;
 use super::TestEnvironmentImpl;

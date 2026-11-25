@@ -1,15 +1,20 @@
-//! Trial plumbing: the context bundle threaded through every trial call,
-//! trial identity/dedup, `TrialRecord` construction, and the load-generation
-//! helpers (plain gRPC calls against `DirectClients`).
+//! Backend-agnostic trial plumbing shared by the Docker (`docker.rs`) and
+//! in-process (`in_process.rs`) backends: the context bundle threaded through
+//! every trial call, trial identity/dedup, `TrialRecord` construction, and the
+//! load-generation helpers (already backend-agnostic — plain gRPC calls against
+//! `DirectClients`).
 
 use super::*;
 
-/// Data shared by every trial call within one stack's run. Constructed once
-/// per stack (right after `clients`/`rng` are set up, in
+/// Data shared by every trial call within one stack's run — what used to be
+/// repeated as a long, ad hoc parameter list on `run_case` and each
+/// `run_*_trials(_in_process)` method. Constructed once per stack (right after
+/// `clients`/`rng` are set up, in `docker::run_stack_docker` /
 /// `in_process::run_stack_in_process`), then threaded as `&mut TrialContext`
-/// into every trial call for that stack. The harness and case-specific data
-/// (the case/ring/fixture being measured) stay as separate parameters — only
-/// what's identical on every call lives here.
+/// into every trial call for that stack. Backend-specific data
+/// (compose/controller/endpoints for Docker, harness for in-process) and
+/// case-specific data (the case/ring/fixture being measured) stay as separate
+/// parameters — only what's identical on every call lives here.
 pub(super) struct TrialContext<'a> {
     pub(super) store: &'a mut ResultStore,
     pub(super) manifest: &'a RunManifest,
@@ -194,7 +199,10 @@ fn combine_load(
     combined
 }
 
-/// Builds a ceremony `TrialRecord` for `case`/`ring_id`.
+/// Same shape as the Docker-backend's `docker::base_trial`, but takes `case`/
+/// `ring_id` directly since the in-process trial loops don't build a
+/// `CaseRings`/`PlannedRing` (there's no chain-assigned `RingDefinition` to
+/// wrap — see `in_process::run_dkg_trials_in_process`).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn base_trial_in_process(
     manifest: &RunManifest,
@@ -238,10 +246,11 @@ pub(super) fn base_trial_in_process(
         error,
         ring_id: Some(ring_id.to_string()),
         ring_pk: None,
+        metric_deltas: BTreeMap::new(),
     }
 }
 
-/// Builds a closed-loop load `TrialRecord`; see `base_trial_in_process`.
+/// In-process counterpart of `docker::load_trial` — see `base_trial_in_process`.
 pub(super) fn load_trial_in_process(
     manifest: &RunManifest,
     stack: &StackPlan,
@@ -282,6 +291,7 @@ pub(super) fn load_trial_in_process(
             .then(|| format!("{} of {total} requests failed", measurement.failures)),
         ring_id: Some(ring_id.to_string()),
         ring_pk: None,
+        metric_deltas: BTreeMap::new(),
     }
 }
 

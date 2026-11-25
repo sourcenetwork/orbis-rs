@@ -1,4 +1,4 @@
-//! Integration test: protocol version upgrade enforcement.
+//! Shared integration test: protocol version upgrade enforcement.
 //!
 //! Runs a real DKG to finalize the ring, then schedules a v0→v1 upgrade via
 //! `BulletinTestDriver::schedule_ring_upgrade` (activation_time = now +
@@ -6,10 +6,16 @@
 //!   Phase 1 — before activation: v0 operations are NOT version-gated (gate doesn't fire early)
 //!   Phase 2 — after activation:  v0 operations ARE version-gated (all three refuse the ring)
 //!
-//! Vera's `RingUpdate::ScheduleUpgrade` requires a finalized ring and a
-//! 600-second minimum lead — see `schedule_ring_upgrade`'s doc comment. The
-//! upgrade is scheduled live (after DKG) rather than genesis-seeded, so
-//! `ACTIVATION_LEAD_SECS` must clear that 600s floor.
+//! Fully backend-neutral — no `#[cfg]` split in this file. Cosmos's
+//! `ScheduleRingUpgradeByAcp` and native's `RingUpdate::ScheduleUpgrade`
+//! turned out to have identical constraints (ring must already be
+//! finalized, both enforce the same 600-second minimum lead) — see
+//! `schedule_ring_upgrade`'s doc comment. Unlike the original Cosmos-only
+//! version of this test, the upgrade is scheduled live (after DKG) rather
+//! than genesis-seeded before boot, so `ACTIVATION_LEAD_SECS` must clear
+//! both backends' 600s floor — a real (if minor) cost of staying
+//! backend-neutral, accepted in exchange for not needing a native
+//! genesis-injection facility at all.
 //!
 //! Run with:
 //!   cargo test --features integration-test -- test_v0_services_rejected_after_ring_upgrade --nocapture
@@ -24,7 +30,7 @@ use test_support::fixture::{
 };
 use tokio::time::{sleep, Duration};
 
-// Vera's live schedule-upgrade path enforces a 600s minimum lead
+// Both backends' live schedule-upgrade path enforces a 600s minimum lead
 // between "now" (as the chain sees it) and `activation_time`; the extra 20s
 // covers tx-inclusion lag between capturing `now` here and the chain
 // actually validating the schedule request.
@@ -110,8 +116,8 @@ fn assert_server_version_rejection(operation: &str, error: &anyhow::Error) {
 async fn test_v0_services_rejected_after_ring_upgrade() {
     let ring = FixtureId::new("ring");
     let fixture = ScenarioFixture {
-        // The Compose topology supports between 1 and 4 nodes
-        // (`VeraNetworkAdapter::start_configured`) — the ring itself only ever
+        // The Compose topology only supports 3 or 4 nodes
+        // (`CosmosNetwork::with_node_count`) — the ring itself only ever
         // references two of them (DKG requires at least two participants).
         nodes: (0..3)
             .map(|_| NodeFixture {

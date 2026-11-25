@@ -41,6 +41,10 @@ pub enum BlockchainError {
     #[error("Chain not available: {0}")]
     ChainNotAvailable(String),
 
+    #[cfg(feature = "cosmos")]
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
     #[error("Parse Int: {0}")]
     ParseInt(#[from] std::num::ParseIntError),
 }

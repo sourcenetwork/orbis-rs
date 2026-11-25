@@ -1,4 +1,4 @@
-//! Integration test: exercises the G1 stall→offline **report** path
+//! Shared integration test: exercises the G1 stall→offline **report** path
 //! deterministically. A real `AbandonedPssSession` is injected through the
 //! drain worker's own logic (`report_abandoned_pss_session`) naming node3
 //! as the silent refresh dealer, with node3 stopped so the co-signer
@@ -10,9 +10,10 @@
 //! demerit count deterministic.
 //!
 //! The injection RPC (`UnsafeTestingService::submit_pss_stall_offline_report`)
-//! feeds the production report pipeline
-//! (`bin/orbis-node/src/unsafe_testing/service.rs`/`reporting/v0/registry`);
-//! node3's on-chain-registered P2P peer id comes from
+//! and the underlying report pipeline are backend-neutral production code
+//! (`bin/orbis-node/src/unsafe_testing/service.rs`/`reporting/v0/registry`),
+//! so this runs as one real test on both backends — including computing
+//! node3's on-chain-registered P2P peer id, via
 //! `NetworkTestDriver::reporting_peer_address`.
 
 use super::report_scenario::{wait_for_demerits, STANDARD_RING_POLICY_YAML};

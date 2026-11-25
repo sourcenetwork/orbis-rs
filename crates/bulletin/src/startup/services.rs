@@ -23,7 +23,9 @@ use std::{
 };
 use thiserror::Error;
 
-/// Bounds the whole services-config file (both sections together).
+/// Bounds the whole services-config file (both sections together) — up from
+/// the 16 KiB the old, native-only trust file alone used to allow, since this
+/// now also carries the vera/cosmos chain config in the common case.
 const MAX_SERVICES_CONFIG_BYTES: u64 = 64 * 1024;
 
 /// The node's single services-config file: one section per selected
@@ -61,10 +63,11 @@ pub enum NodeServicesStartupError {
 impl<A: DeserializeOwned, B: DeserializeOwned> NodeServicesConfig<A, B> {
     /// Load from `path` if given, otherwise deserialize both sections from
     /// an empty object. That works for any implementation whose `Config` has
-    /// sensible defaults for every field, and fails with a clear "missing
-    /// field" error for one that doesn't (e.g. Vera, which has no sensible
-    /// default endpoint or trust root) — no separate "config required" error
-    /// type needed.
+    /// sensible defaults for every field (e.g. the vera backends, against a
+    /// default-everything local chain), and fails with a clear "missing
+    /// field" error for one that doesn't (e.g. the native backends, which
+    /// have no sensible default endpoint or trust root) — no separate
+    /// "config required" error type needed.
     pub fn load_or_default(path: Option<&Path>) -> Result<Self, NodeServicesStartupError> {
         match path {
             Some(path) => Self::load(path),

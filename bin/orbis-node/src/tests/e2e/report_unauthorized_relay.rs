@@ -1,19 +1,24 @@
-//! Integration test: a node forging a relayer-signed statement for
+//! Shared integration test: a node forging a relayer-signed statement for
 //! PRE/Sign on an actor with no ACP relationship fires `unauthorized_request`
 //! reports against the forging relayer.
 //!
-//! `p2p_address` resolution goes through
-//! `NetworkTestDriver::reporting_peer_address`. `NODE1_SIGNING_KEY_HEX`/
-//! `NODE2_SIGNING_KEY_HEX` are node1/node2's real signing keys (see
-//! `crates/bulletin/src/vera/fixture_startup.rs`), so forging evidence "as"
-//! them needs no key resolution. The ring's current state (needed to build
-//! the forged relay statement) comes from
-//! `BulletinTestDriver::read_ring_state_facts`. Document/key-derivation
+//! Fully backend-neutral — no `#[cfg]` split in this file. `p2p_address`
+//! resolution goes through `NetworkTestDriver::reporting_peer_address`.
+//! `NODE1_SIGNING_KEY_HEX`/
+//! `NODE2_SIGNING_KEY_HEX` are node1/node2's real signing keys on *both*
+//! backends now (see `crates/bulletin/src/native/fixture_startup.rs`),
+//! so forging evidence "as" them needs no backend-specific key resolution.
+//! The ring's current state (needed to build the forged relay statement)
+//! comes from `BulletinTestDriver::read_ring_state_facts`, not a
+//! Cosmos-only raw cli-tool bulletin read. Document/key-derivation
 //! registration goes through `BulletinTestDriver::register_document`/
 //! `register_key_derivation`, and the test policy/object registration
-//! through `create_policy`/`register_object`. The forged actor starts with
-//! no reader relationship by construction: a freshly generated actor id is
-//! never registered with any relationship.
+//! through `create_policy`/`register_object` — all shared, backend-neutral
+//! trait methods. The original Cosmos-only `acp_has_relationship` sanity
+//! checks (confirming the forged actor starts with no reader relationship)
+//! are dropped: they're guaranteed by test construction (a freshly
+//! generated actor id is never registered with any relationship) and have
+//! no shared equivalent on the trait.
 
 use super::pre_scenario;
 use super::TestEnvironmentImpl;

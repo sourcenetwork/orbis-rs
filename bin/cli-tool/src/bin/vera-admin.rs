@@ -14,7 +14,6 @@ use vera_client::{
     nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, SignedNodeRequest},
     rings::encode_ring_command,
     rings::RingCommand,
-    threshold_objects::{encode_threshold_object, KeyDerivation, ObjectKind, ThresholdObject},
     NativeWorker, VeraClient, VERA_ADDRESS,
 };
 use vera_domain::NativeTx;
@@ -75,36 +74,6 @@ enum Command {
         #[arg(long)]
         token_file: PathBuf,
     },
-    /// Sign a scoped delegation to a worker locally and write the bearer token to a file.
-    Delegate {
-        /// Worker DID printed by `worker`.
-        #[arg(long)]
-        worker_did: String,
-        /// `orbis:ring` for ring requests or `orbis:object:store` for key derivations.
-        #[arg(long, value_parser = derivation::scope)]
-        scope: vera_client::DelegationScope,
-        #[arg(long)]
-        expires_at: u64,
-        /// The delegating actor's secp256k1 key.
-        #[arg(long)]
-        key_file: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    /// Derive a signing derivation's identity from its registration request.
-    DerivationId { request: PathBuf },
-    /// Read a signing derivation and its derived public key from certified state.
-    Derivation {
-        derivation_id: String,
-        #[arg(long, default_value_t = 1)]
-        minimum_revision: u64,
-    },
-    /// Journal a signing-derivation registration without submitting it.
-    PrepareDerivation {
-        request: PathBuf,
-        #[arg(long)]
-        token_file: PathBuf,
-    },
     /// Recover the pending result or submit its exact bytes; retain it until acknowledged.
     Submit,
     /// Release a completed request after recording its result.
@@ -127,38 +96,6 @@ fn read_bounded(path: &Path, maximum: u64) -> Result<Zeroizing<Vec<u8>>> {
 
 fn ring_command(path: &Path) -> Result<RingCommand> {
     Ok(serde_json::from_slice(&read_bounded(path, 64 * 1024)?)?)
-}
-
-fn signing_key(path: &Path) -> Result<vera_client::Secp256k1SigningKey> {
-    let bytes = read_bounded(path, 128)?;
-    if bytes.len() == 32 {
-        return vera_client::Secp256k1SigningKey::from_slice(&bytes).context("raw signing key");
-    }
-    let encoded = bytes.trim_ascii();
-    Ok(decode_node_signing_key(
-        encoded.strip_prefix(b"0x").unwrap_or(encoded),
-    )?)
-}
-
-fn derivation_request(path: &Path) -> Result<(KeyDerivation, String)> {
-    derivation::request(&read_bounded(path, 64 * 1024)?)
-}
-
-fn write_secret(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    use std::io::Write;
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("create {}", path.display()))?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    Ok(())
 }
 
 fn open_worker(args: &Args, config: &VeraConfig) -> Result<NativeWorker> {
@@ -235,7 +172,13 @@ async fn main() -> Result<()> {
     } = &args.command
     {
         let command: NodeCommand = serde_json::from_slice(&read_bounded(command, 48 * 1024)?)?;
-        let key = signing_key(key_file)?;
+        let bytes = read_bounded(key_file, 128)?;
+        let key = if bytes.len() == 32 {
+            vera_client::Secp256k1SigningKey::from_slice(&bytes).context("raw node signing key")?
+        } else {
+            let encoded = bytes.trim_ascii();
+            decode_node_signing_key(encoded.strip_prefix(b"0x").unwrap_or(encoded))?
+        };
         let signed = sign_node_request(
             NodeRequest {
                 deployment_root: config.root,
@@ -248,28 +191,6 @@ async fn main() -> Result<()> {
             &key,
         )?;
         return print(serde_json::to_value(signed)?);
-    }
-    if let Command::DerivationId { request } = &args.command {
-        return print(json!({"derivation_id": derivation_request(request)?.1}));
-    }
-    if let Command::Delegate {
-        worker_did,
-        scope,
-        expires_at,
-        key_file,
-        output,
-    } = &args.command
-    {
-        let token = vera_client::create_scoped_bearer_token(
-            &signing_key(key_file)?,
-            worker_did,
-            config.deployment_id,
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
-            *expires_at,
-            *scope,
-        )?;
-        write_secret(output, token.as_bytes())?;
-        return print(json!({"subject": worker_did, "scope": scope, "expires_at": expires_at}));
     }
     tokio::time::timeout(config.timeout, run(&args, &config))
         .await
@@ -309,47 +230,6 @@ async fn run(args: &Args, config: &VeraConfig) -> Result<()> {
             json!({"revision": read.revision, "timestamp": read.timestamp, "node": read.record}),
         );
     }
-    if let Command::Derivation {
-        derivation_id,
-        minimum_revision,
-    } = &args.command
-    {
-        let read = client
-            .read_threshold_object(
-                ObjectKind::KeyDerivation,
-                derivation_id,
-                *minimum_revision,
-                &config.trusted,
-            )
-            .await?;
-        observe(read.timestamp, config)?;
-        let Some(record) = read.record else {
-            return print(
-                json!({"revision": read.revision, "timestamp": read.timestamp, "derivation": null}),
-            );
-        };
-        ensure!(
-            record.deployment_root == config.root,
-            "derivation belongs to a different deployment"
-        );
-        let ThresholdObject::KeyDerivation(derivation) = &record.object else {
-            bail!("derivation lookup returned a document")
-        };
-        let ring = client
-            .read_threshold_ring(&derivation.ring_id, read.revision, &config.trusted)
-            .await?
-            .record
-            .context("derivation's ring is not in certified state")?;
-        ensure!(
-            ring.deployment_root == config.root,
-            "ring belongs to a different deployment"
-        );
-        let public_key = derivation::derived_public_key(&ring.state, derivation)?;
-        return print(
-            json!({"revision": read.revision, "timestamp": read.timestamp,
-            "derivation": record, "derived_public_key": public_key}),
-        );
-    }
     let mut worker = open_worker(args, config)?;
     match &args.command {
         Command::Worker => print(
@@ -365,21 +245,6 @@ async fn run(args: &Args, config: &VeraConfig) -> Result<()> {
             let wire = worker.prepare(
                 VERA_ADDRESS,
                 encode_ring_command(&command, std::str::from_utf8(&token)?.trim())?,
-            )?;
-            print(json!({"submission_id": NativeTx::decode_wire(wire)?.tx_id().0}))
-        }
-        Command::PrepareDerivation {
-            request,
-            token_file,
-        } => {
-            let (derivation, _) = derivation_request(request)?;
-            let token = read_bounded(token_file, 64 * 1024)?;
-            let wire = worker.prepare(
-                VERA_ADDRESS,
-                encode_threshold_object(
-                    &ThresholdObject::KeyDerivation(derivation),
-                    std::str::from_utf8(&token)?.trim(),
-                )?,
             )?;
             print(json!({"submission_id": NativeTx::decode_wire(wire)?.tx_id().0}))
         }
@@ -429,10 +294,7 @@ async fn run(args: &Args, config: &VeraConfig) -> Result<()> {
         Command::Ring { .. }
         | Command::RingId { .. }
         | Command::Node { .. }
-        | Command::SignNode { .. }
-        | Command::Delegate { .. }
-        | Command::DerivationId { .. }
-        | Command::Derivation { .. } => unreachable!(),
+        | Command::SignNode { .. } => unreachable!(),
     }
 }
 
@@ -451,9 +313,6 @@ fn accept_submission(
     }
     Ok(())
 }
-
-#[path = "vera-admin/derivation.rs"]
-mod derivation;
 
 #[cfg(test)]
 #[path = "vera-admin/tests.rs"]

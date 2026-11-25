@@ -1,4 +1,4 @@
-# Service boundaries and Docker E2E tests
+# Backend boundaries and Docker E2E tests
 
 The node composes independently selected bulletin and authorization services in
 `runtime/backend.rs`. Bulletin implementations prepare identity and worker
@@ -17,47 +17,36 @@ flowchart LR
     Authz --> Node
 ```
 
-The DKG, PRE, signing, refresh, reshare, PET and reporting scenarios run through
-`TestEnvironment`, implemented by the Vera adapter
-(`bin/orbis-node/src/tests/e2e/vera_environment.rs`). The adapter owns certified
-reads, state materialization and lifecycle operations; scenario assertions call
-it rather than a Vera client.
+The DKG, PRE, signing, refresh, reshare, PET and reporting scenarios are declared
+once and run through the compile-time-selected `TestEnvironment`. Backend
+adapters retain their own certified reads, state materialization and lifecycle
+operations, but scenario assertions never select a chain or call a chain-specific
+client.
 
 `test-support` owns Docker orchestration. `VeraTestNetwork` starts four Vera
 validators; the node test fixture adds three normal Orbis containers using
 `ContainerNode`. Each container preserves its private store for restart checks.
 No test-only runtime is added to the production binary.
 
-Run the E2E suite:
+Run the shared E2E suite through the backend selector:
 
 ```sh
-scripts/test-e2e.sh --crypto bls12-381
+scripts/test-e2e.sh --backend vera --crypto bls12-381
+scripts/test-e2e.sh --backend cosmos --crypto bls12-381
+# Or qualify both adapters sequentially:
+scripts/test-e2e.sh --backend all --crypto bls12-381
 ```
-
-The in-process fault-injection scenarios (`tests::e2e::fault_injection`) start a
-`verad` cluster without Docker. They are ignored by default; run them with a
-built `verad`:
-
-```sh
-VERAD_BINARY=/path/to/verad cargo test -p orbis-node --lib --no-default-features \
-  --features integration-test,vera,test-support/vera,redb,iroh,bls12-381,fault-injection \
-  tests::e2e::fault_injection -- --ignored --test-threads=1
-```
-
-CI runs them, with the authz, bulletin and `vera-admin` service tests, in the
-`Native Vera services` job of `.github/workflows/rust.yml`, against a `verad`
-built from the pinned revision. A failed scenario copies its validators' logs
-to `ORBIS_TEST_LOG_DIR` (default `orbis-test-logs` under the system temporary
-directory), which the job uploads as the `native-vera-logs` artifact; set
-`RUST_LOG` to include the Orbis nodes' own logs in the test output.
 
 For Jubjub, change `--crypto` and the Orbis image together. Use normal images,
 without storage KDF or deadline overrides. The Vera fixture provisions valid
 policy and ring state through Vera and keeps the normal PSS interval of 86400.
+The older five-second genesis fixture belongs to its existing backend adapter.
 
 The [hosted gateway qualification](vera-trust-hosted.md) uses the same Docker
 lifecycle for the separate Go Trust service, including executable and container
-packaging. It does not invoke every existing integration test.
+packaging. It does not invoke every existing integration test. The shared DKG
+extraction has passed source review and formatting checks; execution against
+both backend/curve combinations remains a qualification gate.
 
 ### Trust-owned ring qualification
 

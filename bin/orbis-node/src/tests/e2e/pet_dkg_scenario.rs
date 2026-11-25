@@ -90,7 +90,11 @@ pub(super) async fn run_dkg(
 /// Poll every node in `nodes`'s `InfoService.GetRingState` (main) and
 /// `GetPetRingState` (PET) until all of them agree on the same, non-empty
 /// pair of polynomial commitments — and, when `previous` is given, until
-/// *both* have changed from it.
+/// *both* have changed from it. Same `InfoService` contract on both
+/// backends. A deliberate strengthening versus the pre-migration adapters:
+/// Cosmos's old `Cosmos::local_state` checked only the main polynomial;
+/// native's `Native::local_state` already checked both — this raises
+/// Cosmos to native's existing, stronger bar.
 pub(super) async fn wait_for_pet_polynomials(
     nodes: &[test_support::NodeInfo],
     ring_pk: &str,

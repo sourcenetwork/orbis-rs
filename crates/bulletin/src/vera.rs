@@ -325,10 +325,11 @@ fn ring_status(record: &RingRecord) -> crate::error::Result<RingFinalizationStat
     }
 }
 
-/// The authoritative `RingRecord` -> `RingPayload` mapping — the same
+/// The authoritative native `RingRecord` -> `RingPayload` mapping — the same
 /// shape production code uses for `Bulletin::read`/`ring_post` below, and
 /// what test code needs to reconstruct a ring's *current* payload directly
-/// (e.g. to build evidence against it). Exposed `pub` specifically for that reuse — see
+/// (e.g. to build evidence against it) without a Cosmos-only cli-tool
+/// round trip. Exposed `pub` specifically for that reuse — see
 /// `ring_post`'s own doc comment.
 pub fn ring_payload_from_record(record: &RingRecord) -> crate::error::Result<RingPayload> {
     let status = ring_status(record)?;

@@ -27,6 +27,7 @@ use authz::dummy::DummyAuthZ;
 use authz::r#trait::Authz;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::Bulletin;
+use common::blockchain::ChainConfigBuilder;
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl};
@@ -111,10 +112,18 @@ pub async fn spawn_harness_node(
     let local_storage = LocalStorageImpl::new(params.password, params.db_path.clone())
         .map_err(|error| anyhow::anyhow!("local storage: {error}"))?;
 
-    let identity = create_and_store_node_key(local_storage.clone(), params.runtime_base_path)
-        .map_err(|error| anyhow::anyhow!("create node signing key: {error}"))?;
-    let public_address = identity.public_address.clone();
-    let node_key = identity.node_key.clone();
+    // The chain config here only carries denom/chain-id context for later
+    // transaction signing — constructing a signer does not itself touch a
+    // chain, and this harness never broadcasts a transaction at all.
+    let chain_config = ChainConfigBuilder::default().build();
+    let signer = create_and_store_node_key(
+        local_storage.clone(),
+        chain_config,
+        params.runtime_base_path,
+    )
+    .map_err(|error| anyhow::anyhow!("create node signing key: {error}"))?;
+    let public_address = signer.address();
+    let node_key = signer.public_key_hex();
 
     let authz: Arc<dyn Authz> = Arc::new(
         DummyAuthZ::new()
@@ -201,7 +210,7 @@ pub async fn spawn_harness_node(
     let config = NodeConfig {
         args,
         cors_policy: CorsPolicy::Disabled,
-        identity,
+        identity: bulletin::startup::cosmos::identity(&signer),
         backend_names: ("injected".into(), "injected".into()),
         network,
         local_storage,

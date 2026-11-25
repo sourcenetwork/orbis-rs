@@ -186,7 +186,7 @@ pub fn ciphertext_digest(nonce: &[u8], encrypted_data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// Crypto-local mirror of `authz::request::ValidWindow` — this crate has no
+/// Crypto-local mirror of `authz::vera_go::ValidWindow` — this crate has no
 /// dependency on `authz` and shouldn't gain one just for this field, so the
 /// node layer maps `ValidWindow { start, end }` to this identical shape when
 /// building a [`ReaderAuthorizationContext`].

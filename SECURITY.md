@@ -11,9 +11,38 @@ component, and a reproduction if you have one.
 Orbis is a threshold system, but operating a node safely depends on the trust
 assumptions below. This section describes the current implementation.
 
+### Cosmos service endpoints require trust in the operator
+
+In Cosmos mode, each node reads authorization decisions (`x/acp` `VerifyAccessRequest`), ring
+configuration, key-derivation records, bulletin documents, and block height/time
+from Vera RPC/REST endpoints (`--chain-rpc` / `--chain-rest`). These responses
+are **trusted as returned** — the node does not currently verify them against a
+validator set or Merkle proofs. A lying or man-in-the-middled endpoint can return
+`authorized = true` for a request that policy would deny, or hand back a doctored
+ring record.
+
+Consequently:
+
+- **Run the endpoint yourself, co-located with the node**, or point at an
+  endpoint operated by a party you trust to the same degree you trust the node
+  process itself.
+- **Use `https://` for any non-local endpoint.** `VeraClient` enforces this:
+  plaintext `http://` is accepted only to loopback, RFC-1918 / unique-local /
+  link-local / CGNAT addresses, single-label hostnames (container/service
+  names), and `*.internal` / `*.local` / `*.lan` / `*.home.arpa` names. A
+  plaintext endpoint on any other host is rejected at startup unless
+  `--allow-insecure-rpc` (env `ORBIS_ALLOW_INSECURE_RPC`) is set — use that only
+  when the endpoint is reached over a private network you control (e.g. a
+  VPN/overlay).
+
+Removing the "trust the endpoint's honesty" part of this assumption would
+require authenticated chain-state reads. The ACP verdict itself is computed Go
+logic with no Merkle proof, so a light client alone would not make it verifiable;
+that would also require capability materialization or client-side evaluation.
+
 ### Vera reads require independently configured consensus trust
 
-Each node verifies finality against its configured consensus key and checks the
+Vera mode verifies finality against its configured consensus key and checks the
 configured deployment root before serving requests. Authorization evaluates ACP
 locally from authenticated policy and relationship evidence at one revision.
 Current relation identities and target-object incarnations are authenticated with

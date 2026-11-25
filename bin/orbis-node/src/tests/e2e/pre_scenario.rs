@@ -1,5 +1,8 @@
-//! Standard-DKG StoreSecret → authorized PRE conformance scenario; triggers
-//! and verifies DKG itself too.
+//! Shared standard-DKG StoreSecret → authorized PRE conformance scenario —
+//! triggers and verifies DKG itself too, absorbing what the retired
+//! `pet_dkg_contract::{Backend, ScenarioBackend}` traits (deleted once every
+//! PET scenario on both backends migrated off them) did for this scenario
+//! specifically.
 
 use super::TestEnvironmentImpl;
 use bulletin::r#trait::{BulletinPost, DocumentPayload};
@@ -103,7 +106,11 @@ pub(super) async fn run_dkg(
 /// agree on the same, non-empty polynomial commitment — and, when `previous`
 /// is given, until every one of them has *changed* from it (used after a
 /// refresh/reshare to prove the rotation actually happened). Callers pass a
-/// subset of `environment.nodes()` for a reshare that drops members.
+/// subset of `environment.nodes()` for a reshare that drops members. Shared,
+/// backend-neutral replacement for the old `wait_for_ring_state_on_all_nodes`
+/// (Cosmos)/`wait_polynomials`/`wait_main_polynomials` (native) — same
+/// `InfoService` contract on both backends, so one implementation instead of
+/// near-duplicates.
 pub(super) async fn wait_for_polynomials(
     nodes: &[test_support::NodeInfo],
     ring_pk: &str,

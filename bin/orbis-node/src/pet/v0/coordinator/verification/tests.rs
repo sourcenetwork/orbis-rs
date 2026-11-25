@@ -15,7 +15,7 @@ use crate::reporting::v0::types::{
 use authz::dummy::DummyAuthZ;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{DocumentPayload, NodeInfo, RingPayload};
-use common::blockchain::{node_public_key_hex, sign_node_message_with_hex_key};
+use common::blockchain::{sign_node_message_with_hex_key, ChainConfig, TxSigner};
 use crypto::r#trait::{CryptoSerialize, PriShare};
 use crypto::{DkgImpl, PetImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -43,12 +43,14 @@ fn gen_signer() -> TestSigner {
     let mut key = [0u8; 32];
     loop {
         getrandom::getrandom(&mut key).expect("generate test signing key");
-        if node_public_key_hex(&hex::encode(key)).is_ok() {
+        if TxSigner::new(&key, ChainConfig::local()).is_ok() {
             break;
         }
     }
     let secret_hex = hex::encode(key);
-    let pubkey_hex = node_public_key_hex(&secret_hex).expect("construct test signer");
+    let pubkey_hex = TxSigner::from_hex_key(&secret_hex, ChainConfig::local())
+        .expect("construct test signer")
+        .public_key_hex();
     TestSigner {
         secret_hex,
         pubkey_hex,
@@ -677,7 +679,8 @@ async fn test_coordinator_with_bulletin(
             )
             .expect("seed node info");
     }
-    let mut app_state = create_test_app_state_with_bulletin(dummy_bulletin.clone(), db_name).await;
+    let mut app_state =
+        create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await;
     app_state.node_key = fixture.signers[0].pubkey_hex.clone();
     app_state
         .local_storage

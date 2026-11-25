@@ -19,6 +19,8 @@ pub struct HostMetadata {
     pub disk_available_bytes: Option<u64>,
     pub git_commit: Option<String>,
     pub git_dirty: Option<bool>,
+    pub docker_version: Option<String>,
+    pub docker_info: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -30,8 +32,17 @@ pub struct RunManifest {
     pub status: RunStatus,
     pub experiment: Experiment,
     pub host: HostMetadata,
+    pub vera_go_ref: String,
+    pub node_image: Option<String>,
+    pub vera_image: Option<String>,
     #[serde(default)]
     pub crypto_implementation: String,
+    #[serde(default)]
+    pub stack_projects: Vec<String>,
+    #[serde(default)]
+    pub profile_calibration: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub setup_batch_evidence: BTreeMap<String, serde_json::Value>,
     pub warnings: Vec<String>,
 }
 
@@ -72,6 +83,25 @@ pub struct TrialRecord {
     pub error: Option<String>,
     pub ring_id: Option<String>,
     pub ring_pk: Option<String>,
+    #[serde(default)]
+    pub metric_deltas: BTreeMap<String, f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ResourceSample {
+    pub run_id: String,
+    pub stack_id: String,
+    pub sampled_at_unix_ms: u128,
+    pub service: String,
+    pub container_id: String,
+    pub cpu_percent: Option<f64>,
+    pub memory_bytes: Option<u64>,
+    pub memory_limit_bytes: Option<u64>,
+    pub network_rx_bytes: Option<u64>,
+    pub network_tx_bytes: Option<u64>,
+    pub block_read_bytes: Option<u64>,
+    pub block_write_bytes: Option<u64>,
+    pub pids: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -89,6 +119,7 @@ pub struct ResultStore {
     root: PathBuf,
     trials: File,
     setup_failures: File,
+    resources: File,
 }
 
 impl ResultStore {
@@ -98,10 +129,24 @@ impl ResultStore {
         write_json_atomic(&root.join("manifest.json"), manifest)?;
         let trials = append_file(&root.join("trials.jsonl"))?;
         let setup_failures = append_file(&root.join("setup-failures.jsonl"))?;
+        let resources_path = root.join("resource-samples.csv");
+        let resources_is_new = !resources_path.exists()
+            || fs::metadata(&resources_path)
+                .map(|metadata| metadata.len() == 0)
+                .unwrap_or(true);
+        let mut resources = append_file(&resources_path)?;
+        if resources_is_new {
+            writeln!(
+                resources,
+                "run_id,stack_id,sampled_at_unix_ms,service,container_id,cpu_percent,memory_bytes,memory_limit_bytes,network_rx_bytes,network_tx_bytes,block_read_bytes,block_write_bytes,pids"
+            )?;
+            resources.sync_data()?;
+        }
         Ok(Self {
             root,
             trials,
             setup_failures,
+            resources,
         })
     }
 
@@ -170,6 +215,27 @@ impl ResultStore {
             "[setup-failure] stack={} profile={} network={} error_class={} error={}",
             failure.stack_id, failure.profile, failure.network_size, failure.error_class, error,
         );
+        Ok(())
+    }
+
+    pub fn append_resource(&mut self, sample: &ResourceSample) -> Result<()> {
+        writeln!(
+            self.resources,
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            csv_field(&sample.run_id),
+            csv_field(&sample.stack_id),
+            sample.sampled_at_unix_ms,
+            csv_field(&sample.service),
+            csv_field(&sample.container_id),
+            option_value(sample.cpu_percent),
+            option_value(sample.memory_bytes),
+            option_value(sample.memory_limit_bytes),
+            option_value(sample.network_rx_bytes),
+            option_value(sample.network_tx_bytes),
+            option_value(sample.block_read_bytes),
+            option_value(sample.block_write_bytes),
+            option_value(sample.pids),
+        )?;
         Ok(())
     }
 
@@ -500,6 +566,7 @@ mod tests {
             error: None,
             ring_id: None,
             ring_pk: None,
+            metric_deltas: BTreeMap::new(),
         };
         let mut failed = base.clone();
         failed.trial_index = 1;
@@ -522,6 +589,7 @@ mod tests {
             created_at_unix_ms: 1,
             completed_at_unix_ms: None,
             status: RunStatus::Interrupted,
+            vera_go_ref: experiment.vera_go_ref.clone(),
             experiment,
             host: HostMetadata {
                 os: "test".into(),
@@ -532,8 +600,15 @@ mod tests {
                 disk_available_bytes: None,
                 git_commit: None,
                 git_dirty: None,
+                docker_version: None,
+                docker_info: None,
             },
+            node_image: None,
+            vera_image: None,
             crypto_implementation: "bls12-381".into(),
+            stack_projects: Vec::new(),
+            profile_calibration: BTreeMap::new(),
+            setup_batch_evidence: BTreeMap::new(),
             warnings: Vec::new(),
         };
         let mut store = ResultStore::create(root.clone(), &manifest).unwrap();
@@ -567,6 +642,7 @@ mod tests {
             error: None,
             ring_id: None,
             ring_pk: None,
+            metric_deltas: BTreeMap::new(),
         };
         store.append_trial(&trial).unwrap();
         drop(store);

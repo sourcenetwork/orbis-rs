@@ -1,6 +1,8 @@
 use super::service::UnsafeTestingServiceImpl;
 use crate::helpers::test_helpers::{cleanup_db, test_db_path};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
+use proto::unsafe_testing::unsafe_testing_service_client::UnsafeTestingServiceClient;
 use proto::unsafe_testing::{
     unsafe_testing_service_server::UnsafeTestingService, DeleteLocalStorageRequest,
     GetLocalStorageRequest, LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType,
@@ -174,4 +176,108 @@ async fn rejects_invalid_keys_and_access_modes() {
     assert_eq!(unspecified_mode.code(), Code::InvalidArgument);
 
     cleanup_db(&path);
+}
+
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
+#[tokio::test]
+#[serial_test::serial]
+async fn production_docker_nodes_do_not_expose_unsafe_testing_service() {
+    let network = test_support::CosmosNetwork::builder()
+        .with_production_node_build()
+        .build();
+
+    // Whether `UnsafeTestingService` is registered is decided once, uniformly,
+    // by the image that was built and the `ORBIS_ENABLE_INTEGRATION_TEST`
+    // env var passed to the whole `docker compose up` invocation (see
+    // `runtime.rs`'s `#[cfg(feature = "unsafe-testing")]` gate) — it cannot
+    // differ between node1/node2/node3, so checking one node fully covers all
+    // of them. No need to query, fund, or wait on the others.
+    let endpoint = network.node1_endpoint().to_string();
+
+    // Production builds do not contain the integration-test faucet hook or
+    // deterministic signing-key override, so fund the generated node address
+    // through the test account before waiting for the full server to replace
+    // the bootstrap information server.
+    //
+    // No restart needed: the node's own `with_signer` blocks on a balance
+    // check and, once that observes this funding land, resyncs the signer's
+    // account_number/sequence from chain immediately before registering
+    // on-chain (see `BulletinImpl::with_signer`) — so the same never-
+    // restarted process picks up the funded account correctly on its own.
+    let chain_config = network.chain_config();
+    let address = cli_tool::query_node_info(endpoint.clone())
+        .await
+        .unwrap_or_else(|error| panic!("query production node bootstrap info: {error}"))
+        .public_address;
+    cli_tool::fund(address, chain_config)
+        .await
+        .unwrap_or_else(|error| panic!("fund production node: {error}"));
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(
+        &[endpoint.as_str()],
+        90,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+
+    let mut client = UnsafeTestingServiceClient::connect(endpoint.clone())
+        .await
+        .unwrap_or_else(|error| {
+            panic!("connect to production node unsafe testing client: {error}")
+        });
+    let result = client
+        .get_local_storage(GetLocalStorageRequest {
+            key: Some(key(LocalStorageKeyType::RingIndex, "")),
+            access_mode: LocalStorageAccessMode::Plain as i32,
+        })
+        .await;
+    let error = match result {
+        Ok(_) => panic!("production node unexpectedly exposed unsafe testing service"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.code(),
+        Code::Unimplemented,
+        "production node returned an unexpected status: {error}",
+    );
+}
+
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
+#[tokio::test]
+#[serial_test::serial]
+async fn unsafe_testing_docker_nodes_require_runtime_opt_in() {
+    let network = test_support::CosmosNetwork::builder()
+        .with_unsafe_testing_runtime_disabled()
+        .build();
+    let endpoints = network.all_endpoints();
+    crate::helpers::test_helpers::wait_for_nodes_ready(
+        &endpoints,
+        90,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        let mut client = UnsafeTestingServiceClient::connect((*endpoint).to_string())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "connect to runtime-disabled node {} unsafe testing client: {error}",
+                    index + 1
+                )
+            });
+        let error = client
+            .get_local_storage(GetLocalStorageRequest {
+                key: Some(key(LocalStorageKeyType::RingIndex, "")),
+                access_mode: LocalStorageAccessMode::Plain as i32,
+            })
+            .await
+            .expect_err("runtime-disabled node unexpectedly exposed unsafe testing service");
+        assert_eq!(
+            error.code(),
+            Code::Unimplemented,
+            "runtime-disabled node {} returned an unexpected status: {error}",
+            index + 1
+        );
+    }
 }

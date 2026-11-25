@@ -1054,10 +1054,10 @@ logs in benchmark evidence.
 
 ### Benchmarking
 
-Plan a suite without starting nodes:
+Plan a suite without starting containers:
 
 ```console
-cargo run -p orbis-bench -- plan --config bin/orbis-bench/examples/inprocess-50-node.yaml
+cargo run -p orbis-bench -- plan --config bin/orbis-bench/examples/50-node.yaml
 ```
 
 Run a focused case in the foreground:
@@ -1069,12 +1069,13 @@ cargo run -p orbis-bench -- run --network-size 50 --ring-size 9 --threshold 8
 Run the versioned suite:
 
 ```console
-cargo run -p orbis-bench -- run --config bin/orbis-bench/examples/inprocess-50-node.yaml
+cargo run -p orbis-bench -- run --config bin/orbis-bench/examples/50-node.yaml
 ```
 
-Keep `manifest.json`, `trials.jsonl` and failed-participant logs with any
-reported capacity number. Report the largest all-pass ring observed for that
-recorded hardware, crypto implementation and LAN/WAN profile—not a universal
+Keep `manifest.json`, `trials.jsonl`, metrics deltas, resource samples, resolved
+Compose/genesis files, and failed-participant logs with any reported capacity
+number. Report the largest all-pass ring observed for that recorded hardware,
+crypto implementation, Docker allocation, and LAN/WAN profile—not a universal
 maximum.
 
 ## Code map and tests

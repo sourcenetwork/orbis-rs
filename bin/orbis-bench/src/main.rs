@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use orbis_bench::config::{Experiment, NetworkGroup, RingCase};
+use orbis_bench::docker::{doctor, DockerCompose};
 use orbis_bench::report::generate_report;
 use orbis_bench::results::RunManifest;
 use orbis_bench::runner::{BenchmarkInterrupted, BenchmarkRunner, RunOptions};
@@ -20,7 +21,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Resolve and validate an experiment without starting nodes.
+    /// Validate Docker, host allocation, shaping support, and runtime image contents.
+    Doctor {
+        /// Existing benchmark runtime image to probe for tc and packaging isolation.
+        #[arg(long)]
+        runtime_image: Option<String>,
+    },
+    /// Resolve and validate an experiment without starting containers.
     Plan(ExperimentArgs),
     /// Run one case or all cases in an experiment YAML file.
     Run(RunArgs),
@@ -28,6 +35,8 @@ enum Command {
     Sweep(SweepArgs),
     /// Regenerate the self-contained report from raw evidence.
     Report { run_dir: PathBuf },
+    /// Remove only Compose projects recorded by a benchmark run.
+    Cleanup { run_dir: PathBuf },
 }
 
 #[derive(Args, Clone)]
@@ -53,6 +62,9 @@ struct RunArgs {
     /// Resume the experiment recorded in this run directory.
     #[arg(long)]
     resume: Option<PathBuf>,
+    /// Leave the uniquely named Compose stack running for debugging.
+    #[arg(long)]
+    keep_network: bool,
 }
 
 #[derive(Args)]
@@ -78,11 +90,17 @@ struct SweepArgs {
     output: Option<PathBuf>,
     #[arg(long)]
     resume: Option<PathBuf>,
+    #[arg(long)]
+    keep_network: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Doctor { runtime_image } => {
+            let report = doctor(runtime_image.as_deref()).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Command::Plan(args) => {
             let experiment = resolve_experiment(&args)?;
             let mut plan = experiment.resolve()?;
@@ -100,6 +118,7 @@ async fn main() -> Result<()> {
                 experiment,
                 RunOptions {
                     resume: args.resume,
+                    keep_network: args.keep_network,
                     stop_after_two_non_viable_sizes: false,
                 },
             )?)
@@ -111,6 +130,7 @@ async fn main() -> Result<()> {
                 experiment,
                 RunOptions {
                     resume: args.resume,
+                    keep_network: args.keep_network,
                     stop_after_two_non_viable_sizes: true,
                 },
             )?)
@@ -120,6 +140,7 @@ async fn main() -> Result<()> {
             generate_report(&run_dir)?;
             println!("report: {}", run_dir.join("report.html").display());
         }
+        Command::Cleanup { run_dir } => cleanup(&run_dir).await?,
     }
     Ok(())
 }
@@ -251,4 +272,19 @@ fn read_manifest(run_dir: &Path) -> Result<RunManifest> {
     Ok(serde_json::from_slice(&fs::read(
         run_dir.join("manifest.json"),
     )?)?)
+}
+
+async fn cleanup(run_dir: &Path) -> Result<()> {
+    let manifest = read_manifest(run_dir)?;
+    for project in &manifest.stack_projects {
+        let compose_file = run_dir.join("stacks").join(project).join("compose.yaml");
+        if !compose_file.exists() {
+            eprintln!("skip {project}: resolved compose file is missing");
+            continue;
+        }
+        let compose = DockerCompose::new(project.clone(), compose_file)?;
+        compose.down().await?;
+        println!("removed exact Compose project {project}");
+    }
+    Ok(())
 }

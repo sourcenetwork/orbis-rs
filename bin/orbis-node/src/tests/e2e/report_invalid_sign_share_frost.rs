@@ -1,4 +1,4 @@
-//! Integration test: FROST-only variant of the Sign invalid-crypto
+//! Shared integration test: FROST-only variant of the Sign invalid-crypto
 //! test (`report_invalid_crypto_response.rs`'s non-interactive-BLS sibling,
 //! `#[cfg(not(feature = "jubjub"))]`-gated there). Under jubjub the signing
 //! set is exactly threshold-sized: the coordinator keeps itself, then fills
@@ -8,7 +8,8 @@
 //! instead of succeeding around the bad node like BLS does.
 //!
 //! The partner is the other member with the smaller key. Canonical id is
-//! that key's rank, not the fixture index, so it is not always node 1. The test corrupts that share, then fires single
+//! that key's rank, not the fixture index, so on native it is not always
+//! node 1. The test corrupts that share, then fires single
 //! store-with-proof attempts until one fails — the failure itself is the
 //! signal that the partner was selected and its bad share observed — then
 //! asserts the invalid-crypto report landed on chain with exactly one
@@ -19,7 +20,9 @@
 //! accused (the chain enforces threshold <= peers - 1 when the accused sits
 //! in the signing committee).
 //!
-//! Gated only on the crypto feature (`jubjub`).
+//! Corruption/report-detection is the same backend-neutral production code
+//! `report_invalid_crypto_response.rs` already proved dual-backend, so this
+//! is gated only on the crypto feature (`jubjub`), not on backend.
 
 use super::report_scenario::{
     store_secret_with_retry, wait_for_demerits, STANDARD_RING_POLICY_YAML,
@@ -39,6 +42,9 @@ use test_support::fixture::{
 use tokio::time::{sleep, Duration};
 use zeroize::Zeroizing;
 
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
+use crate::ring_state::RingShareBundle;
+#[cfg(all(feature = "integration-test", feature = "vera"))]
 use crate::ring_state::RingShareBundle;
 
 #[tokio::test]
@@ -251,20 +257,20 @@ fn frost_partner_index(member_keys: &[String], coordinator: usize) -> usize {
 
 #[test]
 fn frost_partner_follows_canonical_id_not_fixture_index() {
-    // CI: nodes[0] coordinated, nodes[1] had the highest key, and the signer
-    // that was actually kept was nodes[2].
-    let observed = vec![
+    // Native CI: nodes[0] coordinated, nodes[1] had the highest key, and the
+    // signer that was actually kept was nodes[2].
+    let native = vec![
         "026dc4dfbc01eb0fefff7f421a765e3963b05a0fe7a6c2f681961451c1692cd485".to_string(),
         "036f83170854da2d4db05b52ee5d3caf5d905de5e7587d193e31e057440365487e".to_string(),
         "021bc3470b838c29c62c825d458dfad39cdff19301e4f90aa84126acb1a78b8622".to_string(),
     ];
-    assert_eq!(frost_partner_index(&observed, 0), 2);
+    assert_eq!(frost_partner_index(&native, 0), 2);
 
-    // With keys already sorted, fixture index 1 is the partner.
-    let sorted = vec![
+    // Cosmos keys are fixed and already sorted, so fixture index 1 is the partner.
+    let cosmos = vec![
         "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".to_string(),
         "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5".to_string(),
         "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9".to_string(),
     ];
-    assert_eq!(frost_partner_index(&sorted, 0), 1);
+    assert_eq!(frost_partner_index(&cosmos, 0), 1);
 }

@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
-# Run the E2E test tree against Vera.
+# Run the same backend-neutral E2E test tree against Cosmos or Vera.
 
 set -Eeuo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repository_root=$(cd "$script_dir/.." && pwd)
 
+backend=
 crypto=bls12-381
 
 usage() {
-  cat <<'ENDUSAGE'
-Usage: scripts/test-e2e.sh [--crypto <bls12-381|jubjub>]
+  cat <<'EOF'
+Usage: scripts/test-e2e.sh --backend <cosmos|vera|all> [--crypto <bls12-381|jubjub>]
 
-Executes the `tests::e2e` module. Tests are never retried, so a qualification
-failure cannot be hidden by nextest's CI profile.
-ENDUSAGE
+The backend changes only the compile-time adapter. Both variants execute the
+same `tests::e2e` module and backend-neutral scenario contracts. Tests are never
+retried, so a qualification failure cannot be hidden by nextest's CI profile.
+EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --backend)
+      backend=${2:?missing backend}
+      shift 2
+      ;;
     --crypto)
       crypto=${2:?missing crypto implementation}
       shift 2
@@ -35,6 +41,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+case "$backend" in
+  cosmos | vera | all) ;;
+  *)
+    echo "--backend must be cosmos, vera, or all" >&2
+    exit 2
+    ;;
+esac
+
 case "$crypto" in
   bls12-381 | jubjub) ;;
   *)
@@ -43,8 +57,32 @@ case "$crypto" in
     ;;
 esac
 
+run_backend() {
+  local selected=$1
+  local features
+  local default_flags=()
+
+  case "$selected" in
+    cosmos)
+      features="integration-test,authz-vera-go,bulletin-vera-go,fault-injection,redb,iroh,$crypto"
+      default_flags=(--no-default-features)
+      ;;
+    vera)
+      features="integration-test,vera,redb,iroh,$crypto"
+      default_flags=(--no-default-features)
+      ;;
+  esac
+
+  echo "==> E2E backend=$selected crypto=$crypto"
+  cargo nextest run --locked --profile ci --retries 0 --no-tests fail -p orbis-node --lib \
+    "${default_flags[@]}" --features "$features" \
+    -E 'test(/^tests::e2e::/)'
+}
+
 cd "$repository_root"
-echo "==> E2E crypto=$crypto"
-cargo nextest run --locked --profile ci --retries 0 --no-tests fail -p orbis-node --lib \
-  --no-default-features --features "integration-test,vera,test-support/vera,redb,iroh,$crypto" \
-  -E 'test(/^tests::e2e::/)'
+if [[ "$backend" == all ]]; then
+  run_backend cosmos
+  run_backend vera
+else
+  run_backend "$backend"
+fi

@@ -255,7 +255,7 @@ where
 #[cfg(all(test, feature = "bls12-381"))]
 mod tests {
     use super::*;
-    use common::blockchain::{node_public_key_hex, sign_node_message_with_hex_key};
+    use common::blockchain::{sign_node_message_with_hex_key, ChainConfig, TxSigner};
     use crypto::r#trait::{CryptoSerialize, DkgRole, PriShare};
     use crypto::test_helper::DKGCoordinator;
     use crypto::{DkgImpl, ScalarField, SignImpl};
@@ -327,7 +327,9 @@ mod tests {
             .unwrap();
         let signing_key_hex =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
-        let responder_node_key = node_public_key_hex(&signing_key_hex).unwrap();
+        let responder_node_key = TxSigner::from_hex_key(&signing_key_hex, ChainConfig::local())
+            .unwrap()
+            .public_key_hex();
 
         VerifyFixture {
             signer,

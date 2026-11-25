@@ -1,13 +1,22 @@
 mod commands;
 
 use anyhow::{Context, Result};
+use bulletin::r#trait::BulletinKind;
 use clap::{Args, Parser, Subcommand};
 pub use commands::{
+    add_bulletin_collaborator, add_node_to_whitelist, add_policy_to_chain,
+    cancel_ring_reshare_by_acp, cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring,
     derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_pre_and_save, do_retrieve_pre,
-    do_sign, do_store_secret, prepare_secret, query_node_info, query_pet_ring_state,
-    query_ring_state, reader_did_from_seed, store_prepared_secret, PendingPreRetrieval,
-    PreparedSecret, SignResult,
+    do_sign, do_store_secret, fund_with_signer, get_account_sequence, get_latest_ring,
+    list_bulletin_posts, post_key_derivation, prepare_secret, query_node_info,
+    query_pet_ring_state, query_ring_state, read_bulletin_post_with_config,
+    register_bulletin_namespace, register_object_to_chain, remove_node_from_whitelist,
+    schedule_ring_upgrade_by_acp, set_relationship_on_chain, set_ring_pss_interval_by_acp,
+    start_ring_reshare_by_acp, store_prepared_secret, transfer_node_controller,
+    update_node_peer_id, PendingPreRetrieval, PreparedSecret, SignResult,
 };
+use commands::{reader_did_from_seed, secp256k1_pubkey_to_did};
+use common::blockchain::{orbis::WhitelistTarget, ChainConfig};
 
 /// Network and signing configuration, shared across every subcommand.
 #[derive(Args, Debug, Clone)]
@@ -31,17 +40,75 @@ struct NetworkArgs {
     )]
     chain_id: String,
 
-    /// Hex-encoded secp256k1 private key whose public key and did:key
-    /// `derive-signer-did` prints.
+    /// Tendermint RPC URL of the target chain
+    #[arg(
+        long,
+        env = "ORBIS_RPC_URL",
+        default_value = "http://localhost:26657",
+        global = true
+    )]
+    rpc_url: String,
+
+    /// Cosmos REST API URL of the target chain
+    #[arg(
+        long,
+        env = "ORBIS_REST_URL",
+        default_value = "http://localhost:1317",
+        global = true
+    )]
+    rest_url: String,
+
+    /// gRPC URL of the target chain (distinct from --endpoint, which is the orbis node)
+    #[arg(
+        long,
+        env = "ORBIS_CHAIN_GRPC_URL",
+        default_value = "http://localhost:9090",
+        global = true
+    )]
+    chain_grpc_url: String,
+
+    /// Bech32 account address prefix of the target chain
+    #[arg(
+        long,
+        env = "ORBIS_ACCOUNT_PREFIX",
+        default_value = "vera",
+        global = true
+    )]
+    account_prefix: String,
+
+    /// Hex-encoded secp256k1 private key used to sign chain transactions.
+    /// Required for any command that writes to chain. For local devnet
+    /// testing only, see README.md for the well-known local test key —
+    /// never use it against a real network.
     #[arg(long, env = "ORBIS_SIGNING_KEY", global = true, hide_env_values = true)]
     signing_key: Option<String>,
+
+    /// Accept a plaintext `http://` chain RPC/REST endpoint on a non-local,
+    /// non-private host. Chain responses are trusted as-is, so prefer an
+    /// `https://` endpoint. Only set this when the endpoint is reached over a
+    /// network you control.
+    #[arg(long, env = "ORBIS_ALLOW_INSECURE_RPC", global = true)]
+    allow_insecure_rpc: bool,
 }
 
 impl NetworkArgs {
+    fn chain_config(&self) -> ChainConfig {
+        ChainConfig::builder()
+            .chain_id(Some(self.chain_id.clone()))
+            .rpc_url(Some(self.rpc_url.clone()))
+            .rest_url(Some(self.rest_url.clone()))
+            .grpc_url(Some(self.chain_grpc_url.clone()))
+            .account_prefix(Some(self.account_prefix.clone()))
+            .allow_insecure_rpc(Some(self.allow_insecure_rpc))
+            .build()
+    }
+
     fn require_signing_key(&self) -> Result<String> {
         self.signing_key.clone().ok_or_else(|| {
             anyhow::anyhow!(
-                "No signing key configured. Pass --signing-key <hex> or set ORBIS_SIGNING_KEY."
+                "No signing key configured. Pass --signing-key <hex> or set ORBIS_SIGNING_KEY.\n\
+                 For local devnet testing only, you may use the well-known Vera localnet \
+                 test key documented in README.md — never use it against a real network."
             )
         })
     }
@@ -59,9 +126,41 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum SubCommands {
+    /// Create a blank ring on-chain, to be targeted by a subsequent `dkg` session
+    CreateRing {
+        /// Peer node keys for the ring's initial committee (comma-separated, secp256k1 hex)
+        #[clap(long, value_delimiter = ',')]
+        peer_node_keys: Vec<String>,
+        /// Signing/reconstruction threshold
+        #[clap(long)]
+        threshold: u32,
+        /// Seconds between automatic PSS refresh ceremonies (the chain enforces a minimum)
+        #[clap(long, default_value_t = 86400)]
+        pss_interval: u64,
+        /// ACP policy ID authorizing this ring
+        #[clap(long)]
+        policy_id: String,
+        /// Optional nonce to avoid ring_id collisions when creating multiple rings in one block
+        #[clap(long)]
+        nonce: Option<String>,
+        /// Protocol version this ring starts on
+        #[clap(long, default_value_t = 0)]
+        current_version: u64,
+        /// Trusted auth-relay DIDs allowed to relay requests on this ring's behalf (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        trusted_auth_relay_dids: Vec<String>,
+        /// Opt this ring into requiring a PET check before PRE release
+        #[clap(long)]
+        requires_pet: bool,
+        /// DefraDB HTTP base URLs. When set, PRE responders store their
+        /// signed reencryption share in Defra instead of returning it
+        /// directly to the relayer (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        pre_share_endpoints: Vec<String>,
+    },
     /// Start a Distributed Key Generation session
     Dkg {
-        /// Blank ring entry targeted by this DKG (create one with `vera-admin ring`)
+        /// Blank ring entry targeted by this DKG (create one with `create-ring`)
         #[clap(long)]
         ring_id: String,
     },
@@ -138,10 +237,160 @@ pub enum SubCommands {
     },
 
     /// Derive the secp256k1 public key and did:key for --signing-key. Pure local
-    /// computation, no network calls. Vera resolves the ACP actor of a request
-    /// signed with this key from this same derivation, so this names the DID
-    /// that needs a relation granted before such a request is authorized.
+    /// computation, no network calls. Vera resolves ACP actor identity for
+    /// signed transactions (e.g. create-ring's `create_ring` permission check)
+    /// from this same derivation -- use this to find out, ahead of time, which
+    /// DID needs a relation granted (via `set-relationship-on-chain --actor-pubkey`)
+    /// before such a transaction will be authorized.
     DeriveSignerDid,
+    /// Add a policy to the chain
+    AddPolicyToChain,
+    /// Register object to the chain
+    RegisterObjectToChain {
+        /// Policy to add object to
+        #[clap(long)]
+        policy_id: String,
+        /// Id of object
+        #[clap(long)]
+        object_id: String,
+        #[clap(long)]
+        resource: String,
+    },
+    /// Set an object relationship on chain
+    SetRelationshipOnChain {
+        /// Policy to set relationship to
+        #[clap(long)]
+        policy_id: String,
+        /// Id of object
+        #[clap(long)]
+        object_id: String,
+        #[clap(long)]
+        resource: String,
+        #[clap(long)]
+        relation: String,
+        /// A private key to generate a reader did
+        #[clap(
+            long,
+            env = "ORBIS_READER_DID_PK",
+            hide_env_values = true,
+            conflicts_with = "actor_pubkey"
+        )]
+        reader_did_pk: Option<String>,
+        /// Grant this relation to the DID derived from a secp256k1 public key
+        /// instead of --reader-did-pk -- matches the identity Vera resolves
+        /// for ACP checks on signed transactions (see `derive-signer-did`).
+        #[clap(long, conflicts_with = "reader_did_pk")]
+        actor_pubkey: Option<String>,
+    },
+    /// Register a bulletin namespace
+    RegisterBulletinNamespace {
+        /// Namespace to register
+        #[clap(long)]
+        namespace: String,
+    },
+    /// Add a collaborator to a bulletin namespace
+    AddBulletinCollaborator {
+        /// Namespace to add collaborator to
+        #[clap(long)]
+        namespace: String,
+        /// Collaborator address to add
+        #[clap(long)]
+        collaborator: String,
+    },
+    /// Initiate a committee/threshold reshare for a ring via ACP authorization
+    StartRingReshare {
+        #[clap(long)]
+        ring_id: String,
+        /// New committee peer node keys (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        new_peer_node_keys: Vec<String>,
+        /// New threshold (absent means keep current)
+        #[clap(long)]
+        new_threshold: Option<u32>,
+    },
+    /// Cancel a pending reshare for a ring via ACP authorization
+    CancelRingReshare {
+        #[clap(long)]
+        ring_id: String,
+    },
+    /// Set the PSS refresh interval for a ring via ACP authorization
+    SetRingPssInterval {
+        #[clap(long)]
+        ring_id: String,
+        /// Seconds between automatic PSS refresh ceremonies
+        #[clap(long)]
+        pss_interval: u64,
+    },
+    /// Schedule a protocol version upgrade for a ring via ACP authorization
+    ScheduleRingUpgrade {
+        #[clap(long)]
+        ring_id: String,
+        /// Protocol version to activate
+        #[clap(long)]
+        next_version: u64,
+        /// Unix timestamp (seconds) at which the upgrade activates; must be at least 10 minutes in the future
+        #[clap(long)]
+        activation_time: u64,
+    },
+    /// Cancel a pending protocol version upgrade for a ring via ACP authorization
+    CancelRingUpgrade {
+        #[clap(long)]
+        ring_id: String,
+    },
+    /// Update the peer ID of a registered node
+    UpdateNodePeerId {
+        #[clap(long)]
+        node_key: String,
+        #[clap(long)]
+        peer_id: String,
+    },
+    /// Transfer the controller key of a registered node
+    TransferNodeController {
+        #[clap(long)]
+        node_key: String,
+        #[clap(long)]
+        controller_key: String,
+    },
+    /// Add a policy or ring to a node's whitelist
+    AddNodeToWhitelist {
+        #[clap(long)]
+        node_key: String,
+        /// Policy ID to whitelist (mutually exclusive with --ring-id)
+        #[clap(long, conflicts_with = "ring_id")]
+        policy_id: Option<String>,
+        /// Ring ID to whitelist (mutually exclusive with --policy-id)
+        #[clap(long, conflicts_with = "policy_id")]
+        ring_id: Option<String>,
+    },
+    /// Remove a policy or ring from a node's whitelist
+    RemoveNodeFromWhitelist {
+        #[clap(long)]
+        node_key: String,
+        /// Policy ID to remove (mutually exclusive with --ring-id)
+        #[clap(long, conflicts_with = "ring_id")]
+        policy_id: Option<String>,
+        /// Ring ID to remove (mutually exclusive with --policy-id)
+        #[clap(long, conflicts_with = "policy_id")]
+        ring_id: Option<String>,
+    },
+    /// Fund an account from the pre funded account
+    Fund {
+        /// Address to fund
+        #[clap(long)]
+        address: String,
+    },
+    /// Read an item from a bulletin
+    ReadBulletinPost {
+        /// Post ID to read
+        #[clap(long)]
+        id: String,
+    },
+    /// List all bulletin posts on the namespace
+    ListBulletinPost {
+        /// Namespace to add collaborator to
+        #[clap(long)]
+        namespace: String,
+    },
     /// Prepare a secret for storage (encrypt locally, output JSON for later use)
     PrepareSecret {
         /// Plaintext secret to encrypt. If omitted, you'll be prompted for it (hidden input).
@@ -242,12 +491,36 @@ pub enum SubCommands {
         #[clap(long)]
         ring_id: String,
     },
+    /// Fetch a ring from the orbis module by ring_id. Prints RING_ID and RING_PK for sourcing in scripts.
+    GetLatestRing {
+        /// Ring ID to look up
+        #[clap(long)]
+        ring_id: String,
+    },
+    /// Post a KeyDerivation to the bulletin (registers a sign key derivation config)
+    PostKeyDerivation {
+        /// Ring ID from DKG (used to fetch the ring public key from the bulletin)
+        #[clap(long)]
+        ring_id: String,
+        /// Derivation path string
+        #[clap(long)]
+        derivation: String,
+        /// Policy ID for authz check
+        #[clap(long)]
+        policy_id: String,
+        /// Resource type on the policy
+        #[clap(long)]
+        resource: String,
+        /// Permission required on the policy
+        #[clap(long)]
+        permission: String,
+    },
     /// Start a threshold Sign session (Policy pathway)
     Sign {
         /// Message to sign (hex encoded)
         #[clap(long)]
         message: String,
-        /// Derivation ID of a key derivation registered with Vera
+        /// Derivation ID (post ID returned by post-key-derivation)
         #[clap(long)]
         derivation_id: String,
         /// A private key to generate a reader DID for JWT
@@ -290,6 +563,26 @@ fn require_reader_did_pk(reader_did_pk: Option<String>) -> Result<String> {
     })
 }
 
+/// Resolve the DID to grant a relationship to: either the Ed25519 DID derived
+/// from --reader-did-pk's seed, or the secp256k1 DID derived from
+/// --actor-pubkey (matching Vera's ACP actor identity for signed
+/// transactions -- see `derive-signer-did`). Clap's `conflicts_with` already
+/// rejects both being given; this handles neither being given.
+fn resolve_relationship_actor_did(
+    reader_did_pk: Option<String>,
+    actor_pubkey: Option<String>,
+) -> Result<String> {
+    if let Some(seed) = reader_did_pk {
+        return Ok(reader_did_from_seed(&seed));
+    }
+    if let Some(pubkey_hex) = actor_pubkey {
+        return secp256k1_pubkey_to_did(&pubkey_hex);
+    }
+    Err(anyhow::anyhow!(
+        "Must provide --reader-did-pk or --actor-pubkey"
+    ))
+}
+
 /// `--valid-window-start`/`--valid-window-end` must be given together or not at all.
 fn require_valid_window_pair(start: Option<u64>, end: Option<u64>) -> Result<()> {
     match (start, end) {
@@ -300,6 +593,19 @@ fn require_valid_window_pair(start: Option<u64>, end: Option<u64>) -> Result<()>
     }
 }
 
+/// Resolve `--policy-id`/`--ring-id` into a single whitelist target. Clap's `conflicts_with`
+/// already rejects both being given; this handles neither being given.
+fn resolve_whitelist_target(
+    policy_id: Option<String>,
+    ring_id: Option<String>,
+) -> Result<WhitelistTarget> {
+    match (policy_id, ring_id) {
+        (Some(id), _) => Ok(WhitelistTarget::PolicyId(id)),
+        (_, Some(id)) => Ok(WhitelistTarget::RingId(id)),
+        _ => Err(anyhow::anyhow!("Must provide --policy-id or --ring-id")),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -307,6 +613,34 @@ async fn main() -> Result<()> {
     let network = cli.network.clone();
 
     match cli.command {
+        SubCommands::CreateRing {
+            peer_node_keys,
+            threshold,
+            pss_interval,
+            policy_id,
+            nonce,
+            current_version,
+            trusted_auth_relay_dids,
+            requires_pet,
+            pre_share_endpoints,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            let ring_id = create_ring(
+                peer_node_keys,
+                threshold,
+                pss_interval,
+                policy_id,
+                nonce,
+                current_version,
+                trusted_auth_relay_dids,
+                requires_pet,
+                pre_share_endpoints,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+            println!("RING_ID={}", ring_id);
+        }
         SubCommands::Dkg { ring_id } => {
             do_dkg(network.endpoint.clone(), ring_id).await?;
         }
@@ -389,9 +723,164 @@ async fn main() -> Result<()> {
         }
         SubCommands::DeriveSignerDid => {
             let signing_key = network.require_signing_key()?;
-            let (public_key, did) = derive_signer_did(&signing_key)?;
+            let (public_key, did) = derive_signer_did(&signing_key, network.chain_config())?;
             println!("PUBLIC_KEY={}", public_key);
             println!("DID={}", did);
+        }
+        SubCommands::AddPolicyToChain => {
+            let signing_key = network.require_signing_key()?;
+            let policy_id = add_policy_to_chain(network.chain_config(), &signing_key).await?;
+            println!("POLICY_ID={}", policy_id);
+        }
+        SubCommands::RegisterObjectToChain {
+            policy_id,
+            object_id,
+            resource,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            register_object_to_chain(
+                policy_id,
+                object_id,
+                resource,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+        }
+        SubCommands::SetRelationshipOnChain {
+            policy_id,
+            object_id,
+            resource,
+            relation,
+            reader_did_pk,
+            actor_pubkey,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            let did_uri = resolve_relationship_actor_did(reader_did_pk, actor_pubkey)?;
+            set_relationship_on_chain(
+                policy_id,
+                object_id,
+                resource,
+                relation,
+                did_uri,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+        }
+        SubCommands::RegisterBulletinNamespace { namespace } => {
+            let signing_key = network.require_signing_key()?;
+            register_bulletin_namespace(namespace, network.chain_config(), &signing_key).await?;
+        }
+        SubCommands::AddBulletinCollaborator {
+            namespace,
+            collaborator,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            add_bulletin_collaborator(
+                namespace,
+                collaborator,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+        }
+        SubCommands::StartRingReshare {
+            ring_id,
+            new_peer_node_keys,
+            new_threshold,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            start_ring_reshare_by_acp(
+                ring_id,
+                new_peer_node_keys,
+                new_threshold,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+        }
+        SubCommands::CancelRingReshare { ring_id } => {
+            let signing_key = network.require_signing_key()?;
+            cancel_ring_reshare_by_acp(ring_id, network.chain_config(), &signing_key).await?;
+        }
+        SubCommands::SetRingPssInterval {
+            ring_id,
+            pss_interval,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            set_ring_pss_interval_by_acp(
+                ring_id,
+                pss_interval,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+        }
+        SubCommands::ScheduleRingUpgrade {
+            ring_id,
+            next_version,
+            activation_time,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            schedule_ring_upgrade_by_acp(
+                ring_id,
+                next_version,
+                activation_time,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+        }
+        SubCommands::CancelRingUpgrade { ring_id } => {
+            let signing_key = network.require_signing_key()?;
+            cancel_ring_upgrade_by_acp(ring_id, network.chain_config(), &signing_key).await?;
+        }
+        SubCommands::UpdateNodePeerId { node_key, peer_id } => {
+            let signing_key = network.require_signing_key()?;
+            update_node_peer_id(node_key, peer_id, network.chain_config(), &signing_key).await?;
+        }
+        SubCommands::TransferNodeController {
+            node_key,
+            controller_key,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            transfer_node_controller(
+                node_key,
+                controller_key,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+        }
+        SubCommands::AddNodeToWhitelist {
+            node_key,
+            policy_id,
+            ring_id,
+        } => {
+            let target = resolve_whitelist_target(policy_id, ring_id)?;
+            let signing_key = network.require_signing_key()?;
+            add_node_to_whitelist(node_key, target, network.chain_config(), &signing_key).await?;
+        }
+        SubCommands::RemoveNodeFromWhitelist {
+            node_key,
+            policy_id,
+            ring_id,
+        } => {
+            let target = resolve_whitelist_target(policy_id, ring_id)?;
+            let signing_key = network.require_signing_key()?;
+            remove_node_from_whitelist(node_key, target, network.chain_config(), &signing_key)
+                .await?;
+        }
+        SubCommands::Fund { address } => {
+            let signing_key = network.require_signing_key()?;
+            fund_with_signer(address, network.chain_config(), &signing_key).await?;
+        }
+        SubCommands::ReadBulletinPost { id } => {
+            read_bulletin_post_with_config(id, BulletinKind::Ring, network.chain_config()).await?;
+        }
+        SubCommands::ListBulletinPost { namespace } => {
+            list_bulletin_posts(namespace, network.chain_config()).await?;
         }
         SubCommands::PrepareSecret {
             secret,
@@ -488,6 +977,32 @@ async fn main() -> Result<()> {
             let (poly, last_pss) = query_pet_ring_state(network.endpoint.clone(), ring_id).await?;
             println!("PUBLIC_POLYNOMIAL={}", poly);
             println!("LAST_PSS={}", last_pss);
+        }
+        SubCommands::GetLatestRing { ring_id } => {
+            let (ring_id, ring_pk) = get_latest_ring(ring_id, network.chain_config()).await?;
+            println!("RING_ID={}", ring_id);
+            println!("RING_PK={}", ring_pk);
+        }
+        SubCommands::PostKeyDerivation {
+            ring_id,
+            derivation,
+            policy_id,
+            resource,
+            permission,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            let (derivation_id, derived_pk_hex) = post_key_derivation(
+                ring_id,
+                derivation,
+                policy_id,
+                resource,
+                permission,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+            println!("DERIVATION_ID={}", derivation_id);
+            println!("DERIVED_PK={}", derived_pk_hex);
         }
         SubCommands::Sign {
             message,

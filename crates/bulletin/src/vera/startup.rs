@@ -19,6 +19,8 @@ use zeroize::Zeroizing;
 
 /// Selects whether a brand-new node accepts a deterministic initial signing
 /// key (explicit fixtures) or always generates one randomly (production).
+/// Mirrors `vera_go::startup::VeraGoStartupPolicy`'s own role for the Cosmos
+/// backend exactly — see that trait's doc comment for the rationale.
 pub trait VeraStartupPolicy: Send + 'static {
     fn initial_signing_key() -> Option<String>;
 }
@@ -114,7 +116,9 @@ impl PreparedBulletin for PreparedVeraBulletin {
     }
 }
 
-/// `initial_key` is used only when storage has no existing identity. A malformed `initial_key` is a hard error (nothing persisted),
+/// `initial_key` is used only when storage has no existing identity — same
+/// contract as `startup::cosmos::prepare_signer`'s own `initial_key`
+/// parameter. A malformed `initial_key` is a hard error (nothing persisted),
 /// not a silent fallback to a random key, so a misconfigured integration
 /// test fails loudly rather than running against a key it didn't ask for.
 pub fn initialize_identity(

@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::{did_seed, is_retryable_dkg_start_error, secp256k1_pubkey_to_did};
+use crate::commands::{did_seed, is_retryable_dkg_start_error};
 use crypto::CryptoSerialize;
 use tonic::{Code, Status};
 
@@ -7,8 +7,29 @@ fn test_network_args() -> NetworkArgs {
     NetworkArgs {
         endpoint: "http://localhost:50051".to_string(),
         chain_id: "test-chain".to_string(),
+        rpc_url: "http://rpc.example".to_string(),
+        rest_url: "http://rest.example".to_string(),
+        chain_grpc_url: "http://grpc.example".to_string(),
+        account_prefix: "prefix".to_string(),
         signing_key: None,
+        allow_insecure_rpc: false,
     }
+}
+
+#[test]
+fn chain_config_maps_each_field_to_the_matching_chain_config_field() {
+    let config = test_network_args().chain_config();
+    assert_eq!(config.chain_id, "test-chain");
+    assert_eq!(config.rpc_url, "http://rpc.example");
+    assert_eq!(config.rest_url, "http://rest.example");
+    assert_eq!(config.grpc_url, "http://grpc.example");
+    assert_eq!(config.account_prefix, "prefix");
+    assert!(!config.allow_insecure_rpc);
+
+    // The override threads through in both directions.
+    let mut args = test_network_args();
+    args.allow_insecure_rpc = true;
+    assert!(args.chain_config().allow_insecure_rpc);
 }
 
 #[test]
@@ -64,6 +85,35 @@ fn require_valid_window_pair_rejects_only_one_side() {
 }
 
 #[test]
+fn resolve_whitelist_target_prefers_policy_id_when_both_could_apply() {
+    let target = resolve_whitelist_target(Some("p1".to_string()), None).unwrap();
+    match target {
+        WhitelistTarget::PolicyId(id) => assert_eq!(id, "p1"),
+        WhitelistTarget::RingId(_) => panic!("expected PolicyId"),
+    }
+}
+
+#[test]
+fn resolve_whitelist_target_uses_ring_id_when_policy_absent() {
+    let target = resolve_whitelist_target(None, Some("r1".to_string())).unwrap();
+    match target {
+        WhitelistTarget::RingId(id) => assert_eq!(id, "r1"),
+        WhitelistTarget::PolicyId(_) => panic!("expected RingId"),
+    }
+}
+
+#[test]
+fn resolve_whitelist_target_errors_when_neither_given() {
+    // WhitelistTarget has no Debug impl, so unwrap_err() isn't available here.
+    match resolve_whitelist_target(None, None) {
+        Err(e) => assert!(e
+            .to_string()
+            .contains("Must provide --policy-id or --ring-id")),
+        Ok(_) => panic!("expected an error when neither --policy-id nor --ring-id is given"),
+    }
+}
+
+#[test]
 fn cli_parses_encrypt_secret_without_secret_flag() {
     // --secret is optional now; omitting it must not be a clap-level parse error —
     // the interactive-prompt fallback only kicks in at runtime, in resolve_secret.
@@ -83,16 +133,18 @@ fn cli_parses_encrypt_secret_without_secret_flag() {
 }
 
 #[test]
-fn derive_signer_did_returns_the_compressed_public_key_and_its_did() {
-    let (public_key, did) =
-        derive_signer_did("c4a48e2fce1481cd3294b4490f6678090ea98d3d0e5cd984558ab0968741b104")
-            .unwrap();
-    assert_eq!(
-        public_key,
-        "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"
-    );
-    assert_eq!(did, secp256k1_pubkey_to_did(&public_key).unwrap());
-    assert!(derive_signer_did("not hex").is_err());
+fn cli_rejects_whitelist_command_with_both_policy_and_ring_id() {
+    let cli = Cli::try_parse_from([
+        "cli-tool",
+        "add-node-to-whitelist",
+        "--node-key",
+        "n1",
+        "--policy-id",
+        "p1",
+        "--ring-id",
+        "r1",
+    ]);
+    assert!(cli.is_err());
 }
 
 fn test_ring_pk_hex() -> String {

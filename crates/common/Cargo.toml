@@ -6,13 +6,27 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+tokio = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true, optional = true }
 hex = { workspace = true }
+base64 = { workspace = true, optional = true }
 
+# Blockchain / Cosmos SDK
+cosmrs = { workspace = true, optional = true }
+tendermint = { workspace = true, optional = true }
+tendermint-rpc = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+bip32 = { workspace = true, optional = true }
 k256 = { version = "0.14", features = ["ecdsa"] }
 prost = { workspace = true }
+tonic = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+backoff = { version = "0.4", features = ["tokio"], optional = true }
+futures = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
 local-storage = { path = "../local-storage", optional = true, default-features = false }
 
 # Blockchain / native (Commonware / vera.rs)
@@ -25,7 +39,24 @@ commonware-codec = { version = "=2026.10.0", optional = true }
 zeroize = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["cosmos"]
+# Chain configuration, transaction signing, and Cosmos SDK / CometBFT transport.
+# Shared wire types, object IDs, and node message signatures need no feature.
+cosmos = [
+    "dep:tokio",
+    "dep:async-trait",
+    "dep:base64",
+    "dep:cosmrs",
+    "dep:tendermint",
+    "dep:tendermint-rpc",
+    "dep:reqwest",
+    "dep:bip32",
+    "dep:tonic",
+    "dep:rand",
+    "dep:backoff",
+    "dep:futures",
+    "dep:tokio-tungstenite",
+]
 # Chain configuration, deployment-trust bootstrap, and the worker-key store
 # for the native (Commonware / vera.rs) backend, shared by `authz::vera`
 # and `bulletin::vera`.
@@ -41,6 +72,9 @@ vera = [
 ]
 # StartupProgress/PrepareContext shared by the `authz`/`bulletin` factory traits.
 startup = ["dep:local-storage"]
+# Explicit devnet funding capability. This is orthogonal to the transport:
+# enabling it never selects Cosmos by itself.
+funding = []
 # Test-only helpers that must be `pub` (not `#[cfg(test)]`) to be reachable
 # from a dependent crate's own test suite, e.g. `blockchain::vera::test_key`.
 test-helpers = []

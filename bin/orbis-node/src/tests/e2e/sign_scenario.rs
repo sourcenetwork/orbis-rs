@@ -1,10 +1,13 @@
-//! Policy-authorized derived-key signing conformance scenario.
+//! Shared policy-authorized derived-key signing conformance scenario.
 //!
-//! The `#[cfg(all(feature = "vera", feature = "bls12-381"))]` blocks verify
-//! Defra's own remote-signing integration (`defra_orbis::OrbisClient`
-//! dialing the ring as a remote signer, via `defra_documents`/`defra_peers`),
-//! which does not exist for jubjub/FROST builds. Every other assertion runs
-//! unconditionally.
+//! The `#[cfg(all(feature = "vera", feature = "bls12-381"))]` blocks
+//! throughout aren't a backend-specific way of doing the same check —
+//! they verify Defra's own remote-signing integration
+//! (`defra_orbis::OrbisClient` dialing the ring as a remote signer, via
+//! `defra_documents`/`defra_peers`), a real capability that doesn't exist
+//! for Cosmos or jubjub/FROST builds yet, not something this scenario
+//! could run identically there. Every other assertion in this file runs
+//! unconditionally on both backends.
 
 use super::{pre_scenario, TestEnvironmentImpl};
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, ThresholdSigner};
@@ -49,7 +52,9 @@ pub(super) async fn run(
         !derivation_id.is_empty(),
         "key derivation must return an object id"
     );
-    // Deriving the public key from the ring key is pure curve math.
+    // Deriving the public key from the ring key is pure curve math,
+    // identical on both backends — computed here once instead of inside
+    // each backend's own key-derivation call, as the old adapters did.
     let ring_pk = GroupAffine::from_bytes(&hex::decode(&keys.main).expect("ring key is hex"))
         .expect("ring key must decode");
     let metadata =

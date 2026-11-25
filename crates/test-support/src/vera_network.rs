@@ -1,4 +1,4 @@
-//! Vera validator cluster, driven through Docker Compose
+//! Native Vera validator cluster, driven through Docker Compose
 //! (`docker/docker-compose-vera-integration-test.yml`).
 //!
 //! Unlike the old `ContainerNode`-per-validator approach (`network_mode:
@@ -8,7 +8,8 @@
 //! network — each gets its own network namespace, so all four can use the
 //! *same* fixed internal ports. Host-side access for this process's own RPC
 //! polling still goes through Docker's ephemeral published-port mapping
-//! (`compose::published_port`).
+//! (`compose::published_port`), exactly like `CosmosNetwork` already does for
+//! the Cosmos chain.
 //!
 //! Validators are addressed by literal IP, not Compose service-name DNS:
 //! `verad`'s peers.json parses bootstrapper addresses with Rust's strict
@@ -383,12 +384,13 @@ impl VeraTestNetwork {
 
     /// Address for Defra reachable from *inside* this project's own
     /// pre-created bridge network — i.e. by orbis-node containers (a ring's
-    /// `pre_share_endpoints` resolves this). No gateway-IP lookup is needed:
-    /// this network's IPs are
+    /// `pre_share_endpoints` resolves this). Unlike `CosmosNetwork`'s
+    /// equivalent, no gateway-IP lookup is needed: this network's IPs are
     /// all statically pre-assigned (see `host_ip`/this module's doc
     /// comment), so Defra's address is known before any container exists.
     ///
-    /// Docker Desktop on macOS/Windows limits this, confirmed empirically:
+    /// Same Docker-Desktop-on-macOS/Windows limitation as `CosmosNetwork::
+    /// defra_container_url` applies here too, confirmed empirically:
     /// producer-side writes from sibling containers succeed, but a reader
     /// running on the host (outside Docker) cannot route to this address at
     /// all on Docker Desktop — only on a native Linux Docker host (e.g. CI),
@@ -400,8 +402,8 @@ impl VeraTestNetwork {
 
     /// This project's own pre-created bridge network, by name — for joining
     /// a one-off sidecar container to it directly via `docker run --network`.
-    /// No Compose-generated-name guessing is needed: this network was
-    /// created directly (`create_external_network`),
+    /// Unlike Cosmos's equivalent, no Compose-generated-name guessing is
+    /// needed: this network was created directly (`create_external_network`),
     /// so its name is already known verbatim.
     pub fn network_name(&self) -> &str {
         &self.network_name
@@ -791,8 +793,11 @@ fn host_ip(subnet_cidr: &str, offset: u32) -> String {
     Ipv4Addr::from(u32::from(base) + offset).to_string()
 }
 
-/// The Vera chain revision the validator image builds from, read from
-/// `docker/VERA_REF` — a plain, manually-maintained pin.
+/// The native Vera chain revision the validator image builds from, read from
+/// `docker/VERA_REF` — a plain, manually-maintained pin (same
+/// convention as `docker/VERA_GO_REF`, which serves a different purpose: that
+/// one is the upgrade-compatibility baseline `scripts/test-upgrade.sh` reads,
+/// not the revision integration tests build against).
 ///
 /// This file must agree with `scripts/vera-ref.py`'s output (the
 /// `rev = "..."` pin shared by the `vera-client`/`vera-domain`/`vera-node`

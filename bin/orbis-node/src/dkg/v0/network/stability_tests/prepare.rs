@@ -78,7 +78,7 @@ fn missing_topology_members_are_exact_and_prefixes_are_bounded() {
 async fn retried_prepare_skips_vera_revalidation_when_already_configured() {
     let db_name = "retried_prepare_skips_vera_revalidation";
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let ring_id = TEST_FRESH_DKG_RING_ID.to_string();
 
@@ -133,7 +133,7 @@ async fn retried_prepare_skips_vera_revalidation_when_already_configured() {
 async fn conflicting_prepare_is_rejected_without_vera_revalidation() {
     let db_name = "conflicting_prepare_is_rejected_without_vera_revalidation";
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
-    let app_state = create_test_app_state_with_bulletin(bulletin.clone(), db_name).await;
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
     let node_key = app_state.node_key.clone();
     let ring_id = TEST_FRESH_DKG_RING_ID.to_string();
 

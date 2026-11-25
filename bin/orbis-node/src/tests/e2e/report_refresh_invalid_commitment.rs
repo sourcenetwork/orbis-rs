@@ -1,4 +1,4 @@
-//! Integration test: a dealer's refresh commitment with a non-
+//! Shared integration test: a dealer's refresh commitment with a non-
 //! identity constant term (i.e. not actually a refresh — the constant term
 //! must stay fixed across a refresh) is forged and injected directly via
 //! `UnsafeTestingService::submit_dkg_invalid_refresh_commitment_evidence`,
@@ -6,8 +6,12 @@
 //! and the signed statement alone, so injecting with a fixed request_id and
 //! no live session avoids racing a healthy same-committee refresh).
 //!
-//! `NODE3_SIGNING_KEY_HEX` is node3's real signing key, and the ring's
-//! current `RingPayload` comes from `BulletinTestDriver::read_ring_state_facts`.
+//! Fully backend-neutral — no `#[cfg]` split in this file. Same reasoning
+//! as `report_reshare_bad_dkg_share_relay.rs`/`report_reshare_dkg_equivocation.rs`:
+//! `NODE3_SIGNING_KEY_HEX` is node3's real signing key on both backends now,
+//! and the ring's current `RingPayload` comes from
+//! `BulletinTestDriver::read_ring_state_facts` rather than a Cosmos-only
+//! raw cli-tool bulletin read.
 
 use super::pre_scenario;
 use super::TestEnvironmentImpl;

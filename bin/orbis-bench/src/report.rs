@@ -15,12 +15,113 @@ pub fn generate_report(run_dir: &Path) -> Result<()> {
     let trials = read_trials(run_dir)?;
     let mut summary = summarize(&trials);
     apply_expected_trial_counts(&mut summary, &manifest);
-    let html = render_report(&manifest, &trials, &summary);
+    let resources = read_resource_summary(&run_dir.join("resource-samples.csv"))?;
+    let html = render_report(&manifest, &trials, &summary, &resources);
     fs::write(run_dir.join("report.html"), html)?;
     Ok(())
 }
 
-fn render_report(manifest: &RunManifest, trials: &[TrialRecord], rows: &[SummaryRow]) -> String {
+#[derive(Clone, Debug, Default)]
+struct ResourceSummary {
+    sample_count: usize,
+    peak_aggregate_rss_bytes: u64,
+    peak_aggregate_cpu_percent: f64,
+    cpu_seconds: f64,
+    network_rx_bytes: u64,
+    network_tx_bytes: u64,
+}
+
+/// Parses one line written by `results::csv_field`: a field is quoted only
+/// when it contains a comma, quote, or newline, with embedded quotes doubled.
+/// A plain `line.split(',')` would misparse such a field's embedded commas as
+/// column separators, silently shifting every numeric column after it.
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(character) = chars.next() {
+        if in_quotes {
+            if character == '"' {
+                if chars.peek() == Some(&'"') {
+                    field.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                field.push(character);
+            }
+        } else {
+            match character {
+                '"' if field.is_empty() => in_quotes = true,
+                ',' => fields.push(std::mem::take(&mut field)),
+                _ => field.push(character),
+            }
+        }
+    }
+    fields.push(field);
+    fields
+}
+
+fn read_resource_summary(path: &Path) -> Result<ResourceSummary> {
+    if !path.exists() {
+        return Ok(ResourceSummary::default());
+    }
+    let mut by_stack_timestamp: BTreeMap<(String, u128), (u64, f64)> = BTreeMap::new();
+    let mut network_by_container: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    for line in fs::read_to_string(path)?.lines().skip(1) {
+        let fields = parse_csv_line(line);
+        if fields.len() < 10 {
+            continue;
+        }
+        let timestamp = fields[2].parse().unwrap_or(0);
+        let cpu = fields[5].parse().unwrap_or(0.0);
+        let rss = fields[6].parse().unwrap_or(0);
+        let entry = by_stack_timestamp
+            .entry((fields[1].to_string(), timestamp))
+            .or_default();
+        entry.0 += rss;
+        entry.1 += cpu;
+        let network = network_by_container
+            .entry(format!("{}/{}", fields[1], fields[4]))
+            .or_default();
+        network.0 = network.0.max(fields[8].parse().unwrap_or(0));
+        network.1 = network.1.max(fields[9].parse().unwrap_or(0));
+    }
+    let mut cpu_seconds = 0.0;
+    let mut previous_by_stack: BTreeMap<&str, (u128, f64)> = BTreeMap::new();
+    for ((stack, timestamp), (_, cpu_percent)) in &by_stack_timestamp {
+        if let Some((previous_timestamp, previous_cpu)) = previous_by_stack.get(stack.as_str()) {
+            cpu_seconds += previous_cpu / 100.0
+                * timestamp.saturating_sub(*previous_timestamp) as f64
+                / 1_000.0;
+        }
+        previous_by_stack.insert(stack, (*timestamp, *cpu_percent));
+    }
+    Ok(ResourceSummary {
+        sample_count: by_stack_timestamp.len(),
+        peak_aggregate_rss_bytes: by_stack_timestamp
+            .values()
+            .map(|value| value.0)
+            .max()
+            .unwrap_or(0),
+        peak_aggregate_cpu_percent: by_stack_timestamp
+            .values()
+            .map(|value| value.1)
+            .fold(0.0, f64::max),
+        cpu_seconds,
+        network_rx_bytes: network_by_container.values().map(|value| value.0).sum(),
+        network_tx_bytes: network_by_container.values().map(|value| value.1).sum(),
+    })
+}
+
+fn render_report(
+    manifest: &RunManifest,
+    trials: &[TrialRecord],
+    rows: &[SummaryRow],
+    resources: &ResourceSummary,
+) -> String {
     let measured: Vec<&TrialRecord> = trials.iter().filter(|trial| !trial.warmup).collect();
     let successes = measured.iter().filter(|trial| trial.success).count();
     let ceremony_rows: Vec<&SummaryRow> = rows
@@ -44,7 +145,15 @@ fn render_report(manifest: &RunManifest, trials: &[TrialRecord], rows: &[Summary
                 .into(),
         );
     }
-    warnings.push("WAN results are in-process software shaping, not measurements across independent machines or Internet routes.".into());
+    if resources.peak_aggregate_cpu_percent > manifest.host.cpu_count as f64 * 85.0 {
+        warnings.push("The host approached CPU saturation; latency may primarily reflect local scheduling contention.".into());
+    }
+    if docker_memory_bytes(manifest)
+        .is_some_and(|total| resources.peak_aggregate_rss_bytes as f64 > total as f64 * 0.85)
+    {
+        warnings.push("The benchmark approached the Docker memory allocation; latency and viability may be memory-constrained.".into());
+    }
+    warnings.push("WAN results are single-host UDP egress emulation, not measurements across independent machines or Internet routes.".into());
 
     let mut html = String::with_capacity(64 * 1024);
     html.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
@@ -64,6 +173,34 @@ fn render_report(manifest: &RunManifest, trials: &[TrialRecord], rows: &[Summary
         "Passed",
         &successes.to_string(),
         &format!("{:.1}%", percent(successes, measured.len())),
+    );
+    stat_card(
+        &mut html,
+        "Peak aggregate RSS",
+        &human_bytes(resources.peak_aggregate_rss_bytes),
+        &format!("{} resource snapshots", resources.sample_count),
+    );
+    stat_card(
+        &mut html,
+        "Peak aggregate CPU",
+        &format!("{:.0}%", resources.peak_aggregate_cpu_percent),
+        "Docker one-second samples",
+    );
+    stat_card(
+        &mut html,
+        "Approx. CPU-seconds",
+        &format!("{:.1}", resources.cpu_seconds),
+        "integrated Docker CPU samples",
+    );
+    stat_card(
+        &mut html,
+        "Container network I/O",
+        &format!(
+            "{} ↓ / {} ↑",
+            human_bytes(resources.network_rx_bytes),
+            human_bytes(resources.network_tx_bytes)
+        ),
+        "maximum cumulative counters",
     );
     html.push_str("</section>");
 
@@ -159,11 +296,19 @@ fn render_report(manifest: &RunManifest, trials: &[TrialRecord], rows: &[Summary
     html.push_str(&success_chart(rows, trials));
     html.push_str("</section>");
 
+    let metric_totals = aggregate_metric_deltas(trials);
     html.push_str("<details><summary>Advanced / raw evidence</summary>");
+    html.push_str("<section><h2>DKG and PSS phase breakdown</h2><div class=\"table-wrap\"><table><thead><tr><th>Ceremony</th><th>Phase</th><th>Node observations</th><th>Average node phase (s)</th><th>Aggregate node-time (s)</th></tr></thead><tbody>");
+    for phase in phase_breakdown(&metric_totals) {
+        write!(html, "<tr><td>{}</td><td>{}</td><td class=\"num\">{:.0}</td><td class=\"num\">{:.3}</td><td class=\"num\">{:.3}</td></tr>", escape(&phase.kind), escape(&phase.phase), phase.count, phase.average_ms / 1000.0, phase.total_ms / 1000.0).ok();
+    }
+    html.push_str("</tbody></table></div></section>");
+
     html.push_str("<section><h2>DKG transport evidence</h2><div class=\"table-wrap\"><table><thead><tr><th>Plane</th><th>Measurement</th><th>Labels</th><th>Value</th></tr></thead><tbody>");
-    let transport_rows = missing_topology_evidence(trials);
+    let mut transport_rows = dkg_transport_evidence(&metric_totals);
+    transport_rows.extend(missing_topology_evidence(trials));
     if transport_rows.is_empty() {
-        html.push_str("<tr><td colspan=\"4\" class=\"empty\">No DKG transport failures were recorded.</td></tr>");
+        html.push_str("<tr><td colspan=\"4\" class=\"empty\">No DKG transport metrics were recorded.</td></tr>");
     } else {
         for row in transport_rows {
             write!(
@@ -177,9 +322,19 @@ fn render_report(manifest: &RunManifest, trials: &[TrialRecord], rows: &[Summary
             .ok();
         }
     }
-    html.push_str("</tbody></table></div></section>");
+    html.push_str("</tbody></table></div><p class=\"note\">Counters and histogram observations are exact before/after deltas summed across trials. Active-connection and neighbor gauges are reported as end-minus-start deltas; use node scrapes for point-in-time values.</p></section>");
 
-    html.push_str("<section><h2>Environment</h2><dl>");
+    html.push_str("<section><h2>Protocol and resource evidence</h2><div class=\"split\"><div><h3>Metric deltas</h3><div class=\"table-wrap compact\"><table><thead><tr><th>Metric</th><th>Total delta</th></tr></thead><tbody>");
+    for (metric, value) in metric_totals.iter().take(30) {
+        write!(
+            html,
+            "<tr><td><code>{}</code></td><td class=\"num\">{:.3}</td></tr>",
+            escape(metric),
+            value
+        )
+        .ok();
+    }
+    html.push_str("</tbody></table></div></div><div><h3>Environment</h3><dl>");
     definition(
         &mut html,
         "Git commit",
@@ -223,7 +378,37 @@ fn render_report(manifest: &RunManifest, trials: &[TrialRecord], rows: &[Summary
             .map(human_bytes)
             .unwrap_or_else(|| "not recorded".into()),
     );
-    html.push_str("</dl></section>");
+    definition(
+        &mut html,
+        "Node image digest",
+        manifest.node_image.as_deref().unwrap_or("not recorded"),
+    );
+    definition(
+        &mut html,
+        "Vera image digest",
+        manifest.vera_image.as_deref().unwrap_or("not recorded"),
+    );
+    definition(&mut html, "Vera ref", &manifest.vera_go_ref);
+    definition(
+        &mut html,
+        "P2P messages (counter delta)",
+        &format!(
+            "{:.0}",
+            (metric_prefix_total(&metric_totals, "p2p_messages_")
+                + metric_prefix_total(&metric_totals, "network_messages_"))
+            .max(0.0)
+        ),
+    );
+    definition(
+        &mut html,
+        "P2P bytes (counter delta)",
+        &human_bytes(
+            (metric_prefix_total(&metric_totals, "p2p_bytes_")
+                + metric_prefix_total(&metric_totals, "network_bytes_"))
+            .max(0.0) as u64,
+        ),
+    );
+    html.push_str("</dl></div></div></section>");
     html.push_str("</details>");
 
     html.push_str("<section class=\"warnings\"><h2>Interpretation warnings</h2><ul>");
@@ -233,7 +418,7 @@ fn render_report(manifest: &RunManifest, trials: &[TrialRecord], rows: &[Summary
         write!(html, "<li>{}</li>", escape(&truncate_error(&warning))).ok();
     }
     html.push_str("</ul></section>");
-    html.push_str("<footer>Raw evidence: manifest.json · trials.jsonl · setup-failures.jsonl · summary.csv · failure logs</footer></main></body></html>");
+    html.push_str("<footer>Raw evidence: manifest.json · trials.jsonl · setup-failures.jsonl · summary.csv · resource-samples.csv · resolved Compose/genesis · failure logs</footer></main></body></html>");
     html
 }
 
@@ -588,12 +773,107 @@ fn largest_viable(rows: &[SummaryRow], operation_count: usize) -> Vec<Capacity> 
     map.into_values().collect()
 }
 
+fn aggregate_metric_deltas(trials: &[TrialRecord]) -> Vec<(String, f64)> {
+    let mut map = BTreeMap::new();
+    for trial in trials {
+        for (key, value) in &trial.metric_deltas {
+            *map.entry(key.clone()).or_insert(0.0) += value;
+        }
+    }
+    let mut values: Vec<_> = map.into_iter().collect();
+    values.sort_by(|a, b| b.1.total_cmp(&a.1));
+    values
+}
+
+#[derive(Debug)]
+struct PhaseBreakdown {
+    kind: String,
+    phase: String,
+    count: f64,
+    average_ms: f64,
+    total_ms: f64,
+}
+
 #[derive(Debug, PartialEq)]
 struct TransportEvidence {
     plane: String,
     measurement: String,
     labels: String,
     value: String,
+}
+
+fn dkg_transport_evidence(metrics: &[(String, f64)]) -> Vec<TransportEvidence> {
+    let lookup: BTreeMap<&str, f64> = metrics
+        .iter()
+        .map(|(metric, value)| (metric.as_str(), *value))
+        .collect();
+    let mut rows = Vec::new();
+    for (metric, value) in metrics {
+        let (name, labels) = metric
+            .split_once('{')
+            .map_or((metric.as_str(), ""), |(name, labels)| {
+                (name, labels.strip_suffix('}').unwrap_or(labels))
+            });
+        let plane = if name.starts_with("dkg_control_") {
+            "control".to_string()
+        } else if name.starts_with("dkg_public_") {
+            "public".to_string()
+        } else if name.starts_with("dkg_private_") {
+            "private".to_string()
+        } else if name.starts_with("dkg_transport_") {
+            metric_label(metric, "plane").unwrap_or_else(|| "transport".into())
+        } else if name.starts_with("p2p_") {
+            "network".to_string()
+        } else {
+            continue;
+        };
+
+        if name.ends_with("_bucket") || name.ends_with("_created") {
+            continue;
+        }
+        if let Some(base) = name.strip_suffix("_sum") {
+            let count_key = if labels.is_empty() {
+                format!("{base}_count")
+            } else {
+                format!("{base}_count{{{labels}}}")
+            };
+            let count = lookup.get(count_key.as_str()).copied().unwrap_or(0.0);
+            if count > 0.0 {
+                rows.push(TransportEvidence {
+                    plane: plane.clone(),
+                    measurement: format!("{base} average"),
+                    labels: labels.to_string(),
+                    value: format!("{:.2} ms (n={count:.0})", value / count * 1_000.0),
+                });
+            }
+            continue;
+        }
+        if name.ends_with("_count") {
+            continue;
+        }
+
+        let value = if name.contains("bytes") {
+            human_bytes(value.max(0.0) as u64)
+        } else if name.contains("active") || name.contains("neighbors") {
+            format!("{value:+.0} end-minus-start")
+        } else {
+            format!("{value:.0}")
+        };
+        rows.push(TransportEvidence {
+            plane,
+            measurement: name.to_string(),
+            labels: labels.to_string(),
+            value,
+        });
+    }
+    rows.sort_by(|left, right| {
+        (&left.plane, &left.measurement, &left.labels).cmp(&(
+            &right.plane,
+            &right.measurement,
+            &right.labels,
+        ))
+    });
+    rows
 }
 
 fn missing_topology_evidence(trials: &[TrialRecord]) -> Vec<TransportEvidence> {
@@ -627,6 +907,59 @@ fn missing_topology_evidence(trials: &[TrialRecord]) -> Vec<TransportEvidence> {
     rows
 }
 
+fn phase_breakdown(metrics: &[(String, f64)]) -> Vec<PhaseBreakdown> {
+    let lookup: BTreeMap<&str, f64> = metrics
+        .iter()
+        .map(|(metric, value)| (metric.as_str(), *value))
+        .collect();
+    let mut phases = Vec::new();
+    for (metric, seconds) in metrics
+        .iter()
+        .filter(|(metric, _)| metric.starts_with("dkg_phase_duration_seconds_sum{"))
+    {
+        let count_key = metric.replacen(
+            "dkg_phase_duration_seconds_sum",
+            "dkg_phase_duration_seconds_count",
+            1,
+        );
+        let count = lookup.get(count_key.as_str()).copied().unwrap_or(0.0);
+        if count <= 0.0 {
+            continue;
+        }
+        phases.push(PhaseBreakdown {
+            kind: metric_label(metric, "kind").unwrap_or_else(|| "unknown".into()),
+            phase: metric_label(metric, "phase").unwrap_or_else(|| "unknown".into()),
+            count,
+            average_ms: seconds / count * 1_000.0,
+            total_ms: seconds * 1_000.0,
+        });
+    }
+    phases.sort_by(|left, right| (&left.kind, &left.phase).cmp(&(&right.kind, &right.phase)));
+    phases
+}
+
+fn metric_label(metric: &str, label: &str) -> Option<String> {
+    let labels = metric.split_once('{')?.1.strip_suffix('}')?;
+    labels.split(',').find_map(|part| {
+        let (name, value) = part.split_once('=')?;
+        (name == label).then(|| value.trim_matches('"').to_string())
+    })
+}
+
+fn metric_prefix_total(metrics: &[(String, f64)], prefix: &str) -> f64 {
+    metrics
+        .iter()
+        .filter(|(metric, _)| metric.starts_with(prefix))
+        .map(|(_, value)| value)
+        .sum()
+}
+
+fn docker_memory_bytes(manifest: &RunManifest) -> Option<u64> {
+    let value = manifest.host.docker_info.as_ref()?.get("MemTotal")?;
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+}
 fn stat_card(out: &mut String, label: &str, value: &str, note: &str) {
     write!(
         out,
@@ -731,6 +1064,7 @@ mod tests {
             error: None,
             ring_id: Some("ring".into()),
             ring_pk: Some("pk".into()),
+            metric_deltas: BTreeMap::new(),
         }
     }
 
@@ -745,6 +1079,82 @@ mod tests {
                 .ring_size)
             .contains("No Dkg")
         );
+    }
+
+    #[test]
+    fn phase_histograms_are_reduced_to_node_phase_durations() {
+        let metrics = vec![
+            (
+                "dkg_phase_duration_seconds_count{kind=\"refresh\",phase=\"phase2_shares\"}".into(),
+                4.0,
+            ),
+            (
+                "dkg_phase_duration_seconds_sum{kind=\"refresh\",phase=\"phase2_shares\"}".into(),
+                2.0,
+            ),
+        ];
+        let rows = phase_breakdown(&metrics);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "refresh");
+        assert_eq!(rows[0].phase, "phase2_shares");
+        assert_eq!(rows[0].average_ms, 500.0);
+        assert_eq!(rows[0].total_ms, 2_000.0);
+    }
+
+    #[test]
+    fn dkg_transport_evidence_reports_latency_events_and_network_deltas() {
+        let metrics = vec![
+            (
+                "dkg_control_readiness_duration_seconds_count{kind=\"fresh\"}".into(),
+                2.0,
+            ),
+            (
+                "dkg_control_readiness_duration_seconds_sum{kind=\"fresh\"}".into(),
+                1.0,
+            ),
+            (
+                "dkg_transport_events_total{plane=\"public\",event=\"repair\"}".into(),
+                3.0,
+            ),
+            (
+                "dkg_transport_events_total{plane=\"control\",event=\"probe_ack\"}".into(),
+                8.0,
+            ),
+            (
+                "dkg_transport_events_total{plane=\"public\",event=\"rejoin_isolation\"}".into(),
+                1.0,
+            ),
+            (
+                "p2p_bytes_sent_total{protocol=\"gossip\"}".into(),
+                1_048_576.0,
+            ),
+            ("p2p_gossip_neighbors{protocol=\"gossip\"}".into(), -1.0),
+        ];
+        let rows = dkg_transport_evidence(&metrics);
+        assert!(rows.iter().any(|row| {
+            row.plane == "control"
+                && row.measurement == "dkg_control_readiness_duration_seconds average"
+                && row.value == "500.00 ms (n=2)"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.plane == "public"
+                && row.measurement == "dkg_transport_events_total"
+                && row.value == "3"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.plane == "control" && row.labels.contains("probe_ack") && row.value == "8"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.plane == "public" && row.labels.contains("rejoin_isolation") && row.value == "1"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.plane == "network"
+                && row.measurement == "p2p_bytes_sent_total"
+                && row.value == "1.0 MiB"
+        }));
+        assert!(rows.iter().any(|row| {
+            row.measurement == "p2p_gossip_neighbors" && row.value == "-1 end-minus-start"
+        }));
     }
 
     #[test]
@@ -768,5 +1178,29 @@ mod tests {
         assert!(rows[0].labels.contains("network=\"50\""));
         assert!(rows[0].labels.contains("ring=\"8\""));
         assert_eq!(rows[0].value, "2 (aaaaaaaaaaaa,bbbbbbbbbbbb)");
+    }
+
+    #[test]
+    fn resource_cpu_integration_does_not_charge_gaps_between_stacks() {
+        let path = std::env::temp_dir().join(format!(
+            "orbis-bench-resource-test-{}.csv",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let header = "run_id,stack_id,sampled_at_unix_ms,service,container_id,cpu_percent,memory_bytes,memory_limit_bytes,network_rx_bytes,network_tx_bytes,block_read_bytes,block_write_bytes,pids\n";
+        let rows = [
+            "r,a,0,node-1,c1,100,10,100,1,2,0,0,1",
+            "r,a,1000,node-1,c1,100,20,100,3,4,0,0,1",
+            "r,b,1000000,node-1,c2,100,30,100,5,6,0,0,1",
+            "r,b,1001000,node-1,c2,100,40,100,7,8,0,0,1",
+        ]
+        .join("\n");
+        fs::write(&path, format!("{header}{rows}\n")).unwrap();
+        let summary = read_resource_summary(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(summary.sample_count, 4);
+        assert_eq!(summary.peak_aggregate_rss_bytes, 40);
+        assert_eq!(summary.cpu_seconds, 2.0);
+        assert_eq!(summary.network_rx_bytes, 10);
+        assert_eq!(summary.network_tx_bytes, 12);
     }
 }

@@ -2,6 +2,7 @@ use crate::helpers::launch::create_and_store_node_key;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
 use crate::info::InfoServiceImpl;
 use crate::ring_state::RingIndexEntry;
+use common::blockchain::ChainConfigBuilder;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::info_service::{info_service_server::InfoService, GetNodeInfoRequest, NodeStatus};
 use tonic::Request;
@@ -17,12 +18,18 @@ async fn test_get_node_info_reports_zero_managed_ring_count_without_ring_index()
     let app_state = create_test_app_state_default(db_name).await;
 
     // Supply the backend-prepared identity independently of information reads.
+    let config = ChainConfigBuilder::default().build();
     let runtime_base_path = project_root::get_project_root().expect("resolve project root");
-    let identity = create_and_store_node_key(app_state.local_storage.clone(), &runtime_base_path)
-        .expect("Failed to create and store node key");
+    let signer = create_and_store_node_key(
+        app_state.local_storage.clone(),
+        config.clone(),
+        &runtime_base_path,
+    )
+    .expect("Failed to create and store node key");
 
     // Create the info service
-    let service = InfoServiceImpl::<DkgImpl>::new(app_state, identity);
+    let service =
+        InfoServiceImpl::<DkgImpl>::new(app_state, bulletin::startup::cosmos::identity(&signer));
 
     // Create a request
     let request = Request::new(GetNodeInfoRequest {});
@@ -63,9 +70,14 @@ async fn test_get_node_info_reports_managed_ring_count_from_ring_index() {
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
 
+    let config = ChainConfigBuilder::default().build();
     let runtime_base_path = project_root::get_project_root().expect("resolve project root");
-    let identity = create_and_store_node_key(app_state.local_storage.clone(), &runtime_base_path)
-        .expect("Failed to create and store node key");
+    let signer = create_and_store_node_key(
+        app_state.local_storage.clone(),
+        config.clone(),
+        &runtime_base_path,
+    )
+    .expect("Failed to create and store node key");
 
     let ring_index = vec![
         RingIndexEntry {
@@ -87,7 +99,8 @@ async fn test_get_node_info_reports_managed_ring_count_from_ring_index() {
         )
         .expect("Failed to store ring index");
 
-    let service = InfoServiceImpl::<DkgImpl>::new(app_state, identity);
+    let service =
+        InfoServiceImpl::<DkgImpl>::new(app_state, bulletin::startup::cosmos::identity(&signer));
     let response = service
         .get_node_info(Request::new(GetNodeInfoRequest {}))
         .await

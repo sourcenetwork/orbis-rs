@@ -19,6 +19,10 @@ const PRODUCTION: PersistedKdfParams = PersistedKdfParams {
 
 #[tokio::test]
 #[serial_test::serial]
+#[cfg_attr(
+    all(feature = "integration-test", feature = "cosmos"),
+    ignore = "this integration image provisions the reduced Argon2id test cost"
+)]
 async fn test_stopped_store_keeps_production_kdf_header() {
     assert!(
         TestEnvironmentImpl::checks_production_kdf_header(),

@@ -37,14 +37,14 @@ authors = ["Orbis Contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "8193eac0c0cf19421ad1920dd678963585259d72" }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "8193eac0c0cf19421ad1920dd678963585259d72" }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "8193eac0c0cf19421ad1920dd678963585259d72" }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "8193eac0c0cf19421ad1920dd678963585259d72" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "8193eac0c0cf19421ad1920dd678963585259d72" }
-vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "8193eac0c0cf19421ad1920dd678963585259d72" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "8193eac0c0cf19421ad1920dd678963585259d72" }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "8193eac0c0cf19421ad1920dd678963585259d72" }
+vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
+vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
 # Common dependencies across workspace
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -63,7 +63,12 @@ iroh-gossip = "0.101.0"
 bytes = "1.5"
 
 
+# Blockchain / Cosmos SDK
+cosmrs = { version = "0.22", features = ["bip32"] }
+tendermint = "0.40"
+tendermint-rpc = { version = "0.40" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+bip32 = { version = "0.5", features = ["mnemonic", "bip39"] }
 k256 = { version = "0.14", features = ["ecdsa"] }
 prost = "0.14.1"
 tonic = "0.14.2"

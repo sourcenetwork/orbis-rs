@@ -33,16 +33,15 @@ Defined in [`Cargo.toml`](Cargo.toml):
 | `jubjub` | no | Jubjub / FROST path — mutually exclusive with `bls12-381` |
 | `redb` | yes | Persistent local storage (`local-storage/redb`) |
 | `memory` | no | In-memory local storage (`local-storage/memory`) |
-| `authz-vera` | yes | Vera authorization (`authz/select-vera`) |
-| `bulletin-vera` | yes | Vera bulletin (`bulletin/select-vera`) |
-| `vera` | no | `authz-vera` + `bulletin-vera` + the `test-support` Vera harness |
+| `authz-vera` | yes | Commonware authorization (`authz/select-vera`) |
+| `bulletin-vera` | yes | Commonware bulletin (`bulletin/select-vera`) |
+| `authz-vera-go` | no | Go chain authorization (`authz/select-vera-go`) |
+| `bulletin-vera-go` | no | Go chain bulletin (`bulletin/select-vera-go`) |
 | `iroh` | yes | `network/iroh` |
 | `integration-test` | no | Shared E2E driver, diagnostic RPC client types, and deterministic fixture startup |
-| `fixture-startup` | no | Deterministic test identity; does not expose diagnostic RPCs |
+| `fixture-startup` | no | Deterministic test identity and devnet funding; does not expose diagnostic RPCs |
 | `unsafe-testing` | no | Dangerous diagnostic RPC service and fault hooks; only diagnostic test images opt in |
-| `fault-injection` | no | `network/fault-injection` for the in-process partition tests |
-| `harness` | no | In-process nodes over a mock bulletin (used by `orbis-bench`) |
-| `scale-testing` | no | In-process scale test; implies `harness` |
+| `fault-injection` | no | `network/fault-injection` for partition tests |
 
 ## CLI (quick reference)
 
@@ -92,6 +91,36 @@ storage and the node network identity key. Treat both as production secrets.
 - Rotate node identity and storage passwords through a maintenance window. A
   node identity change must be reflected in bulletin committee metadata before
   peers will treat it as the same operational participant.
+
+## Cosmos endpoint trust
+
+In Cosmos mode, the node **fully trusts** the Vera endpoints in the `authz` and
+`bulletin` sections of `--services-config`. Bulletin
+reads are plain RPC responses — there is **no light-client or Merkle-proof
+verification**. Everything security-critical flows from those reads: ring
+payloads and committee membership, peer routing (`NodeInfo`), reporting
+config, protocol-version upgrades, and ACP authorization decisions. An
+attacker who controls the RPC endpoint can present a forged ring state to
+this node.
+
+Operational rules:
+
+- **Run your own Vera full node** and point every chain endpoint setting at
+  it — colocated on the same host or on an operator-controlled network path.
+  Never use a third-party or public RPC endpoint for a production ring node.
+- If the chain node is not on localhost, protect the path to it (TLS and/or a
+  private network); the RPC connection is the root of trust for this node.
+  This is **enforced**: `rpc_url` / `rest_url` are rejected at startup
+  if they are plaintext `http://` to a host that is not loopback, RFC-1918 /
+  unique-local / link-local / CGNAT, a single-label container/service name, or
+  a `*.internal` / `*.local` / `*.lan` / `*.home.arpa` name. Use `https://`, a
+  local/private endpoint, or — only if the endpoint is reached over a private
+  network you control — set `allow_insecure_rpc` in the relevant services-config section.
+- The `ring_state_sha256` bound into signed reporting statements limits
+  *silent* divergence between honest nodes (statements built from different
+  ring states will not co-sign), but it does not protect a node whose own RPC
+  view is forged. Detection is not prevention — the trusted-endpoint
+  requirement above is the actual control.
 
 ## Trusted authentication relays
 
@@ -170,7 +199,7 @@ Integration tests may require Docker (see **`common`** crate **`IntegrationTestN
 The Vera integration is under qualification. Vera verifies the selected BLS or
 Jubjub signature scheme; Defra uses Orbis's augmented BLS suite. Legacy basic-BLS
 signature types and verification paths are removed. Shared fixtures cover the
-scenarios listed below. Defra-specific assertions and several
+backend-neutral scenarios listed below. Defra-specific assertions and several
 deeper PET/recovery invariants removed with the old one-off runner are explicitly
 tracked in [deferred E2E coverage](../../docs/e2e-deferred-coverage.md). Deployment
 qualification still requires sustained load, multi-host networks, crash/power-loss
@@ -204,11 +233,16 @@ matching ciphertext-context encoding.
 Select `jubjub` instead of `bls12-381` for the Jubjub crypto implementation. Start with
 `--services-config /path/to/services.json --node-controller-key <compressed-secp256k1-public-key>`.
 The configuration selects Vera authorization and bulletin operations through the
-existing `Authz` and `Bulletin` traits. Backend setup provides the identity and
-service adapters. This is the default `orbis-node`
-build. Startup requires `--services-config` and reports a
+existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap
+handoff, node initialization, request handlers and shutdown path. Backend setup
+provides the identity and service adapters. This is the default `orbis-node`
+build, and it excludes the Cosmos SDK and CometBFT transport dependencies.
+Adding `authz-vera-go` or `bulletin-vera-go` to that build is invalid because
+each trait selects exactly one implementation. Vera startup requires `--services-config` and reports a
 missing or invalid configuration before prompting for storage credentials or opening
 node state.
+The separate `harness` and `integration-test` features retain the dependencies used
+by their existing test identities and fixtures.
 
 Supply the controller public key as 33 hex-encoded bytes. Authz and bulletin are
 configured independently even when both select the Vera implementation:
@@ -252,7 +286,7 @@ uncertain submissions for recovery on the next write.
 Startup registers the node with Vera or verifies the existing controller and
 peer identity. Controller-owned allow-list changes require explicit authenticated
 updates. Startup does not wait for funding. `public_key.txt` and the info service's
-`public_address` field contain the compressed node public key.
+`public_address` field contain the compressed node public key in Vera mode.
 
 Shared scenarios cover restart, member replacement, a due refresh that survives
 restart, and the production Argon2id header on a stopped Vera store. Vera
@@ -268,9 +302,9 @@ identity alone. An operator must publish the reachable route through the node's
 authenticated controller update. Binding an interface does not configure NAT
 forwarding or make a private address reachable from other networks.
 
-DKG, PRE, signing, restart, member replacement, scheduled refresh, and
-fault-report scenarios run through one driver against Vera. The adapter starts
-ordinary scenarios with the production image. A scenario
+Shared DKG, PRE, signing, restart, member replacement, scheduled refresh, and
+fault-report scenarios run through the same driver on Cosmos and Vera. The
+Vera adapter starts ordinary scenarios with the production image. A scenario
 must explicitly declare that it needs the unsafe testing service before the
 adapter selects `ORBIS_VERA_DIAGNOSTIC_IMAGE`. A stopped Vera store is
 checked for the production KDF header: 262,144 KiB, three passes, one lane, and
@@ -280,7 +314,7 @@ Signing and PRE apply their 10-second peer deadline to connection setup, sending
 and receiving together. This keeps unresponsive peers within the background
 collection window so timeout observations reach reporting.
 
-`vera_client::VeraClient::read_threshold_node_demerits` returns the stored score or certified
+`HubClient::read_threshold_node_demerits` returns the stored score or certified
 absence with its revision and timestamp. Apply the ring's configured reset
 interval with `NodeDemerits::effective_points` when displaying the current score.
 
@@ -288,17 +322,19 @@ Both curve variants cover fresh ordinary rings, abrupt restart, member replaceme
 offline reports and live policy checks. Power-loss recovery and other fault
 evidence types require their own checks.
 
-The **Rust** workflow builds normal and diagnostic Vera node images
+The **Rust** workflow builds Cosmos, normal Vera and diagnostic Vera images
 through the existing Docker build. For each curve, one `cargo nextest` invocation
 selects the shared `tests::e2e` scenarios. The Vera run provides both image
 names; the fixture capability selects the diagnostic image only for scenarios
 that call the unsafe testing service, while all other scenarios qualify the
 normal image compiled without `unsafe-testing`. It excludes the hosted
 Trust-gateway scenario, which has its own gateway job. `test-support` owns the
-Compose lifecycle, Vera genesis and private stores.
+Compose lifecycle, Vera genesis and private stores. The Cosmos integration
+shards retain their existing features and tests; tests that call Cosmos
+transaction APIs are not compiled as Vera scenarios.
 
 The Vera node image uses normal release features without testing services.
-The Vera image revision
+Its dependency graph rejects Cosmos transport packages. The Vera image revision
 must match every Vera SDK manifest. Runtime images are built before the test
 harness, with production Argon2 defaults and normal deadlines. The test harness
 gets a fresh build target; only dependency downloads are cached.
@@ -311,16 +347,16 @@ curve=bls12-381 # or jubjub
 vera_ref=$(cat docker/VERA_REF)
 docker build -f docker/Dockerfile.vera-integration \
   --build-arg VERA_REF="$vera_ref" -t orbis-vera:local .
-docker build -f docker/Dockerfile \
+docker build -f docker/Dockerfile --build-arg BACKEND=vera \
   --build-arg RUST_IMAGE=rust:1.99.1-bookworm --build-arg CRYPTO_FEATURE="$curve" \
   -t orbis-node-vera:local .
 docker build -f docker/Dockerfile --target vera-diagnostic \
-  --build-arg RUST_IMAGE=rust:1.99.1-bookworm \
+  --build-arg BACKEND=vera --build-arg RUST_IMAGE=rust:1.99.1-bookworm \
   --build-arg CRYPTO_FEATURE="$curve" -t orbis-node-vera-diagnostic:local .
 cargo +1.99.1 nextest run --profile ci --release --locked --build-jobs 2 \
   --retries 0 \
   -p orbis-node --no-default-features \
-  --features "integration-test,vera,test-support/vera,redb,iroh,$curve" \
+  --features "integration-test,vera,redb,iroh,$curve" \
   --lib \
   -E "(test(/^tests::e2e::/) & not test(=tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg)) | test(/^tests::node::/)"
 ```
@@ -333,9 +369,6 @@ through `ORBIS_VERA_DIAGNOSTIC_IMAGE`; ordinary scenarios continue using
 the matching curve before each run.
 
 The Vera CI command runs the shared scenarios serially without retries.
-The same job runs `test-support`'s Docker topology tests
-(`-p test-support --test vera_validators`, same features) against the same
-images; the unit job excludes them.
 Command logs and Vera/Orbis stores remain private under `RUNNER_TEMP`; Compose
 control files remain in private temporary directories. No runtime evidence is
 uploaded. CI emits only allowlisted numeric diagnostics, fixed phase/file labels

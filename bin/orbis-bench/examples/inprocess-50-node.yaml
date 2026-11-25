@@ -2,11 +2,18 @@ schema_version: 1
 name: orbis-inprocess-50-node
 crypto: bls12-381
 
-# Real orbis-node instances run as tokio tasks in this process over real
-# loopback Iroh P2P, backed by a shared in-memory mock bulletin. No external
-# network dependency — this isolates orbis's own DKG/PRE/SIGN protocol and
-# P2P networking behavior from infrastructure flakiness that has nothing to
-# do with protocol correctness.
+# In-process backend: real orbis-node instances run as tokio tasks in this
+# process over real loopback Iroh P2P, backed by a shared in-memory mock
+# bulletin instead of a Dockerized Vera. No containers, no chain, no
+# external network dependency — this isolates orbis's own DKG/PRE/SIGN
+# protocol and P2P networking behavior from infrastructure flakiness
+# (Vera RPC hiccups, Iroh relay reachability, Docker host contention
+# under 50+ containers) that has nothing to do with protocol correctness.
+#
+# v1 scope: dkg, pre, and sign, on a `lan`-kind profile only (see
+# `Experiment::validate` in config.rs) — there is no PSS refresh/reshare
+# support and no network shaping on this backend yet.
+backend: in-process
 
 networks:
   - network_size: 50
