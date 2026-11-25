@@ -262,6 +262,8 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
                 grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
                 network_ingress: NetworkIngressArgs::default(),
+                webauthn_rp_id: None,
+                webauthn_origin: None,
             },
             cors_policy: CorsPolicy::Disabled,
             identity: bulletin::startup::NodeIdentity {
