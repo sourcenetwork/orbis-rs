@@ -7,7 +7,8 @@ use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
     setup_three_node_network_with_pre, setup_three_node_network_with_pre_and_trusted_relays,
-    test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
+    setup_three_node_network_with_pre_and_webauthn, test_db_path, TestKeyPair,
+    TEST_FRESH_DKG_RING_ID,
 };
 use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding, PreResponse};
 use crate::pre::v0::service::PreServiceImpl;
@@ -19,6 +20,8 @@ use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, Dkg, DkgMode, DkgRole, EncryptionProof, ThresholdDealer,
 };
 use crypto::{DkgImpl, PreImpl};
+use orbis_integration_core::{CanonicalOperation, PreOperation};
+use p256::ecdsa::SigningKey;
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::v0::pre::{pre_service_server::PreService, StartPreRequest};
 use std::sync::Arc;
@@ -1316,6 +1319,226 @@ async fn test_pre_fails_with_invalid_jwt_token() {
         .app_state
         .pre_response_state
         .get_responses("invalid-token-pre-request")
+        .await;
+    assert!(
+        remaining_responses.is_none(),
+        "pre_response should be cleaned up after PRE failure"
+    );
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// Test that PRE fails when the WebAuthn assertion claims a DID it doesn't actually
+/// control — signed by a different P-256 key than the one `issuer_did` decodes to. Every
+/// peer independently re-verifies the raw assertion bytes (never trusting the leader's word
+/// that auth already passed, mirroring [`test_pre_fails_with_invalid_jwt_token`] for the
+/// WebAuthn path), so this should fail the same way an invalid JWT does.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pre_fails_with_forged_webauthn_assertion() {
+    const WEBAUTHN_RP_ID: &str = "orbis-pre.test";
+    const WEBAUTHN_ORIGIN: &str = "https://orbis-pre.test";
+
+    let db_name = "test_pre_fails_with_forged_webauthn_assertion";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    println!("=== Starting PRE Failure Test (Forged WebAuthn Assertion) ===\n");
+
+    // Setup network
+    let mut network = setup_three_node_network_with_pre_and_webauthn(
+        true,
+        true,
+        db_name,
+        WEBAUTHN_RP_ID,
+        WEBAUTHN_ORIGIN,
+    )
+    .await;
+    let peer_ids = network.get_all_peer_ids();
+
+    // Run DKG
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+
+    let request = StartDkgRequest {
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+    };
+
+    // Create authenticated request
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("Failed to create JWT");
+
+    let result = node1_service
+        .start_dkg(create_authenticated_request(request, &token).unwrap())
+        .await;
+    assert!(result.is_ok());
+
+    let ring_payload = wait_for_dkg_completion(&network).await;
+
+    // Deserialize the aggregate public key from the ring payload
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
+
+    // Alice encrypts
+    let secret_message = b"Secret that should not be re-encrypted with a forged assertion";
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
+    let (_, encrypted_secret, proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
+            .expect("Encryption should succeed");
+    let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
+
+    // Bob's keys
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
+
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
+    let pre_peer_ids = peer_ids.clone();
+
+    // Store the document in the bulletin
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
+
+    let (reader_auth_context, bob_pk_signature) =
+        plain_reader_auth_context_and_signature(&object_id, &bob_sk, &bob_pk);
+
+    // The assertion is built honestly around the real request (same object_id/rdr_pk a peer
+    // will see in `PreRequestContext`) so the *only* thing wrong with it is the signing key —
+    // isolating the test to the signature check, not an incidental mismatch.
+    let mut claimed_scalar = [0u8; 32];
+    claimed_scalar[31] = 92;
+    let claimed_key = SigningKey::from_bytes((&claimed_scalar).into())
+        .expect("small nonzero scalar is a valid P-256 key");
+    let claimed_compressed_pubkey: [u8; 33] = claimed_key
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed P-256 point is 33 bytes");
+    let claimed_issuer_did = authn::did_from_p256_public_key(&claimed_compressed_pubkey);
+
+    let mut actual_signer_scalar = [0u8; 32];
+    actual_signer_scalar[31] = 93;
+    let actual_signer_key = SigningKey::from_bytes((&actual_signer_scalar).into())
+        .expect("small nonzero scalar is a valid P-256 key");
+
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before epoch")
+        .as_secs();
+    let expiry = issued_at + 300;
+    let nonce = [9u8; 16];
+    let operation = PreOperation {
+        object_id: object_id.clone(),
+        rdr_pk: bob_pk_bytes.clone(),
+        derivation: None,
+        salt: None,
+        issued_at,
+        expiry,
+        nonce,
+    };
+    let assertion = orbis_webauthn::build_test_assertion(
+        &actual_signer_key,
+        WEBAUTHN_RP_ID,
+        WEBAUTHN_ORIGIN,
+        &operation.canonical_bytes(),
+    );
+    let forged_evidence = orbis_webauthn::WebAuthnEvidence {
+        issuer_did: claimed_issuer_did,
+        authenticator_data: assertion.authenticator_data,
+        client_data_json: assertion.client_data_json,
+        signature: assertion.signature,
+        issued_at,
+        expiry,
+        nonce: nonce.to_vec(),
+    };
+
+    // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
+    let pre_result = pre_coordinator
+        .initiate_reencryption(
+            "forged-webauthn-pre-request".to_string(),
+            RingConfig {
+                ring_id: String::new(),
+                ring_pk_bytes,
+                peer_ids: pre_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_node_keys.len(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
+                pre_share_endpoints: vec![],
+            },
+            secret_bytes,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes,
+                rdr_pk_signature: bob_pk_signature,
+                object_id,
+                token_string: None,
+                webauthn_assertion: Some(forged_evidence),
+                derivation: None,
+                salt: None,
+                valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
+                document: None,
+                audit_target_object_id: None,
+                pet_evidence: None,
+                // Overwritten by `initiate_reencryption_inner` before dispatch; these tests go
+                // through the real `initiate_reencryption` entry point.
+                pinned_public_polynomial: String::new(),
+            },
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context,
+        )
+        .await;
+
+    assert!(
+        pre_result.is_err(),
+        "PRE should fail with forged WebAuthn assertion"
+    );
+
+    let error = pre_result.unwrap_err();
+    println!("PRE correctly failed with error: {}", error);
+    // When peers reject due to a forged assertion, the initiator may surface either the
+    // underlying auth failure or, after early verification/filtering, insufficient
+    // verified shares.
+    assert!(
+        error.to_string().contains("Unauthorized")
+            || error.to_string().contains("WebAuthn")
+            || error.to_string().contains("validation")
+            || error.to_string().contains("Insufficient responses")
+            || error.to_string().contains("Insufficient shares"),
+        "Error should indicate authentication failure or insufficient verified shares due to peer rejection: {}",
+        error
+    );
+
+    // Verify pre_response was cleaned up even though PRE failed
+    let remaining_responses = network
+        .alice
+        .app_state
+        .pre_response_state
+        .get_responses("forged-webauthn-pre-request")
         .await;
     assert!(
         remaining_responses.is_none(),
