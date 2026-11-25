@@ -887,6 +887,25 @@ async fn forward_unauthorized_sign(
         Status::failed_precondition(format!("failed to decode relay ring_pk hex: {error}"))
     })?;
 
+    // Round 1's `SignFields.message_sha256` is read unconditionally now (both the
+    // JWT and WebAuthn paths go through the same `validate_claims`), not only by
+    // WebAuthn as this field used to assume — leaving it empty here fails the
+    // token's own claims check before the ACP check this scenario means to
+    // exercise ever runs. Decoding the already-verified token's own claims keeps
+    // this self-consistent with whatever the token actually asserts.
+    let message_sha256 = authn::resolve_jwt_did::<authn::endpoints::sign::SignClaims>(
+        &token_string,
+        current_unix_time()?,
+        crate::constants::MAX_TOKEN_LIFETIME_SECS,
+        crate::constants::MAX_JWT_BYTES,
+        crate::constants::JWT_CLOCK_SKEW_LEEWAY_SECS,
+    )
+    .map_err(|error| {
+        Status::failed_precondition(format!("failed to decode Sign token claims: {error}"))
+    })?
+    .claims
+    .message_sha256;
+
     let request_id = statement.request_id.clone();
     let message = SignMessage::NonceRequest(NonceRequest {
         request_id: request_id.clone(),
@@ -895,9 +914,7 @@ async fn forward_unauthorized_sign(
         context: SignContext::Policy(Box::new(PolicyContext {
             token_string: Some(token_string),
             webauthn_assertion: None,
-            // Unused for this JWT-only test-forwarding path (only the
-            // WebAuthn verification branch reads this field).
-            message_sha256: Vec::new(),
+            message_sha256,
             derivation_id: statement.object_id.clone(),
             valid_window: None,
             key_derivation,
