@@ -83,7 +83,14 @@ impl Drop for WebAuthnNodeEnv {
 async fn test_passkey_authorized_pre_decryption() {
     let _node_env = WebAuthnNodeEnv::set();
 
-    let policy = FixtureId::new("passkey-pre-policy");
+    // Two separate policy fixtures, not one shared between the ring and the
+    // document — same byte-identical YAML, but a ring-creation grant and a
+    // document registration need their own on-chain policy ids. Mirrors
+    // every other `pre_scenario::run` caller (`standard_dkg_pre.rs`,
+    // `member_replacement.rs`, `scheduled_refresh.rs`), none of which reuse
+    // the ring's own policy for document registration.
+    let ring_policy = FixtureId::new("passkey-pre-ring-policy");
+    let document_policy = FixtureId::new("passkey-pre-document-policy");
     let ring = FixtureId::new("passkey-pre-ring");
     let fixture = ScenarioFixture {
         requires_unsafe_testing: true,
@@ -93,10 +100,16 @@ async fn test_passkey_authorized_pre_decryption() {
                 role: NodeRole::Running,
             })
             .collect(),
-        policies: vec![PolicyFixture {
-            id: policy.clone(),
-            definition: POLICY_YAML.to_string(),
-        }],
+        policies: vec![
+            PolicyFixture {
+                id: ring_policy.clone(),
+                definition: POLICY_YAML.to_string(),
+            },
+            PolicyFixture {
+                id: document_policy.clone(),
+                definition: POLICY_YAML.to_string(),
+            },
+        ],
         rings: vec![RingFixture {
             id: ring.clone(),
             members: vec![
@@ -107,7 +120,7 @@ async fn test_passkey_authorized_pre_decryption() {
             threshold: 2,
             pss_interval: Duration::from_secs(5),
             requires_pet: false,
-            policy: policy.clone(),
+            policy: ring_policy,
             reporting: Default::default(),
             upgrade: None,
         }],
@@ -116,7 +129,7 @@ async fn test_passkey_authorized_pre_decryption() {
 
     let environment = TestEnvironmentImpl::provision(fixture).await;
     let ring_id = environment.fixture().rings[&ring].id.clone();
-    let policy_id = environment.fixture().policies[&policy].id.clone();
+    let policy_id = environment.fixture().policies[&document_policy].id.clone();
     let endpoint = environment.nodes()[0].grpc_endpoint.clone();
     let chain_id = environment.chain_id();
 
