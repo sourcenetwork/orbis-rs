@@ -85,7 +85,16 @@ impl Drop for WebAuthnNodeEnv {
 async fn test_passkey_authorized_signing() {
     let _node_env = WebAuthnNodeEnv::set();
 
-    let policy = FixtureId::new("passkey-sign-policy");
+    // Two separate policy fixtures, not one shared between the ring and the
+    // key derivation — same byte-identical YAML, but a ring-creation grant
+    // and a `key`-resource registration need their own on-chain policy ids
+    // (Cosmos rejects registering a resource under a policy that's already
+    // bound to ring creation). Mirrors every `pre_scenario::run` caller
+    // (`standard_dkg_pre.rs`, `member_replacement.rs`, `scheduled_refresh.rs`)
+    // and this scenario's own PRE sibling (`pre_passkey_scenario.rs`), none
+    // of which reuse the ring's own policy for resource registration.
+    let ring_policy = FixtureId::new("passkey-sign-ring-policy");
+    let key_policy = FixtureId::new("passkey-sign-key-policy");
     let ring = FixtureId::new("passkey-sign-ring");
     let fixture = ScenarioFixture {
         requires_unsafe_testing: true,
@@ -95,10 +104,16 @@ async fn test_passkey_authorized_signing() {
                 role: NodeRole::Running,
             })
             .collect(),
-        policies: vec![PolicyFixture {
-            id: policy.clone(),
-            definition: POLICY_YAML.to_string(),
-        }],
+        policies: vec![
+            PolicyFixture {
+                id: ring_policy.clone(),
+                definition: POLICY_YAML.to_string(),
+            },
+            PolicyFixture {
+                id: key_policy.clone(),
+                definition: POLICY_YAML.to_string(),
+            },
+        ],
         rings: vec![RingFixture {
             id: ring.clone(),
             members: vec![
@@ -109,7 +124,7 @@ async fn test_passkey_authorized_signing() {
             threshold: 2,
             pss_interval: Duration::from_secs(5),
             requires_pet: false,
-            policy: policy.clone(),
+            policy: ring_policy,
             reporting: Default::default(),
             upgrade: None,
         }],
@@ -118,7 +133,7 @@ async fn test_passkey_authorized_signing() {
 
     let environment = TestEnvironmentImpl::provision(fixture).await;
     let ring_id = environment.fixture().rings[&ring].id.clone();
-    let policy_id = environment.fixture().policies[&policy].id.clone();
+    let policy_id = environment.fixture().policies[&key_policy].id.clone();
     let endpoint = environment.nodes()[0].grpc_endpoint.clone();
 
     let (keys, _local_state) = pre_scenario::run_dkg(&environment, &ring_id).await;
