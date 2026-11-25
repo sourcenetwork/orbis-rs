@@ -11,9 +11,7 @@ readme = "README.md"
 test-support = { path = "../../../crates/test-support", default-features = false, features = [
     "vera",
 ] }
-cli-tool = { path = "../../cli-tool", default-features = false, features = [
-    "bls12-381",
-] }
+cli-tool = { path = "../../cli-tool", default-features = false }
 vera-client = { workspace = true }
 vera-domain = { workspace = true }
 vera-harness = { workspace = true }
@@ -25,6 +23,15 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 hex = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
+
+[features]
+default = ["bls12-381"]
+# Forwards to `cli-tool`'s matching curve backend — hardcoding one here
+# unconditionally (instead of forwarding) would force that backend on for
+# any whole-workspace build, breaking the other backend's build via
+# `crypto`'s own "mutually exclusive" guard.
+bls12-381 = ["cli-tool/bls12-381"]
+jubjub = ["cli-tool/jubjub"]
 
 [lints]
 workspace = true
