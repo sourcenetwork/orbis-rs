@@ -9,6 +9,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use orbis_sdk::{InMemoryEd25519Signer, OrbisClient};
+use sha2::{Digest, Sha256};
 
 pub use orbis_sdk::{
     DkgResult, NodeInfoResult, PendingPreRetrieval, SignResult, StoreSecretResult,
@@ -284,6 +285,78 @@ fn passkey_issuer_did(signing_key: &p256::ecdsa::SigningKey) -> String {
         .try_into()
         .expect("compressed P-256 point is 33 bytes");
     authn::did_from_p256_public_key(&compressed_pubkey)
+}
+
+/// `did:key:sha256(normalized address)` — the identity an email-authorized
+/// request authenticates as, replicated here (not imported: it's a
+/// private implementation detail of `orbis_email::build_token`) so a
+/// caller can compute, in advance, the exact actor id the node will
+/// independently derive once it verifies the DKIM reply. See
+/// `orbis_email`'s own `build_token` for why this wears the `did:key:`
+/// prefix rather than a dedicated scheme: that's the one actor-id shape
+/// the chain's ACP module accepts for a grant without decoding the
+/// suffix as a real key.
+fn email_issuer_did(address: &str) -> String {
+    let normalized = address.trim().to_lowercase();
+    format!(
+        "did:key:{}",
+        hex::encode(Sha256::digest(normalized.as_bytes()))
+    )
+}
+
+/// Call `PreService.StartPre` with an email-authorized request — a
+/// DKIM-signed reply in place of a JWT. `object_id`'s document's policy
+/// must have granted `read` (or whichever permission it names) to
+/// `email_issuer_did(claimed_address)`; there is no separate enrollment
+/// step.
+///
+/// `signing_key` stands in for a real mail server signing a real reply:
+/// there is no mailbox, SMTP capture service, or human to drive here, so
+/// this process signs a synthetic RFC 5322 message directly with a key it
+/// already controls, via `orbis_email::test_support::TestSigningKey`. Fine
+/// for CLI tooling and tests; never represents a real end-user flow — the
+/// same tradeoff `do_pre_with_passkey` makes with
+/// `orbis_webauthn::build_test_assertion`.
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub async fn do_pre_with_email(
+    endpoint: String,
+    chain_id: String,
+    ring_pk: String,
+    object_id: String,
+    claimed_address: String,
+    signing_key: &orbis_email::test_support::TestSigningKey,
+    to_address: &str,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<Vec<u8>> {
+    let issuer_did = email_issuer_did(&claimed_address);
+
+    let pending = orbis_sdk::build_pre_challenge(
+        chain_id,
+        ring_pk,
+        object_id,
+        &issuer_did,
+        derivation,
+        salt,
+        valid_window_start,
+        valid_window_end,
+    )?;
+    let challenge_text = pending.email_challenge_text();
+    let raw_message = signing_key.sign_message(
+        &claimed_address,
+        to_address,
+        &format!("confirming:\n{challenge_text}"),
+    );
+    let evidence = pending.email_evidence(claimed_address, raw_message);
+
+    let client = OrbisClient::connect(endpoint).await?;
+    let decrypted = client.submit_pre_with_evidence(pending, evidence).await?;
+    print_decrypted_secret(&decrypted);
+    Ok(decrypted)
 }
 
 /// Call `PreService.StartPre` with a passkey-authorized request — a
