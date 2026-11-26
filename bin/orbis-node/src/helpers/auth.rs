@@ -58,6 +58,7 @@ pub async fn resolve_request_auth<E>(
     origin: Option<&str>,
     email_evidence: Option<&EmailEvidence>,
     email_authenticator: Option<&mail_auth::MessageAuthenticator>,
+    email_dns_cache: Option<&orbis_email::PinnedDnsCache>,
     current_time: u64,
     max_token_lifetime_secs: u64,
     max_jwt_bytes: usize,
@@ -87,15 +88,32 @@ where
     if let Some(evidence) = email_evidence {
         let authenticator = email_authenticator
             .ok_or_else(|| "email evidence not configured on this node".to_string())?;
-        return orbis_email::verify_endpoint_auth::<E>(
-            authenticator,
-            fields,
-            evidence,
-            current_time,
-            max_lifetime_secs,
-        )
-        .await
-        .map_err(|e| e.to_string());
+        return match email_dns_cache {
+            // Pinned-key mode: DKIM key lookups never touch live DNS — see
+            // `orbis_email::PinnedDnsCache`'s own doc comment for when an
+            // operator would choose this over the live-DNS default below.
+            Some(cache) => {
+                orbis_email::verify_endpoint_auth_with_cache::<E, orbis_email::PinnedDnsCache>(
+                    authenticator,
+                    cache,
+                    fields,
+                    evidence,
+                    current_time,
+                    max_lifetime_secs,
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            None => orbis_email::verify_endpoint_auth::<E>(
+                authenticator,
+                fields,
+                evidence,
+                current_time,
+                max_lifetime_secs,
+            )
+            .await
+            .map_err(|e| e.to_string()),
+        };
     }
 
     let token_string = token_string.ok_or_else(|| {
@@ -240,6 +258,7 @@ mod tests {
             Some(ORIGIN),
             None,
             None,
+            None,
             1_700_000_100,
             3600,
             16 * 1024,
@@ -272,6 +291,7 @@ mod tests {
             Some(ORIGIN),
             None,
             None,
+            None,
             current_unix_time().unwrap(),
             3600,
             16 * 1024,
@@ -291,6 +311,7 @@ mod tests {
             None,
             Some(RP_ID),
             Some(ORIGIN),
+            None,
             None,
             None,
             1_700_000_100,
@@ -353,16 +374,61 @@ mod tests {
         assert_eq!(
             token.issuer_id,
             format!(
-                "email:{}",
+                "did:key:{}",
                 hex::encode(sha2::Sha256::digest(FROM.as_bytes()))
             )
         );
 
-        // `resolve_request_auth` itself only has the no-cache (live DNS)
-        // entry point wired in, so it can't resolve this synthetic,
-        // unregistered-with-live-DNS key — confirm instead that it reaches
-        // (and only fails inside) the email branch, not silently falling
-        // through to the JWT path.
+        // `resolve_request_auth` resolves this synthetic key's TXT record
+        // through the pinned `PinnedDnsCache`, never live DNS — the same
+        // seam a node started with `--email-dkim-keys-file` uses in
+        // production (`TestDnsCache` above is `orbis-email`'s own offline
+        // test seam; this crate's node-side wiring only ever builds the
+        // production `PinnedDnsCache` type). See
+        // `rejects_email_evidence_over_live_dns_when_key_is_only_pinned`
+        // below for the no-cache branch.
+        let pinned_cache = orbis_email::PinnedDnsCache::default();
+        pinned_cache
+            .insert_dkim_key("example.test", "orbistest", signing_key.txt_record())
+            .expect("valid test DKIM key record");
+        let token = resolve_request_auth::<ToyEndpoint>(
+            &"op-1",
+            None,
+            None,
+            Some(RP_ID),
+            Some(ORIGIN),
+            Some(&evidence),
+            Some(&authenticator),
+            Some(&pinned_cache),
+            1_700_000_100,
+            3600,
+            16 * 1024,
+            30,
+        )
+        .await
+        .expect("well-formed email evidence must resolve via the pinned DNS cache");
+        assert_eq!(
+            token.issuer_id,
+            format!(
+                "did:key:{}",
+                hex::encode(sha2::Sha256::digest(FROM.as_bytes()))
+            )
+        );
+    }
+
+    /// Same dispatch, but through the no-cache (live-DNS) branch — the
+    /// synthetic key was never published anywhere live DNS can see, so this
+    /// must fail inside the email branch rather than silently falling
+    /// through to the JWT path.
+    #[tokio::test]
+    async fn rejects_email_evidence_over_live_dns_when_key_is_only_pinned() {
+        const FROM: &str = "alice@example.test";
+        let signing_key =
+            orbis_email::test_support::TestSigningKey::generate("example.test", "orbistest");
+        let evidence = email_evidence_for(&signing_key, FROM, "op-1");
+        let authenticator =
+            mail_auth::MessageAuthenticator::new_system_conf().expect("authenticator");
+
         let result = resolve_request_auth::<ToyEndpoint>(
             &"op-1",
             None,
@@ -371,6 +437,7 @@ mod tests {
             Some(ORIGIN),
             Some(&evidence),
             Some(&authenticator),
+            None, // no pinned cache configured — falls to live DNS
             1_700_000_100,
             3600,
             16 * 1024,
@@ -395,6 +462,7 @@ mod tests {
             Some(ORIGIN),
             Some(&evidence),
             None, // no authenticator configured on this node
+            None,
             1_700_000_100,
             3600,
             16 * 1024,

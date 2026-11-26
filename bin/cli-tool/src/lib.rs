@@ -11,7 +11,7 @@ pub use commands::{
     cancel_ring_reshare_by_acp_with_config, cancel_ring_upgrade_by_acp,
     cancel_ring_upgrade_by_acp_with_config, create_bulletin_post, create_bulletin_post_with_config,
     create_ring, derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_pre_and_save,
-    do_pre_with_inline_document, do_pre_with_passkey, do_retrieve_pre, do_sign,
+    do_pre_with_inline_document, do_pre_with_passkey, do_retrieve_pre, do_sign, do_sign_with_email,
     do_sign_with_passkey, do_store_secret, ensure_funded, fund, fund_with_signer, generate_pet_tag,
     get_account_sequence, get_account_sequence_with_config, get_latest_ring, list_bulletin_posts,
     post_key_derivation, post_key_derivation_with_config, prepare_secret, prove_pet_tag_knowledge,

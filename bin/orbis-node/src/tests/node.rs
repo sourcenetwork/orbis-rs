@@ -118,6 +118,7 @@ async fn make_test_node_config(
             webauthn_rp_id: None,
             webauthn_origin: None,
             email_evidence_enabled: false,
+            email_dkim_keys_file: None,
         },
         cors_policy: CorsPolicy::Disabled,
         identity: bulletin::startup::NodeIdentity {
@@ -196,6 +197,7 @@ fn node_info_test_args(
         webauthn_rp_id: None,
         webauthn_origin: None,
         email_evidence_enabled: false,
+        email_dkim_keys_file: None,
     }
 }
 
@@ -822,6 +824,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             webauthn_rp_id: None,
             webauthn_origin: None,
             email_evidence_enabled: false,
+            email_dkim_keys_file: None,
         },
         cors_policy,
         identity: identity.clone(),

@@ -313,6 +313,21 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
                 .expect("failed to initialize mail-auth DKIM authenticator"),
         )
     });
+    // Pinned-key mode: an operator-curated file stands in for live DNS
+    // entirely (see `orbis_email::PinnedDnsCache`'s own doc comment). Only
+    // meaningful alongside `email_authenticator` above, so it's gated the
+    // same way; a present-but-empty path (the `${VAR:-}` Compose pattern
+    // this whole function already follows for `webauthn_rp_id`/`origin`)
+    // is "not configured," same as the flag being omitted entirely.
+    let email_dns_cache = config.args.email_evidence_enabled.then(|| {
+        non_empty(config.args.email_dkim_keys_file.clone()).map(|path| {
+            Arc::new(
+                orbis_email::PinnedDnsCache::load_from_file(std::path::Path::new(&path))
+                    .expect("failed to load pinned DKIM keys file"),
+            )
+        })
+    });
+    let email_dns_cache = email_dns_cache.flatten();
     let app_state = AppState::<DkgImpl>::new(
         config.identity.node_key.clone(),
         config.network.clone(),
@@ -322,6 +337,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         non_empty(config.args.webauthn_rp_id.clone()),
         non_empty(config.args.webauthn_origin.clone()),
         email_authenticator,
+        email_dns_cache,
     );
     let app_state_arc = Arc::new(app_state);
 

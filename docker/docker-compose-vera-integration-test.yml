@@ -158,9 +158,12 @@ services:
       # Unset unless a scenario overrides them on the host — empty is
       # treated as "not configured" (`runtime::init_node` filters empty
       # strings to `None`), the safe default that rejects every
-      # passkey-authorized Sign request.
+      # passkey-authorized Sign request, and the pinned-DKIM-keys volume
+      # mount below defaults to /dev/null, the safe no-op, for the same reason.
       - ORBIS_WEBAUTHN_RP_ID=${ORBIS_WEBAUTHN_RP_ID:-}
       - ORBIS_WEBAUTHN_ORIGIN=${ORBIS_WEBAUTHN_ORIGIN:-}
+      - ORBIS_EMAIL_EVIDENCE_ENABLED=${ORBIS_EMAIL_EVIDENCE_ENABLED:-}
+      - ORBIS_EMAIL_DKIM_KEYS_FILE=${ORBIS_EMAIL_DKIM_KEYS_FILE:-}
       # The ordinary fixture image compiles deterministic startup only. This
       # runtime switch has an effect only when the harness selects the separate
       # diagnostic image, which explicitly compiles `unsafe-testing`.
@@ -173,6 +176,7 @@ services:
     command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_VERA_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
     volumes:
       - ${ORBIS_VERA_NODE1_DIR:-/dev/null}:/data
+      - ${ORBIS_EMAIL_DKIM_KEYS_FILE_SOURCE:-/dev/null}:/etc/orbis/email-dkim-keys.json:ro
     ports:
       - "127.0.0.1::50051"
     networks:
@@ -220,6 +224,8 @@ services:
       - RUST_LOG=info
       - ORBIS_WEBAUTHN_RP_ID=${ORBIS_WEBAUTHN_RP_ID:-}
       - ORBIS_WEBAUTHN_ORIGIN=${ORBIS_WEBAUTHN_ORIGIN:-}
+      - ORBIS_EMAIL_EVIDENCE_ENABLED=${ORBIS_EMAIL_EVIDENCE_ENABLED:-}
+      - ORBIS_EMAIL_DKIM_KEYS_FILE=${ORBIS_EMAIL_DKIM_KEYS_FILE:-}
       # The ordinary fixture image compiles deterministic startup only. This
       # runtime switch has an effect only when the harness selects the separate
       # diagnostic image, which explicitly compiles `unsafe-testing`.
@@ -232,6 +238,7 @@ services:
     command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_VERA_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
     volumes:
       - ${ORBIS_VERA_NODE2_DIR:-/dev/null}:/data
+      - ${ORBIS_EMAIL_DKIM_KEYS_FILE_SOURCE:-/dev/null}:/etc/orbis/email-dkim-keys.json:ro
     ports:
       - "127.0.0.1::50051"
     networks:
@@ -279,6 +286,8 @@ services:
       - RUST_LOG=info
       - ORBIS_WEBAUTHN_RP_ID=${ORBIS_WEBAUTHN_RP_ID:-}
       - ORBIS_WEBAUTHN_ORIGIN=${ORBIS_WEBAUTHN_ORIGIN:-}
+      - ORBIS_EMAIL_EVIDENCE_ENABLED=${ORBIS_EMAIL_EVIDENCE_ENABLED:-}
+      - ORBIS_EMAIL_DKIM_KEYS_FILE=${ORBIS_EMAIL_DKIM_KEYS_FILE:-}
       # The ordinary fixture image compiles deterministic startup only. This
       # runtime switch has an effect only when the harness selects the separate
       # diagnostic image, which explicitly compiles `unsafe-testing`.
@@ -291,6 +300,7 @@ services:
     command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_VERA_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
     volumes:
       - ${ORBIS_VERA_NODE3_DIR:-/dev/null}:/data
+      - ${ORBIS_EMAIL_DKIM_KEYS_FILE_SOURCE:-/dev/null}:/etc/orbis/email-dkim-keys.json:ro
     ports:
       - "127.0.0.1::50051"
     networks:
@@ -339,6 +349,8 @@ services:
       - RUST_LOG=info
       - ORBIS_WEBAUTHN_RP_ID=${ORBIS_WEBAUTHN_RP_ID:-}
       - ORBIS_WEBAUTHN_ORIGIN=${ORBIS_WEBAUTHN_ORIGIN:-}
+      - ORBIS_EMAIL_EVIDENCE_ENABLED=${ORBIS_EMAIL_EVIDENCE_ENABLED:-}
+      - ORBIS_EMAIL_DKIM_KEYS_FILE=${ORBIS_EMAIL_DKIM_KEYS_FILE:-}
       # The ordinary fixture image compiles deterministic startup only. This
       # runtime switch has an effect only when the harness selects the separate
       # diagnostic image, which explicitly compiles `unsafe-testing`.
@@ -351,6 +363,7 @@ services:
     command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_VERA_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
     volumes:
       - ${ORBIS_VERA_NODE4_DIR:-/dev/null}:/data
+      - ${ORBIS_EMAIL_DKIM_KEYS_FILE_SOURCE:-/dev/null}:/etc/orbis/email-dkim-keys.json:ro
     ports:
       - "127.0.0.1::50051"
     networks:

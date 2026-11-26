@@ -413,6 +413,57 @@ pub async fn do_sign_with_passkey(
     Ok(result)
 }
 
+/// Call `SignService.StartSign` with an email-authorized request — a
+/// DKIM-signed reply in place of a JWT. `derivation_id` must have been
+/// granted (via ACP) to the identity `did:key:sha256(normalized
+/// claimed_address)` decodes to (see `orbis_email::verify_and_build_token`'s
+/// own doc comment); there is no separate enrollment step.
+///
+/// `signing_key` stands in for a real mail server signing a real reply:
+/// there is no mailbox, SMTP capture service, or human to drive here, so
+/// this process signs a synthetic RFC 5322 message directly with a key it
+/// already controls, via `orbis_email::test_support::TestSigningKey`. Fine
+/// for CLI tooling and tests; never represents a real end-user flow — the
+/// same tradeoff `do_sign_with_passkey` makes with
+/// `orbis_webauthn::build_test_assertion`.
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn do_sign_with_email(
+    endpoint: String,
+    message: Vec<u8>,
+    derivation_id: String,
+    claimed_address: String,
+    signing_key: &orbis_email::test_support::TestSigningKey,
+    to_address: &str,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<SignResult> {
+    println!("Starting email-authorized Sign session:");
+    println!("  Endpoint: {endpoint}");
+    println!("  Derivation ID: {derivation_id}");
+    println!("  Message length: {} bytes", message.len());
+    println!();
+
+    let pending = orbis_sdk::build_sign_challenge(
+        derivation_id,
+        message,
+        valid_window_start,
+        valid_window_end,
+    )?;
+    let challenge_text = pending.email_challenge_text();
+    let raw_message = signing_key.sign_message(
+        &claimed_address,
+        to_address,
+        &format!("confirming:\n{challenge_text}"),
+    );
+    let evidence = pending.email_evidence(claimed_address, raw_message)?;
+
+    let client = OrbisClient::connect(endpoint).await?;
+    let result = client.submit_sign_with_evidence(pending, evidence).await?;
+    print_sign_result(&result);
+    Ok(result)
+}
+
 fn print_sign_result(result: &SignResult) {
     println!("Sign Result:");
     println!("{}", "=".repeat(60));

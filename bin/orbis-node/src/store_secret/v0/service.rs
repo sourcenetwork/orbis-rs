@@ -137,6 +137,7 @@ where
             self.state.webauthn_origin.as_deref(),
             email_assertion.as_ref(),
             self.state.email_authenticator.as_deref(),
+            self.state.email_dns_cache.as_deref(),
             current_time,
             MAX_TOKEN_LIFETIME_SECS,
             MAX_JWT_BYTES,

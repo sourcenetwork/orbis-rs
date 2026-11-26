@@ -207,6 +207,7 @@ async fn create_test_app_state_with_bulletin_inner(
         None,
         None,
         None,
+        None,
     )
 }
 

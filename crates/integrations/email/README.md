@@ -33,13 +33,19 @@ protocol needs identically (`verify_and_build_token`, `EmailEndpoint`,
 
 Key resolution defaults to live DNS (`mail_auth::MessageAuthenticator`'s own
 resolver) with zero extra code. For fully offline tests —
-[`test_support`] — and, later, a chain-backed pinned-key store, key lookups
-go through `mail-auth`'s own public `DnsCache`/`ResolverCache` seam instead
+[`test_support`] — and for production deployments that would rather pin a
+fixed, operator-curated set of keys than depend on live DNS at request time
+— [`PinnedDnsCache`], loaded once at node startup from a JSON file via
+`--email-dkim-keys-file` (`PinnedDnsCache::load_from_file`) — key lookups go
+through `mail-auth`'s own public `DnsCache`/`ResolverCache` seam instead
 (`verify_email_message_with_cache`/`verify_and_build_token_with_cache`): a
 cache is consulted before any live lookup `MessageAuthenticator` would
-otherwise perform. A future pinned store implements that same trait pair,
-built from chain state instead of a `HashMap` — no change to the
-verification logic itself.
+otherwise perform. A future chain-backed store would implement that same
+trait pair, built from chain state instead of a file — no change to the
+verification logic itself. `bin/orbis-node/src/tests/e2e/email_sign_scenario.rs`
+exercises the pinned-file path end to end against the real node binary
+(there's no live DNS record for a synthetic test domain, so this is also how
+that Docker scenario works at all, not just a test convenience).
 
 ## What's out of scope here
 
@@ -61,6 +67,16 @@ reading `RecordSet::dnssec_status` and rejecting anything but `Secure` —
 today it doesn't inspect that field at all, so the first half alone
 wouldn't be enough.
 
-The identity this crate authenticates as is always `email:sha256(address)`
-— a plain string, not a DID — but ACP's `Authz::check` already takes an
-arbitrary subject string, so nothing elsewhere needed to change for that.
+The identity this crate authenticates as is always
+`did:key:sha256(address)` — not a real decoded key. An earlier version
+used a plain `email:sha256(address)` string instead; ACP's `Authz::check`
+(the read path) happily accepts an arbitrary subject string, so that
+worked right up until the Docker e2e scenario tried to actually *grant* a
+relationship to one — the chain's ACP module (`vera.rs`'s `Did::new` and
+its Go-chain counterpart) rejects any actor string whose prefix isn't
+`did:key:` or `did:opk:<64-hex-digest>` for a `set_relationship` write,
+regardless of what `Authz::check` itself would accept. `did:key:` is a
+pure string-format reuse, not a real key: the chain never decodes the
+suffix for that scheme (only `did:opk:` gets structural validation), and a
+hex digest can't collide with a real did:key value, which always starts
+with `z` (multibase base58btc).

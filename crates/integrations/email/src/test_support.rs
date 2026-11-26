@@ -11,20 +11,17 @@
 //! bespoke abstraction, just that pattern pre-seeded instead of populated
 //! lazily from live lookups.
 
+use crate::dns_map_cache::MapCache;
 use mail_auth::crypto::{RsaKey, Sha256 as DkimSha256};
 use mail_auth::dkim::{DkimSigner, DomainKey};
-use mail_auth::dns::{DnsCache, NoCache, ResolverCache, TxtRecordParser};
+use mail_auth::dns::{DnsCache, NoCache, TxtRecordParser};
 use mail_auth::headers::HeaderWriter;
 use mail_auth::TxtRecord;
 use rsa::pkcs1::EncodeRsaPrivateKey;
 use rsa::pkcs8::EncodePublicKey;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{PrivateKeyDer, PrivatePkcs1KeyDer};
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::Arc;
 
 /// In-memory TXT-record cache for [`mail_auth::MessageAuthenticator`],
 /// implementing the same `DnsCache`/`ResolverCache` seam a future
@@ -34,43 +31,6 @@ use std::time::Instant;
 #[derive(Default)]
 pub struct TestDnsCache {
     txt: MapCache,
-}
-
-/// Implementation detail of [`TestDnsCache`]'s `DnsCache::Txt` associated
-/// type — not meant to be used directly.
-#[derive(Default)]
-pub struct MapCache(Mutex<HashMap<Box<str>, TxtRecord>>);
-
-impl ResolverCache<Box<str>, TxtRecord> for MapCache {
-    fn get<Q>(&self, name: &Q) -> Option<TxtRecord>
-    where
-        Box<str>: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        self.0
-            .lock()
-            .expect("test cache mutex poisoned")
-            .get(name)
-            .cloned()
-    }
-
-    fn remove<Q>(&self, name: &Q) -> Option<TxtRecord>
-    where
-        Box<str>: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        self.0
-            .lock()
-            .expect("test cache mutex poisoned")
-            .remove(name)
-    }
-
-    fn insert(&self, key: Box<str>, value: TxtRecord, _valid_until: Instant) {
-        self.0
-            .lock()
-            .expect("test cache mutex poisoned")
-            .insert(key, value);
-    }
 }
 
 impl DnsCache for TestDnsCache {
@@ -111,7 +71,7 @@ impl TestDnsCache {
             .to_lowercase()
             .into();
         self.txt
-            .insert(fqdn, TxtRecord::DomainKey(Arc::new(key)), Instant::now());
+            .insert_record(fqdn, TxtRecord::DomainKey(Arc::new(key)));
     }
 }
 

@@ -370,6 +370,12 @@ where
     /// authentication. Constructed once at startup (its own live-DNS
     /// resolver config is not free to rebuild per request), not per call.
     pub email_authenticator: Option<Arc<mail_auth::MessageAuthenticator>>,
+    /// Pinned DKIM keys, used instead of `email_authenticator`'s own live
+    /// DNS when configured (see `orbis_email::PinnedDnsCache`'s own doc
+    /// comment for why an operator would choose this). `None` — the
+    /// default — resolves every email-authorized request's key over live
+    /// DNS instead.
+    pub email_dns_cache: Option<Arc<orbis_email::PinnedDnsCache>>,
 }
 
 impl<D> AppState<D>
@@ -385,6 +391,7 @@ where
         webauthn_rp_id: Option<String>,
         webauthn_origin: Option<String>,
         email_authenticator: Option<Arc<mail_auth::MessageAuthenticator>>,
+        email_dns_cache: Option<Arc<orbis_email::PinnedDnsCache>>,
     ) -> Self {
         Self {
             node_key,
@@ -405,6 +412,7 @@ where
             webauthn_rp_id,
             webauthn_origin,
             email_authenticator,
+            email_dns_cache,
         }
     }
 }
@@ -427,6 +435,7 @@ where
             .field("webauthn_rp_id", &self.webauthn_rp_id)
             .field("webauthn_origin", &self.webauthn_origin)
             .field("email_authenticator", &self.email_authenticator.is_some())
+            .field("email_dns_cache", &self.email_dns_cache.is_some())
             .finish()
     }
 }

@@ -198,6 +198,7 @@ pub async fn spawn_harness_node(
         webauthn_rp_id: None,
         webauthn_origin: None,
         email_evidence_enabled: false,
+        email_dkim_keys_file: None,
     };
 
     // `local_address` is the same hex-encoded iroh node ID `ensure_node_info`

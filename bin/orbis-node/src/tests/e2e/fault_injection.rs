@@ -265,6 +265,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 webauthn_rp_id: None,
                 webauthn_origin: None,
                 email_evidence_enabled: false,
+                email_dkim_keys_file: None,
             },
             cors_policy: CorsPolicy::Disabled,
             identity: bulletin::startup::NodeIdentity {

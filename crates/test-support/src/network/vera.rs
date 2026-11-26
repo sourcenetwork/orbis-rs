@@ -319,6 +319,22 @@ async fn bring_up_orbis_nodes(
             origin.to_string_lossy().into_owned(),
         ));
     }
+    // Same opt-in pass-through, for an email-sign scenario: unset by
+    // default (every other scenario's nodes reject email-authorized Sign
+    // requests), forwarded only when a test sets these on its own process
+    // before calling `provision`. `ORBIS_EMAIL_DKIM_KEYS_FILE_SOURCE` is a
+    // host path (the Compose volume source); `ORBIS_EMAIL_DKIM_KEYS_FILE`
+    // is the fixed in-container path the node's own flag reads, mirroring
+    // `GENESIS_PATCH_FILE`'s own host-path/container-path split.
+    for var in [
+        "ORBIS_EMAIL_EVIDENCE_ENABLED",
+        "ORBIS_EMAIL_DKIM_KEYS_FILE",
+        "ORBIS_EMAIL_DKIM_KEYS_FILE_SOURCE",
+    ] {
+        if let Some(value) = std::env::var_os(var) {
+            node_env.push((var.to_string(), value.to_string_lossy().into_owned()));
+        }
+    }
 
     // Materialize all bind mounts before the first Compose invocation and
     // retain their interpolation variables. They are part of the project's

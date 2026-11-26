@@ -276,9 +276,16 @@ pub struct Args {
     /// Accept DKIM-verified email evidence in place of a JWT (see
     /// `orbis-email`). Off by default — the safe default for a ring that
     /// doesn't use email authentication. Key resolution uses this node's
-    /// own live DNS; there is no further configuration.
+    /// own live DNS unless `--email-dkim-keys-file` is also set.
     #[arg(long, env = "ORBIS_EMAIL_EVIDENCE_ENABLED")]
     pub email_evidence_enabled: bool,
+    /// Resolve DKIM keys for email-authorized requests from this fixed,
+    /// operator-curated file instead of live DNS (see
+    /// `orbis_email::PinnedDnsCache`'s own doc comment for when to prefer
+    /// this). Only takes effect when `--email-evidence-enabled` is also
+    /// set; omit to keep resolving over live DNS.
+    #[arg(long, env = "ORBIS_EMAIL_DKIM_KEYS_FILE")]
+    pub email_dkim_keys_file: Option<String>,
 }
 
 /// Operator-tunable P2P (QUIC/Iroh) inbound ingress admission budgets, grouped
