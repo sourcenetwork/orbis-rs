@@ -32,7 +32,7 @@
 //! belongs to the caller (`orbis-node`), not to any one mechanism's
 //! crate.
 
-use orbis_integration_core::CanonicalOperation;
+use orbis_integration_core::{CanonicalOperation, ChallengeEvidence};
 use sha2::{Digest, Sha256};
 use webauthn_rs_core::proto::{COSEAlgorithm, COSEEC2Key, COSEKey, COSEKeyType, ECDSACurve};
 
@@ -77,6 +77,43 @@ pub struct RawAssertion {
     pub authenticator_data: Vec<u8>,
     pub client_data_json: Vec<u8>,
     pub signature: Vec<u8>,
+}
+
+/// A WebAuthn assertion a caller already obtained from a real browser
+/// ceremony (or, for tests/CLI tooling, [`build_test_assertion`]), paired
+/// with the fields needed to turn it into a [`WebAuthnEvidence`] — an
+/// `orbis_integration_core::ChallengeEvidence` producer for any operation.
+///
+/// The browser's own ceremony already bound the assertion's signature to
+/// the exact challenge bytes (the operation's `canonical_bytes()`), so
+/// [`PasskeyAssertion`]'s `produce` never needs to inspect the operation
+/// itself — it only repackages what the browser already signed.
+#[derive(Debug, Clone)]
+pub struct PasskeyAssertion {
+    pub issuer_did: String,
+    pub assertion: RawAssertion,
+    /// Unix seconds, client-chosen — see [`WebAuthnEvidence::issued_at`].
+    pub issued_at: u64,
+    /// Unix seconds; rejected once `now` passes this.
+    pub expiry: u64,
+    pub nonce: [u8; 16],
+}
+
+impl<Op: CanonicalOperation> ChallengeEvidence<Op> for PasskeyAssertion {
+    type Wire = WebAuthnEvidence;
+    type Error = std::convert::Infallible;
+
+    fn produce(self, _operation: &Op) -> Result<WebAuthnEvidence, Self::Error> {
+        Ok(WebAuthnEvidence {
+            issuer_did: self.issuer_did,
+            authenticator_data: self.assertion.authenticator_data,
+            client_data_json: self.assertion.client_data_json,
+            signature: self.assertion.signature,
+            issued_at: self.issued_at,
+            expiry: self.expiry,
+            nonce: self.nonce.to_vec(),
+        })
+    }
 }
 
 /// Verifies a WebAuthn assertion against a caller-supplied compressed SEC1

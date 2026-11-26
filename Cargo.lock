@@ -1868,10 +1868,9 @@ dependencies = [
  "hex",
  "k256 0.14.0",
  "local-storage",
- "orbis-integration-core",
+ "orbis-sdk",
  "orbis-webauthn",
  "p256 0.13.2",
- "pre-share",
  "proto",
  "rand 0.8.8",
  "rpassword",
@@ -7067,6 +7066,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "orbis-sdk"
+version = "0.0.1"
+dependencies = [
+ "authn",
+ "base64 0.22.1",
+ "bs58",
+ "cosmrs",
+ "crypto 0.0.1",
+ "hex",
+ "jsonwebtoken",
+ "orbis-integration-core",
+ "orbis-webauthn",
+ "pre-share",
+ "proto",
+ "rand 0.8.8",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "tokio",
+ "tonic",
+ "zeroize",
+]
+
+[[package]]
 name = "orbis-webauthn"
 version = "0.0.1"
 dependencies = [
@@ -7257,16 +7282,13 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "clap",
- "cli-tool",
  "hex",
- "orbis-integration-core",
+ "orbis-sdk",
  "orbis-webauthn",
  "p256 0.13.2",
- "proto",
  "rand 0.8.8",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tokio",
  "tonic",
 ]

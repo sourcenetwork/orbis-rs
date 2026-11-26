@@ -1,261 +1,70 @@
 //! Commands that talk to a running orbis-node over gRPC: DKG, PRE, Sign, StoreSecret,
 //! and node/ring status queries.
+//!
+//! Thin wrappers over `orbis-sdk`: this module's job is CLI output
+//! (`println!`) and adapting cli-tool's own CLI-only conveniences (a
+//! string seed hashed into a JWT identity, a raw P-256 key standing in for
+//! a passkey) onto the SDK's real API — never a second copy of the
+//! request-building/crypto logic itself, which lives in `orbis-sdk`.
 
 use anyhow::{anyhow, Context, Result};
-use authn::{create_authenticated_request, JwtSigner};
-use crypto::context::CiphertextContext;
-use crypto::r#trait::{Secret, ThresholdDealer};
-use crypto::{CryptoDeserialize, CryptoSerialize};
-use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode, ScalarField as Fr};
-use serde::{Deserialize, Serialize};
-use tonic::{Code, Request, Status};
+use orbis_sdk::{InMemoryEd25519Signer, OrbisClient};
 
-use proto::info_service::info_service_client::InfoServiceClient;
-use proto::v0::dkg::dkg_service_client::DkgServiceClient;
-use proto::v0::pre::pre_service_client::PreServiceClient;
-use proto::v0::sign::sign_service_client::SignServiceClient;
-use proto::v0::store_secret::store_secret_service_client::StoreSecretServiceClient;
+pub use orbis_sdk::{
+    DkgResult, NodeInfoResult, PendingPreRetrieval, SignResult, StoreSecretResult,
+};
 
-use super::crypto::did_seed;
-use super::crypto::{PreparedPetTag, PreparedSecret};
-
-const DKG_START_MAX_ATTEMPTS: usize = 3;
-const DKG_START_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// Response structure from PRE server (JSON in `StartPreResponse.encrypted_secret`).
-/// Mirrors `orbis_node`'s `coordinator::PreReencryptResponse` wire shape — kept as an
-/// independent local shadow type rather than a dependency on `orbis-node` (the wrong
-/// dependency direction; `orbis-node` depends on `cli-tool`, not the reverse).
-///
-/// `Serialize` is derived too (not just `Deserialize`) so a parsed response can be
-/// round-tripped through [`PendingPreRetrieval`] for the save-now/retrieve-later path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum PreResponse {
-    // Boxed (as a newtype variant, which serializes identically to the equivalent struct
-    // variant) since `Direct`'s fields are much larger than `Stored`'s, which clippy's
-    // `large_enum_variant` flags otherwise.
-    Direct(Box<DirectPreResponse>),
-    /// The ring's `pre_share_endpoints` delivery mode. `pre_share::
-    /// PreShareRetrievalManifest` is a real, independently-depended-on type now
-    /// (not a loosely-parsed placeholder) — `pre-share` is exactly the standalone
-    /// crate the Defra PRE-Share Storage plan's Step 2 built for this. Boxed for
-    /// the same `large_enum_variant` reason `Direct` already is.
-    Stored {
-        manifest: Box<pre_share::PreShareRetrievalManifest>,
-    },
+/// A caller-supplied `--reader-did-pk` seed string, or the long-standing
+/// `"test_jwt"` default, hashed into a JWT-signing identity — cli-tool's
+/// own low-security convenience; see `orbis_sdk::InMemoryEd25519Signer`'s
+/// doc comment for why a real integration should bring its own signer
+/// instead.
+fn jwt_signer(reader_did_pk: Option<String>) -> InMemoryEd25519Signer {
+    InMemoryEd25519Signer::from_seed_str(&reader_did_pk.unwrap_or_else(|| "test_jwt".to_string()))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DirectPreResponse {
-    /// Recovered reencrypted commitment (xnc_cmt) as hex string
-    xnc_cmt: String,
-    /// Original encrypted secret
-    secret: Secret,
-    /// Ciphertext-binding context the node verified the proof against; needed to
-    /// rebuild the AES-GCM AAD for local decryption.
-    context: CiphertextContext,
-}
-
-/// Result of a DKG operation
-#[derive(Debug)]
-pub struct DkgResult {
-    pub session_id: String,
-    pub status: String,
-    pub message: String,
-}
-
-pub(crate) fn is_retryable_dkg_start_error(status: &Status) -> bool {
-    status.code() == Code::Unavailable
-        && status.message().to_ascii_lowercase().contains("timed out")
+/// Prints a PRE/StoreSecret-style decrypted payload the same way every
+/// decrypt path (`do_pre`, `do_pre_with_passkey`, `do_retrieve_pre`) always
+/// has: as text when it's valid UTF-8, a byte count otherwise.
+fn print_decrypted_secret(decrypted: &[u8]) {
+    match std::str::from_utf8(decrypted) {
+        Ok(text) => println!("  Decrypted Secret: {text}"),
+        Err(_) => println!(
+            "  Decrypted Secret: <binary data, {} bytes>",
+            decrypted.len()
+        ),
+    }
 }
 
 pub async fn do_dkg(endpoint: String, ring_id: String) -> Result<DkgResult> {
     println!("Starting DKG session:");
-    println!("  Endpoint: {}", endpoint);
-    println!("  Ring ID: {}", ring_id);
+    println!("  Endpoint: {endpoint}");
+    println!("  Ring ID: {ring_id}");
     println!();
 
-    println!("Connecting to {}...", endpoint);
-
-    let mut client = DkgServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
-
-    // JWT work
-    let jwt_signer = JwtSigner::new();
-    let token = jwt_signer
-        .create_dkg_jwt(&ring_id)
-        .expect("Failed to create JWT");
-
-    let mut response = None;
-    for attempt in 1..=DKG_START_MAX_ATTEMPTS {
-        let request = proto::v0::dkg::StartDkgRequest {
-            ring_id: ring_id.clone(),
-        };
-        let tonic_request = create_authenticated_request(request, &token)
-            .map_err(|e| anyhow!("Failed to create_dkg_jwt: {}", e))?;
-
-        match client.start_dkg(tonic_request).await {
-            Ok(ok) => {
-                response = Some(ok);
-                break;
-            }
-            Err(status)
-                if attempt < DKG_START_MAX_ATTEMPTS && is_retryable_dkg_start_error(&status) =>
-            {
-                println!(
-                    "DKG request timed out connecting to a peer (attempt {attempt}/{DKG_START_MAX_ATTEMPTS}); retrying..."
-                );
-                tokio::time::sleep(DKG_START_RETRY_DELAY).await;
-            }
-            Err(status) => return Err(status).context("DKG request failed"),
-        }
-    }
-
-    let response = response.expect("DKG retry loop should return or store a response");
-
-    let response = response.into_inner();
+    let client = OrbisClient::connect(endpoint).await?;
+    let result = client.start_dkg(ring_id).await?;
 
     println!("DKG Result:");
     println!("{}", "=".repeat(60));
-    println!("  Session ID: {}", response.session_id);
-    println!("  Status: {}", response.status);
-    println!("  Message: {}", response.message);
+    println!("  Session ID: {}", result.session_id);
+    println!("  Status: {}", result.status);
+    println!("  Message: {}", result.message);
 
-    Ok(DkgResult {
-        session_id: response.session_id,
-        status: response.status,
-        message: response.message,
-    })
-}
-
-/// Result of a StoreSecret operation
-#[derive(Debug)]
-pub struct StoreSecretResult {
-    pub status: String,
-    pub message: String,
-    pub created_at: i64,
-    pub object_id: String,
-    pub ring_id: String,
-    pub signature: String,
-}
-
-/// Store a prepared (pre-encrypted) secret using the StoreSecret service.
-/// This is idempotent - calling with the same PreparedSecret will return
-/// the same object_id without creating duplicates.
-///
-/// `pet_tag` must be `Some` — from [`crate::commands::crypto::prove_pet_tag_knowledge`]
-/// — for a `requires_pet` ring's document, and `None` otherwise. `prepared.context.pet_tag`
-/// (the `PetTagBinding` folded into the encryption proof) is *not* read for this by
-/// itself: the proof and the on-the-wire attachment are produced from the same
-/// `PreparedPetTag` by two separate, deliberately explicit steps, so a caller can never
-/// silently store a document whose stated binding and attached tag diverge.
-pub async fn store_prepared_secret(
-    endpoint: String,
-    prepared: &PreparedSecret,
-    ring_id: String,
-    reader_did_pk: Option<String>,
-    with_proof: bool,
-    pet_tag: Option<&PreparedPetTag>,
-) -> Result<StoreSecretResult> {
-    println!("Storing secret via StoreSecret service:");
-    println!("  Endpoint: {}", endpoint);
-    println!("  Ring ID: {}", ring_id);
-    println!();
-
-    // Policy fields are sourced from the context the proof was bound to, so the
-    // stored DocumentPayload can never diverge from what the proof commits to.
-    let ctx = &prepared.context;
-
-    let mut client = StoreSecretServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
-
-    let request = proto::v0::store_secret::StoreSecretRequest {
-        encrypted_document: prepared.encrypted_document.clone(),
-        enc_cmt: prepared.enc_cmt.clone(),
-        ring_id: ring_id.clone(),
-        policy_id: ctx.policy_id.clone(),
-        resource: ctx.resource.clone(),
-        permission: ctx.permission.clone(),
-        challenge: prepared.challenge.clone(),
-        response: prepared.response.clone(),
-        with_proof,
-        tier: ctx.tier.clone(),
-        timestamp: ctx.timestamp,
-        pet_tag: pet_tag.map(|prepared_tag| proto::v0::store_secret::PetTagAttachment {
-            ephemeral_point: prepared_tag.tag.ephemeral_point.clone(),
-            masked_fingerprint: prepared_tag.tag.masked_fingerprint.clone(),
-            knowledge_proof_challenge: prepared_tag.tag_proof.challenge.clone(),
-            knowledge_proof_response: prepared_tag.tag_proof.response.clone(),
-        }),
-        webauthn_assertion: None,
-    };
-
-    // Create JWT for authentication with all request fields
-    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
-    let seed = did_seed(&reader_did_pk);
-    let jwt_signer = JwtSigner::from_seed(seed);
-    let token = jwt_signer
-        .create_store_secret_jwt(
-            &prepared.encrypted_document,
-            prepared.enc_cmt.clone(),
-            &ring_id,
-            &ctx.policy_id,
-            &ctx.resource,
-            &ctx.permission,
-            prepared.challenge.clone(),
-            prepared.response.clone(),
-            with_proof,
-            ctx.tier.clone(),
-            ctx.timestamp,
-        )
-        .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
-
-    let tonic_request = create_authenticated_request(request, &token)
-        .map_err(|e| anyhow!("Failed to create authenticated request: {}", e))?;
-
-    let response = client
-        .store_secret(tonic_request)
-        .await
-        .context("StoreSecret request failed")?;
-
-    let response = response.into_inner();
-
-    println!("StoreSecret Result:");
-    println!("{}", "=".repeat(60));
-    println!("  Status: {}", response.status);
-    println!("  Message: {}", response.message);
-    println!("  Object ID: {}", response.object_id);
-    println!("  Ring ID: {}", response.ring_id);
-    println!("  signature: {}", response.signature);
-    println!("  enc_cmt: {}", hex::encode(&prepared.enc_cmt));
-
-    Ok(StoreSecretResult {
-        status: response.status,
-        message: response.message,
-        created_at: response.created_at,
-        object_id: response.object_id,
-        ring_id: response.ring_id,
-        signature: response.signature,
-    })
+    Ok(result)
 }
 
 /// Store a secret using the StoreSecret service (convenience function).
 ///
-/// This function:
-/// 1. Encrypts the secret locally using the ring's public key (node never sees plaintext)
-/// 2. Connects to the orbis-node endpoint
-/// 3. Sends the encrypted secret to the node for validation and posting
-/// 4. Returns the object_id needed for PRE requests
-///
-/// Note: For retry scenarios, use prepare_secret() + store_prepared_secret()
-/// to ensure the same encrypted data is sent (idempotent storage).
+/// Encrypts `secret` locally against `ring_pk_hex`, then sends it to the
+/// node for validation and posting. For retry scenarios, use
+/// [`prepare_secret`] + [`store_prepared_secret`] instead, to ensure the
+/// same encrypted data is sent (idempotent storage).
 #[allow(clippy::too_many_arguments)]
 pub async fn do_store_secret(
     endpoint: String,
-    secret: &[u8],       // Plaintext secret - encrypted locally before sending
-    ring_pk_hex: String, // Ring public key (hex) - used for encryption
+    secret: &[u8],
+    ring_pk_hex: String,
     ring_id: String,
     policy_id: String,
     resource: String,
@@ -267,27 +76,56 @@ pub async fn do_store_secret(
     derivation: Option<Vec<u8>>,
     with_proof: bool,
 ) -> Result<StoreSecretResult> {
-    let prepared = super::crypto::prepare_secret(
-        secret,
-        &ring_pk_hex,
-        derivation,
-        policy_id,
-        resource,
-        permission,
-        tier,
-        timestamp,
-        salt,
-        None,
-    )?;
-    store_prepared_secret(
-        endpoint,
-        &prepared,
-        ring_id,
-        reader_did_pk,
-        with_proof,
-        None,
-    )
-    .await
+    let signer = jwt_signer(reader_did_pk);
+    let client = OrbisClient::connect(endpoint).await?;
+    let result = client
+        .store_secret_with_jwt(
+            secret,
+            &ring_pk_hex,
+            ring_id,
+            policy_id,
+            resource,
+            permission,
+            tier,
+            timestamp,
+            salt,
+            &signer,
+            derivation,
+            with_proof,
+        )
+        .await?;
+    print_store_secret_result(&result);
+    Ok(result)
+}
+
+/// Store a prepared (pre-encrypted) secret via the StoreSecret service.
+/// Idempotent — calling with the same [`super::crypto::PreparedSecret`]
+/// returns the same `object_id` without creating duplicates.
+pub async fn store_prepared_secret(
+    endpoint: String,
+    prepared: &super::crypto::PreparedSecret,
+    ring_id: String,
+    reader_did_pk: Option<String>,
+    with_proof: bool,
+    pet_tag: Option<&super::crypto::PreparedPetTag>,
+) -> Result<StoreSecretResult> {
+    let signer = jwt_signer(reader_did_pk);
+    let client = OrbisClient::connect(endpoint).await?;
+    let result = client
+        .store_prepared_secret_with_jwt(prepared, ring_id, &signer, with_proof, pet_tag)
+        .await?;
+    print_store_secret_result(&result);
+    Ok(result)
+}
+
+fn print_store_secret_result(result: &StoreSecretResult) {
+    println!("StoreSecret Result:");
+    println!("{}", "=".repeat(60));
+    println!("  Status: {}", result.status);
+    println!("  Message: {}", result.message);
+    println!("  Object ID: {}", result.object_id);
+    println!("  Ring ID: {}", result.ring_id);
+    println!("  signature: {}", result.signature);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -320,13 +158,9 @@ pub async fn do_pre(
 
 /// Same as [`do_pre`], but supplies the document inline in the request
 /// instead of reading it from the bulletin, and optionally names the ACP
-/// object PET should audit ownership against. `object_id` must still be the
-/// caller's own `generate_document_id(...)` over `document`'s exact fields
-/// (including its `pet_tag`/`pet_tag_proof` when present) — the node
-/// recomputes and checks this before doing anything else with the request.
-///
-/// Exists so a `requires_pet` ring's PET+PRE gate can be exercised end to end
-/// without needing `StoreSecret` at all.
+/// object PET should audit ownership against. Exists so a `requires_pet`
+/// ring's PET+PRE gate can be exercised end to end without needing
+/// `StoreSecret` at all.
 // Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
@@ -373,50 +207,29 @@ async fn do_pre_impl(
     document: Option<proto::v0::pre::InlineDocument>,
     audit_target_object_id: Option<String>,
 ) -> Result<Vec<u8>> {
-    let (pre_response, reader_sk_scalar, ring_pk_bytes) = request_pre_reencryption(
-        endpoint,
-        chain_id,
-        ring_pk,
-        object_id,
-        reader_did_pk,
-        derivation.clone(),
-        salt,
-        valid_window_start,
-        valid_window_end,
-        document,
-        audit_target_object_id,
-    )
-    .await?;
-
-    decrypt_pre_response(
-        pre_response,
-        reader_sk_scalar,
-        &ring_pk_bytes,
-        derivation.as_deref(),
-    )
-    .await
-}
-
-/// A PRE request's wire response plus everything the reader needs to decrypt
-/// it *later*, independently of this process — saved instead of immediately
-/// calling [`decrypt_pre_response`]. `reader_sk_hex` is the ephemeral reader
-/// secret key [`request_pre_reencryption`] generated for this one request;
-/// losing it means the response (`Direct` or `Stored`) can never be
-/// decrypted, by design — see `do_pre_impl`'s own doc comment on why a fresh
-/// key per request is non-negotiable.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PendingPreRetrieval {
-    reader_sk_hex: String,
-    ring_pk: String,
-    derivation: Option<Vec<u8>>,
-    response: PreResponse,
+    let signer = jwt_signer(reader_did_pk);
+    let client = OrbisClient::connect(endpoint).await?;
+    let decrypted = client
+        .submit_pre_with_jwt(
+            chain_id,
+            ring_pk,
+            object_id,
+            &signer,
+            derivation,
+            salt,
+            valid_window_start,
+            valid_window_end,
+            document,
+            audit_target_object_id,
+        )
+        .await?;
+    print_decrypted_secret(&decrypted);
+    Ok(decrypted)
 }
 
 /// Same request as [`do_pre`], but doesn't decrypt — returns a
 /// [`PendingPreRetrieval`] the caller can serialize and decrypt later via
-/// [`do_retrieve_pre`], independently of this process. Works for either
-/// delivery mode: a `Direct` response can also be decrypted later, there's
-/// just nothing additionally "in flight" to wait on in that case.
+/// [`do_retrieve_pre`], independently of this process.
 // Only called via the `cli-tool` lib target (orbis-node integration tests) and the
 // `retrieve-pre`/`--save-only` CLI path; unused from the bin target's default flow.
 #[allow(dead_code)]
@@ -432,32 +245,21 @@ pub async fn do_pre_and_save(
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
 ) -> Result<PendingPreRetrieval> {
-    let (response, reader_sk_scalar, _ring_pk_bytes) = request_pre_reencryption(
-        endpoint,
-        chain_id,
-        ring_pk.clone(),
-        object_id,
-        reader_did_pk,
-        derivation.clone(),
-        salt,
-        valid_window_start,
-        valid_window_end,
-        None,
-        None,
-    )
-    .await?;
-
-    let reader_sk_hex = hex::encode(
-        CryptoSerialize::to_bytes(&reader_sk_scalar)
-            .map_err(|e| anyhow!("Failed to serialize reader secret key: {}", e))?,
-    );
-
-    Ok(PendingPreRetrieval {
-        reader_sk_hex,
-        ring_pk,
-        derivation,
-        response,
-    })
+    let signer = jwt_signer(reader_did_pk);
+    let client = OrbisClient::connect(endpoint).await?;
+    client
+        .submit_pre_with_jwt_and_hold(
+            chain_id,
+            ring_pk,
+            object_id,
+            &signer,
+            derivation,
+            salt,
+            valid_window_start,
+            valid_window_end,
+        )
+        .await
+        .map_err(Into::into)
 }
 
 /// Decrypts a [`PendingPreRetrieval`] saved by [`do_pre_and_save`] — the
@@ -467,419 +269,36 @@ pub async fn do_pre_and_save(
 pub async fn do_retrieve_pre(pending_json: String) -> Result<Vec<u8>> {
     let pending: PendingPreRetrieval = serde_json::from_str(&pending_json)
         .map_err(|e| anyhow!("Failed to parse pending PRE retrieval JSON: {}", e))?;
-    let reader_sk_bytes = hex::decode(&pending.reader_sk_hex)
-        .map_err(|e| anyhow!("Failed to decode reader secret key hex: {}", e))?;
-    let reader_sk_scalar = Fr::from_bytes(&reader_sk_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize reader secret key: {}", e))?;
-    let ring_pk_bytes = hex::decode(&pending.ring_pk)
-        .map_err(|e| anyhow!("Failed to decode ring_pk hex: {}", e))?;
-
-    decrypt_pre_response(
-        pending.response,
-        reader_sk_scalar,
-        &ring_pk_bytes,
-        pending.derivation.as_deref(),
-    )
-    .await
+    let decrypted = orbis_sdk::retrieve_pre(pending).await?;
+    print_decrypted_secret(&decrypted);
+    Ok(decrypted)
 }
 
-/// Runs the on-wire part of a PRE request — ephemeral reader keypair, JWT,
-/// signed reader-authorization transcript, the actual `StartPre` call — and
-/// returns the parsed response plus the reader's own secret scalar and the
-/// decoded ring public key bytes. Shared by [`do_pre_impl`] (decrypts
-/// immediately) and [`do_pre_and_save`] (saves for later).
-#[allow(clippy::too_many_arguments)]
-async fn request_pre_reencryption(
-    endpoint: String,
-    chain_id: String,
-    ring_pk: String,
-    object_id: String,
-    reader_did_pk: Option<String>,
-    derivation: Option<Vec<u8>>,
-    salt: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
-    document: Option<proto::v0::pre::InlineDocument>,
-    audit_target_object_id: Option<String>,
-) -> Result<(PreResponse, Fr, Vec<u8>)> {
-    println!("Starting PRE session:");
-    println!("  Endpoint: {}", endpoint);
-
-    // Step 1: always a fresh ephemeral reader keypair — no --reader-pk/
-    // --reader-sk input, and no override knob. Reusing a recipient key across
-    // requests lets an attacker who authored one ciphertext and observes two
-    // PRE responses recover sR from one and peel it off the other to decrypt
-    // it; a fresh key per request closes that off structurally.
-    let (reader_sk_scalar, reader_pk_point) = crypto::helpers::generate_keypair()
-        .map_err(|e| anyhow!("Failed to generate reader keypair: {}", e))?;
-    let reader_pk_bytes = CryptoSerialize::to_bytes(&reader_pk_point)
-        .map_err(|e| anyhow!("Failed to serialize reader public key: {}", e))?;
-    let reader_pk_hex = hex::encode(&reader_pk_bytes);
-    println!(
-        "  Reader PK: {}...",
-        &reader_pk_hex[..reader_pk_hex.len().min(20)]
-    );
-
-    // Step 2: mint the JWT, carrying its jti/timestamps forward to the
-    // reader-authorization transcript below instead of discarding them.
-    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
-    let seed = did_seed(&reader_did_pk);
-    let jwt_signer = JwtSigner::from_seed(seed);
-    let (token, token_metadata) = jwt_signer
-        .create_pre_jwt(
-            reader_pk_bytes.clone(),
-            &object_id,
-            derivation.clone(),
-            salt.clone(),
-        )
-        .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
-
-    // Step 3: build the request-bound transcript and sign it with the reader
-    // key. Zero new round trips: every field is already in hand (the
-    // --ring-pk arg, the token just minted, and this request's own
-    // parameters) — the node independently rebuilds the identical context
-    // server-side and verifies this signature before touching any share.
-    let ring_pk_bytes =
-        hex::decode(&ring_pk).map_err(|e| anyhow!("Failed to decode ring_pk hex: {}", e))?;
-    let valid_window_binding = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(crypto::context::ValidWindowBinding { start, end }),
-        _ => None,
-    };
-    let reader_auth_context = crypto::context::ReaderAuthorizationContext {
-        chain_id,
-        ring_pk: ring_pk_bytes.clone(),
-        jwt_issuer: jwt_signer.did_uri.clone(),
-        jwt_subject: None,
-        resolved_actor: jwt_signer.did_uri.clone(),
-        jwt_id: token_metadata.jwt_id,
-        jwt_issued_time: token_metadata.issued_time,
-        jwt_expiration_time: token_metadata.expiration_time,
-        jwt_not_before: token_metadata.not_before,
-        object_id: object_id.clone(),
-        recipient_pk: reader_pk_bytes.clone(),
-        derivation: derivation.clone(),
-        salt: salt.clone(),
-        valid_window: valid_window_binding,
-        audit_target_object_id: audit_target_object_id.clone(),
-    };
-    let rdr_pk_signature = ThresholdDealerNode::sign_reader_authorization(
-        &reader_sk_scalar,
-        &reader_pk_point,
-        &reader_auth_context,
-    )
-    .map_err(|e| anyhow!("Failed to sign reader authorization: {}", e))?;
-
-    println!("  Encrypted secret created");
-    println!();
-
-    // Step 4: Send to PRE service for re-encryption
-    println!("Step 4: Sending to PRE service for re-encryption...");
-    let mut client = PreServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
-
-    let valid_window = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::v0::pre::TimestampRange { start, end }),
-        _ => None,
-    };
-
-    let request = proto::v0::pre::StartPreRequest {
-        rdr_pk: reader_pk_bytes.clone(),
-        object_id: object_id.clone(),
-        derivation: derivation.clone(),
-        salt: salt.clone(),
-        valid_window,
-        document,
-        rdr_pk_signature: Some(proto::v0::pre::ReaderAuthorizationSignature {
-            challenge: rdr_pk_signature.challenge,
-            response: rdr_pk_signature.response,
-        }),
-        audit_target_object_id,
-        webauthn_assertion: None,
-    };
-
-    let tonic_request = create_authenticated_request(request, &token)
-        .map_err(|e| anyhow!("Failed to create_authenticated_request: {}", e))?;
-
-    let response = client
-        .start_pre(tonic_request)
-        .await
-        .context("PRE request failed")?;
-
-    let response = response.into_inner();
-
-    println!("PRE Result:");
-    println!("{}", "=".repeat(60));
-    println!("  Status: {}", response.status);
-    println!("  Message: {}", response.message);
-
-    if response.encrypted_secret.is_empty() {
-        return Err(anyhow!("PRE response did not contain encrypted_secret"));
-    }
-
-    let pre_response: PreResponse = serde_json::from_slice(&response.encrypted_secret)
-        .map_err(|e| anyhow!("Failed to parse PRE response: {}", e))?;
-
-    Ok((pre_response, reader_sk_scalar, ring_pk_bytes))
-}
-
-/// Everything about a passkey-authorized PRE request that's fixed *before*
-/// the WebAuthn ceremony runs, built by [`build_passkey_pre_challenge`] and
-/// consumed by [`finish_passkey_pre`]. Kept in memory between the two (by
-/// whoever drives a real browser ceremony in between, e.g.
-/// `passkey-sign`'s reference app) — never serialized onto the wire itself;
-/// only its [`PendingPasskeyPre::challenge`] bytes are, as the WebAuthn
-/// `challenge`.
-///
-/// Splitting this out of [`request_pre_reencryption_with_passkey`] is what
-/// lets a real browser ceremony sit in between the two halves: everything
-/// here (in particular, the ephemeral reader keypair, which must exist
-/// before the challenge can even be built, since it embeds `rdr_pk`) has to
-/// be decided before the assertion exists, but the actual submit-and-decrypt
-/// step can't run until after it does.
-pub struct PendingPasskeyPre {
-    reader_sk_scalar: Fr,
-    reader_pk_bytes: Vec<u8>,
-    reader_auth_context: crypto::context::ReaderAuthorizationContext,
-    object_id: String,
-    derivation: Option<Vec<u8>>,
-    salt: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
-    ring_pk_bytes: Vec<u8>,
-    issued_at: u64,
-    expiry: u64,
-    nonce: [u8; 16],
-}
-
-impl PendingPasskeyPre {
-    /// The exact bytes a WebAuthn ceremony's `challenge` must embed for
-    /// this pending request — recomputed, not stored, since it's a pure
-    /// function of the other fields (see
-    /// `orbis_integration_core::PreOperation::canonical_bytes`).
-    pub fn challenge(&self) -> Vec<u8> {
-        use orbis_integration_core::CanonicalOperation;
-        orbis_integration_core::PreOperation {
-            object_id: self.object_id.clone(),
-            rdr_pk: self.reader_pk_bytes.clone(),
-            derivation: self.derivation.clone(),
-            salt: self.salt.clone(),
-            issued_at: self.issued_at,
-            expiry: self.expiry,
-            nonce: self.nonce,
-        }
-        .canonical_bytes()
-    }
-}
-
-/// Builds everything about a passkey-authorized PRE request that doesn't
-/// depend on the WebAuthn assertion itself — including generating the
-/// fresh ephemeral reader keypair every PRE request needs (same
-/// non-negotiable reasoning as [`request_pre_reencryption`]'s own step 1).
-/// Call [`PendingPasskeyPre::challenge`] on the result to get the bytes a
-/// WebAuthn ceremony's `challenge` must embed, then pass both to
-/// [`finish_passkey_pre`] once that ceremony produces an assertion.
-#[allow(clippy::too_many_arguments)]
-pub fn build_passkey_pre_challenge(
-    chain_id: String,
-    ring_pk: String,
-    object_id: String,
-    issuer_did: &str,
-    derivation: Option<Vec<u8>>,
-    salt: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
-) -> Result<PendingPasskeyPre> {
-    let (reader_sk_scalar, reader_pk_point) = crypto::helpers::generate_keypair()
-        .map_err(|e| anyhow!("Failed to generate reader keypair: {}", e))?;
-    let reader_pk_bytes = CryptoSerialize::to_bytes(&reader_pk_point)
-        .map_err(|e| anyhow!("Failed to serialize reader public key: {}", e))?;
-
-    let issued_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| anyhow!("system clock before epoch: {e}"))?
-        .as_secs();
-    let expiry = issued_at + 300;
-    let nonce: [u8; 16] = rand::random();
-
-    let ring_pk_bytes =
-        hex::decode(&ring_pk).map_err(|e| anyhow!("Failed to decode ring_pk hex: {}", e))?;
-    let valid_window_binding = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(crypto::context::ValidWindowBinding { start, end }),
-        _ => None,
-    };
-    let reader_auth_context = crypto::context::ReaderAuthorizationContext {
-        chain_id,
-        ring_pk: ring_pk_bytes.clone(),
-        jwt_issuer: issuer_did.to_string(),
-        jwt_subject: None,
-        resolved_actor: issuer_did.to_string(),
-        jwt_id: hex::encode(nonce),
-        jwt_issued_time: issued_at,
-        jwt_expiration_time: expiry,
-        jwt_not_before: None,
-        object_id: object_id.clone(),
-        recipient_pk: reader_pk_bytes.clone(),
-        derivation: derivation.clone(),
-        salt: salt.clone(),
-        valid_window: valid_window_binding,
-        audit_target_object_id: None,
-    };
-
-    Ok(PendingPasskeyPre {
-        reader_sk_scalar,
-        reader_pk_bytes,
-        reader_auth_context,
-        object_id,
-        derivation,
-        salt,
-        valid_window_start,
-        valid_window_end,
-        ring_pk_bytes,
-        issued_at,
-        expiry,
-        nonce,
-    })
-}
-
-/// Finishes a passkey-authorized PRE request given the `pending` state
-/// [`build_passkey_pre_challenge`] produced and the WebAuthn assertion a
-/// ceremony against [`PendingPasskeyPre::challenge`] produced — signs the
-/// reader-key proof-of-possession transcript, submits the request, and
-/// decrypts the result.
-///
-/// The transcript signed here must match, field for field, what each ring
-/// node will independently rebuild from the synthetic token orbis-node's
-/// `helpers::auth::resolve_request_auth` produces server-side via its
-/// WebAuthn path (`authn::endpoints::pre::PreEndpoint`) — in particular
-/// `jwt_issued_time` comes from `pending`'s client-chosen `issued_at`,
-/// never from verification-time "now".
-pub async fn finish_passkey_pre(
-    endpoint: String,
-    pending: PendingPasskeyPre,
-    issuer_did: String,
-    assertion: orbis_webauthn::RawAssertion,
-) -> Result<Vec<u8>> {
-    let rdr_pk_signature = ThresholdDealerNode::sign_reader_authorization(
-        &pending.reader_sk_scalar,
-        &G1Affine::from_bytes(&pending.reader_pk_bytes)
-            .map_err(|e| anyhow!("Failed to deserialize reader public key: {}", e))?,
-        &pending.reader_auth_context,
-    )
-    .map_err(|e| anyhow!("Failed to sign reader authorization: {}", e))?;
-
-    let mut client = PreServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
-
-    let valid_window = match (pending.valid_window_start, pending.valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::v0::pre::TimestampRange { start, end }),
-        _ => None,
-    };
-
-    let request = proto::v0::pre::StartPreRequest {
-        rdr_pk: pending.reader_pk_bytes.clone(),
-        object_id: pending.object_id.clone(),
-        derivation: pending.derivation.clone(),
-        salt: pending.salt.clone(),
-        valid_window,
-        document: None,
-        rdr_pk_signature: Some(proto::v0::pre::ReaderAuthorizationSignature {
-            challenge: rdr_pk_signature.challenge,
-            response: rdr_pk_signature.response,
-        }),
-        audit_target_object_id: None,
-        webauthn_assertion: Some(proto::v0::pre::WebAuthnAssertion {
-            issuer_did,
-            authenticator_data: assertion.authenticator_data,
-            client_data_json: assertion.client_data_json,
-            signature: assertion.signature,
-            issued_at: pending.issued_at,
-            expiry: pending.expiry,
-            nonce: pending.nonce.to_vec(),
-        }),
-    };
-
-    let response = client
-        .start_pre(Request::new(request))
-        .await
-        .context("PRE request failed")?;
-
-    let response = response.into_inner();
-
-    println!("PRE Result:");
-    println!("{}", "=".repeat(60));
-    println!("  Status: {}", response.status);
-    println!("  Message: {}", response.message);
-
-    if response.encrypted_secret.is_empty() {
-        return Err(anyhow!("PRE response did not contain encrypted_secret"));
-    }
-
-    let pre_response: PreResponse = serde_json::from_slice(&response.encrypted_secret)
-        .map_err(|e| anyhow!("Failed to parse PRE response: {}", e))?;
-
-    decrypt_pre_response(
-        pre_response,
-        pending.reader_sk_scalar,
-        &pending.ring_pk_bytes,
-        pending.derivation.as_deref(),
-    )
-    .await
-}
-
-/// Same contract as [`request_pre_reencryption`], but authorized by a
-/// WebAuthn assertion instead of a JWT — mirrors `do_sign_with_passkey`'s
-/// relationship to `do_sign`. `signing_key` stands in for a real passkey
-/// (see `do_sign_with_passkey`'s doc comment for why); this is the
-/// synchronous, no-real-browser shape of [`build_passkey_pre_challenge`] +
-/// [`finish_passkey_pre`], for CLI/scripted use.
-#[allow(clippy::too_many_arguments)]
-async fn request_pre_reencryption_with_passkey(
-    endpoint: String,
-    chain_id: String,
-    ring_pk: String,
-    object_id: String,
-    signing_key: &p256::ecdsa::SigningKey,
-    rp_id: &str,
-    origin: &str,
-    derivation: Option<Vec<u8>>,
-    salt: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
-) -> Result<Vec<u8>> {
-    println!("Starting passkey-authorized PRE session:");
-    println!("  Endpoint: {}", endpoint);
-
+/// The `did:key` a raw P-256 key decodes to — the identity a passkey
+/// stand-in authenticates as.
+fn passkey_issuer_did(signing_key: &p256::ecdsa::SigningKey) -> String {
     let compressed_pubkey: [u8; 33] = signing_key
         .verifying_key()
         .to_encoded_point(true)
         .as_bytes()
         .try_into()
         .expect("compressed P-256 point is 33 bytes");
-    let issuer_did = authn::did_from_p256_public_key(&compressed_pubkey);
-
-    let pending = build_passkey_pre_challenge(
-        chain_id,
-        ring_pk,
-        object_id,
-        &issuer_did,
-        derivation,
-        salt,
-        valid_window_start,
-        valid_window_end,
-    )?;
-    let assertion =
-        orbis_webauthn::build_test_assertion(signing_key, rp_id, origin, &pending.challenge());
-
-    finish_passkey_pre(endpoint, pending, issuer_did, assertion).await
+    authn::did_from_p256_public_key(&compressed_pubkey)
 }
 
-/// Call `PreService.StartPre` with a passkey-authorized request — a WebAuthn
-/// assertion in place of a JWT. `object_id`'s document's policy must have
-/// granted `read` (or whichever permission it names) to the `did:key` the
-/// signing key's own public key decodes to; there is no separate enrollment
-/// step.
+/// Call `PreService.StartPre` with a passkey-authorized request — a
+/// WebAuthn assertion in place of a JWT. `object_id`'s document's policy
+/// must have granted `read` (or whichever permission it names) to the
+/// `did:key` the signing key's own public key decodes to; there is no
+/// separate enrollment step.
+///
+/// `signing_key` stands in for a real passkey: there is no browser or
+/// hardware authenticator to drive here, so this process signs the
+/// challenge directly with a key it already controls, via
+/// `orbis_webauthn::build_test_assertion`. Fine for CLI tooling and tests;
+/// never represents a real end-user flow. This is the synchronous,
+/// no-real-browser shape of `orbis-sdk`'s own `build_pre_challenge` +
+/// `submit_pre_with_evidence`.
 #[allow(clippy::too_many_arguments)]
 pub async fn do_pre_with_passkey(
     endpoint: String,
@@ -894,112 +313,26 @@ pub async fn do_pre_with_passkey(
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
 ) -> Result<Vec<u8>> {
-    request_pre_reencryption_with_passkey(
-        endpoint,
+    let issuer_did = passkey_issuer_did(signing_key);
+
+    let pending = orbis_sdk::build_pre_challenge(
         chain_id,
         ring_pk,
         object_id,
-        signing_key,
-        rp_id,
-        origin,
+        &issuer_did,
         derivation,
         salt,
         valid_window_start,
         valid_window_end,
-    )
-    .await
-}
+    )?;
+    let assertion =
+        orbis_webauthn::build_test_assertion(signing_key, rp_id, origin, &pending.challenge());
+    let evidence = pending.passkey_evidence(issuer_did, assertion);
 
-/// Step 5 of a PRE request: decrypt a parsed [`PreResponse`], handling both
-/// delivery modes. `Direct` decrypts immediately with its own
-/// `xnc_cmt`/`secret`/`context`. `Stored` fetches, verifies, and recovers via
-/// `pre_share::recover_from_manifest` first — an empty Defra bearer token
-/// (anonymous read) is deliberate, see that function's own doc comment on
-/// why — then uses the *recovered* `derivation` (pulled from the manifest's
-/// own independently-verified entries) rather than the caller-supplied one,
-/// since it's already authenticated and is the actual value every responder
-/// computed its share under.
-async fn decrypt_pre_response(
-    pre_response: PreResponse,
-    reader_sk_scalar: Fr,
-    ring_pk_bytes: &[u8],
-    derivation: Option<&[u8]>,
-) -> Result<Vec<u8>> {
-    let (xnc_cmt, secret, context, effective_derivation) = match pre_response {
-        PreResponse::Direct(direct) => {
-            let xnc_cmt_bytes = hex::decode(&direct.xnc_cmt)
-                .map_err(|e| anyhow!("Failed to decode xnc_cmt hex: {}", e))?;
-            let xnc_cmt = G1Affine::from_bytes(&xnc_cmt_bytes)
-                .map_err(|e| anyhow!("Failed to deserialize xnc_cmt: {}", e))?;
-            (
-                xnc_cmt,
-                direct.secret,
-                direct.context,
-                derivation.map(|d| d.to_vec()),
-            )
-        }
-        PreResponse::Stored { manifest } => {
-            println!();
-            println!("  Ring stores PRE shares in Defra; fetching and verifying entries...");
-            let recovered = pre_share::recover_from_manifest(&manifest, "")
-                .await
-                .map_err(|e| anyhow!("Failed to recover Defra-stored PRE shares: {}", e))?;
-            (
-                recovered.xnc_cmt,
-                manifest.secret,
-                manifest.context,
-                recovered.derivation,
-            )
-        }
-    };
-
-    println!();
-    println!("Step 5: Decrypting with reader secret key...");
-
-    // Parse the ring public key
-    let ring_pk_point = G1Affine::from_bytes(ring_pk_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
-
-    // Compute effective_pk from derivation when provided, otherwise use ring_pk
-    let effective_pk = if let Some(ref deriv) = effective_derivation {
-        ThresholdDealerNode::derive_public_key(&ring_pk_point, deriv)
-            .map_err(|e| anyhow!("Failed to derive public key: {}", e))?
-    } else {
-        ring_pk_point
-    };
-
-    // The node echoes back (or, for `Stored`, the verified entries themselves carry)
-    // the ciphertext-binding context the proof was verified against; it is needed to
-    // rebuild the AES-GCM AAD. A wrong context (or a lying node) makes the
-    // authenticated decryption below fail.
-    let decrypted = ThresholdDealerNode::decrypt_secret(
-        &effective_pk,
-        &xnc_cmt,
-        &reader_sk_scalar,
-        &secret,
-        &context,
-    )
-    .map_err(|e| anyhow!("Decryption failed: {}", e))?;
-
-    if let Ok(decrypted_str) = String::from_utf8(decrypted.clone()) {
-        println!("  Decrypted Secret: {}", decrypted_str);
-    } else {
-        println!(
-            "  Decrypted Secret: <binary data, {} bytes>",
-            decrypted.len()
-        );
-    }
-
+    let client = OrbisClient::connect(endpoint).await?;
+    let decrypted = client.submit_pre_with_evidence(pending, evidence).await?;
+    print_decrypted_secret(&decrypted);
     Ok(decrypted)
-}
-
-/// Result of a Sign operation
-#[derive(Debug)]
-pub struct SignResult {
-    pub status: String,
-    pub message: String,
-    pub created_at: i64,
-    pub signature: String,
 }
 
 /// Call `SignService.StartSign` with a JWT-authenticated request.
@@ -1016,56 +349,24 @@ pub async fn do_sign(
     valid_window_end: Option<u64>,
 ) -> Result<SignResult> {
     println!("Starting Sign session:");
-    println!("  Endpoint: {}", endpoint);
-    println!("  Derivation ID: {}", derivation_id);
+    println!("  Endpoint: {endpoint}");
+    println!("  Derivation ID: {derivation_id}");
     println!("  Message length: {} bytes", message.len());
     println!();
 
-    let mut client = SignServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
-
-    let valid_window = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::v0::sign::TimestampRange { start, end }),
-        _ => None,
-    };
-
-    let request = proto::v0::sign::StartSignRequest {
-        message: message.clone(),
-        derivation_id: derivation_id.clone(),
-        valid_window,
-        webauthn_assertion: None,
-    };
-
-    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
-    let seed = did_seed(&reader_did_pk);
-    let jwt_signer = JwtSigner::from_seed(seed);
-    let token = jwt_signer
-        .create_sign_jwt(&derivation_id, &message)
-        .map_err(|e| anyhow!("Failed to create sign JWT: {}", e))?;
-
-    let tonic_request = create_authenticated_request(request, &token)
-        .map_err(|e| anyhow!("Failed to create authenticated request: {}", e))?;
-
-    let response = client
-        .start_sign(tonic_request)
-        .await
-        .context("Sign request failed")?;
-
-    let response = response.into_inner();
-
-    println!("Sign Result:");
-    println!("{}", "=".repeat(60));
-    println!("  Status: {}", response.status);
-    println!("  Message: {}", response.message);
-    println!("  Signature: {}", response.signature);
-
-    Ok(SignResult {
-        status: response.status,
-        message: response.message,
-        created_at: response.created_at,
-        signature: response.signature,
-    })
+    let signer = jwt_signer(reader_did_pk);
+    let client = OrbisClient::connect(endpoint).await?;
+    let result = client
+        .submit_sign_with_jwt(
+            message,
+            derivation_id,
+            &signer,
+            valid_window_start,
+            valid_window_end,
+        )
+        .await?;
+    print_sign_result(&result);
+    Ok(result)
 }
 
 /// Call `SignService.StartSign` with a passkey-authorized request — a
@@ -1075,10 +376,10 @@ pub async fn do_sign(
 /// separate enrollment step.
 ///
 /// `signing_key` stands in for a real passkey: there is no browser or
-/// hardware authenticator to drive here, so the caller supplies a raw
-/// P-256 key directly and this builds the exact wire-format assertion a
-/// real one would have produced (`orbis_webauthn::build_test_assertion`).
-/// Fine for CLI tooling and tests; never represents a real end-user flow.
+/// hardware authenticator to drive here, so this process signs the
+/// challenge directly with a key it already controls, via
+/// `orbis_webauthn::build_test_assertion`. Fine for CLI tooling and tests;
+/// never represents a real end-user flow.
 pub async fn do_sign_with_passkey(
     endpoint: String,
     message: Vec<u8>,
@@ -1089,174 +390,74 @@ pub async fn do_sign_with_passkey(
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
 ) -> Result<SignResult> {
-    use sha2::{Digest, Sha256};
-
     println!("Starting passkey-authorized Sign session:");
-    println!("  Endpoint: {}", endpoint);
-    println!("  Derivation ID: {}", derivation_id);
+    println!("  Endpoint: {endpoint}");
+    println!("  Derivation ID: {derivation_id}");
     println!("  Message length: {} bytes", message.len());
     println!();
 
-    let mut client = SignServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+    let issuer_did = passkey_issuer_did(signing_key);
+    let pending = orbis_sdk::build_sign_challenge(
+        derivation_id,
+        message,
+        valid_window_start,
+        valid_window_end,
+    )?;
+    let assertion =
+        orbis_webauthn::build_test_assertion(signing_key, rp_id, origin, &pending.challenge());
+    let evidence = pending.passkey_evidence(issuer_did, assertion)?;
 
-    let valid_window = match (valid_window_start, valid_window_end) {
-        (Some(start), Some(end)) => Some(proto::v0::sign::TimestampRange { start, end }),
-        _ => None,
-    };
-
-    let compressed_pubkey: [u8; 33] = signing_key
-        .verifying_key()
-        .to_encoded_point(true)
-        .as_bytes()
-        .try_into()
-        .expect("compressed P-256 point is 33 bytes");
-    let issuer_did = authn::did_from_p256_public_key(&compressed_pubkey);
-
-    use orbis_integration_core::CanonicalOperation;
-
-    let issued_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| anyhow!("system clock before epoch: {e}"))?
-        .as_secs();
-    let expiry = issued_at + 300;
-    let nonce: [u8; 16] = rand::random();
-
-    let operation = orbis_integration_core::SignOperation {
-        derivation_id: derivation_id.clone(),
-        message_sha256: Sha256::digest(&message).to_vec(),
-        expiry,
-        nonce,
-    };
-    let assertion = orbis_webauthn::build_test_assertion(
-        signing_key,
-        rp_id,
-        origin,
-        &operation.canonical_bytes(),
-    );
-
-    let request = proto::v0::sign::StartSignRequest {
-        message: message.clone(),
-        derivation_id: derivation_id.clone(),
-        valid_window,
-        webauthn_assertion: Some(proto::v0::sign::WebAuthnAssertion {
-            issuer_did,
-            authenticator_data: assertion.authenticator_data,
-            client_data_json: assertion.client_data_json,
-            signature: assertion.signature,
-            issued_at,
-            expiry,
-            nonce: nonce.to_vec(),
-        }),
-    };
-
-    let response = client
-        .start_sign(Request::new(request))
-        .await
-        .context("Sign request failed")?;
-
-    let response = response.into_inner();
-
-    println!("Sign Result:");
-    println!("{}", "=".repeat(60));
-    println!("  Status: {}", response.status);
-    println!("  Message: {}", response.message);
-    println!("  Signature: {}", response.signature);
-
-    Ok(SignResult {
-        status: response.status,
-        message: response.message,
-        created_at: response.created_at,
-        signature: response.signature,
-    })
+    let client = OrbisClient::connect(endpoint).await?;
+    let result = client.submit_sign_with_evidence(pending, evidence).await?;
+    print_sign_result(&result);
+    Ok(result)
 }
 
-/// Result of querying node info
-#[derive(Debug, Clone)]
-pub struct NodeInfoResult {
-    pub public_address: String,
-    pub peer_id: String,
-    pub p2p_address: String,
-    pub status: proto::info_service::NodeStatus,
-    pub managed_ring_count: u32,
-    /// Compressed secp256k1 pubkey hex — the node's on-chain key in x/orbis NodeInfo.
-    pub node_key: String,
-    pub supported_protocol_versions: Vec<u64>,
+fn print_sign_result(result: &SignResult) {
+    println!("Sign Result:");
+    println!("{}", "=".repeat(60));
+    println!("  Status: {}", result.status);
+    println!("  Message: {}", result.message);
+    println!("  Signature: {}", result.signature);
 }
 
 pub async fn query_node_info(endpoint: String) -> Result<NodeInfoResult> {
-    println!("Querying node info from: {}", endpoint);
+    println!("Querying node info from: {endpoint}");
+    let client = OrbisClient::connect(endpoint).await?;
+    let info = client.query_node_info().await?;
 
-    let mut client = InfoServiceClient::connect(endpoint.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
-
-    let request = Request::new(proto::info_service::GetNodeInfoRequest {});
-
-    let response = client
-        .get_node_info(request)
-        .await
-        .map_err(|e| anyhow!("Failed to query node info: {}", e))?;
-
-    let node_info = response.into_inner();
-    let status = proto::info_service::NodeStatus::try_from(node_info.status)
-        .unwrap_or(proto::info_service::NodeStatus::Unspecified);
-
-    let output = format!(
+    println!(
         "Node Info:\n{}\n  Public Address: {}\n  Peer ID: {}\n  Node Key: {}\n  P2P Address: {}\n  Status: {}\n  Managed Ring Count: {}\n  Supported Protocol Versions: {:?}",
         "=".repeat(60),
-        node_info.public_address,
-        node_info.peer_id,
-        node_info.node_key,
-        node_info.p2p_address,
-        status.as_str_name(),
-        node_info.managed_ring_count,
-        node_info.supported_protocol_versions
+        info.public_address,
+        info.peer_id,
+        info.node_key,
+        info.p2p_address,
+        info.status.as_str_name(),
+        info.managed_ring_count,
+        info.supported_protocol_versions
     );
 
-    println!("{}", output);
-
-    Ok(NodeInfoResult {
-        public_address: node_info.public_address,
-        peer_id: node_info.peer_id,
-        p2p_address: node_info.p2p_address,
-        status,
-        managed_ring_count: node_info.managed_ring_count,
-        node_key: node_info.node_key,
-        supported_protocol_versions: node_info.supported_protocol_versions,
-    })
+    Ok(info)
 }
 
 /// Query the local RingPolyState from a node (public polynomial + last_pss timestamp).
 /// Returns an error if the ring_pk_hex is not found on that node.
 pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(String, u64)> {
-    let mut client = InfoServiceClient::connect(endpoint.clone())
+    let client = OrbisClient::connect(endpoint).await.context("connect")?;
+    client
+        .query_ring_state(ring_pk_hex)
         .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
-
-    let response = client
-        .get_ring_state(proto::info_service::GetRingStateRequest { ring_pk_hex })
-        .await
-        .map_err(|e| anyhow!("get_ring_state failed: {}", e))?;
-
-    let inner = response.into_inner();
-    Ok((inner.public_polynomial, inner.last_pss))
+        .map_err(Into::into)
 }
 
 /// Same as [`query_ring_state`], for a ring's independent PET checking key —
 /// keyed by `ring_id` (PET has no public-key storage handle to query by).
 /// Returns an error if the ring has no PET bundle on that node.
 pub async fn query_pet_ring_state(endpoint: String, ring_id: String) -> Result<(String, u64)> {
-    let mut client = InfoServiceClient::connect(endpoint.clone())
+    let client = OrbisClient::connect(endpoint).await.context("connect")?;
+    client
+        .query_pet_ring_state(ring_id)
         .await
-        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
-
-    let response = client
-        .get_pet_ring_state(proto::info_service::GetPetRingStateRequest { ring_id })
-        .await
-        .map_err(|e| anyhow!("get_pet_ring_state failed: {}", e))?;
-
-    let inner = response.into_inner();
-    Ok((inner.public_polynomial, inner.last_pss))
+        .map_err(Into::into)
 }

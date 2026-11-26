@@ -7,6 +7,7 @@ members = [
     "crates/crypto",
     "crates/local-storage",
     "bin/cli-tool",
+    "bin/orbis-sdk",
     "bin/orbis-bench",
     "crates/authn",
     "crates/authz",
@@ -47,6 +48,7 @@ license = "MIT OR Apache-2.0"
 orbis-integration-core = { path = "crates/integrations/core" }
 orbis-webauthn = { path = "crates/integrations/webauthn" }
 orbis-email = { path = "crates/integrations/email" }
+orbis-sdk = { path = "bin/orbis-sdk", default-features = false }
 
 vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
 vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }

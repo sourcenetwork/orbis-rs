@@ -1,0 +1,38 @@
+[package]
+name = "orbis-sdk"
+description = "Client SDK for integrating external applications with an Orbis ring: Sign, PRE, and StoreSecret request building, submission, and local cryptography"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+proto = { path = "../../crates/proto" }
+crypto = { path = "../../crates/crypto", default-features = false }
+authn = { path = "../../crates/authn" }
+pre-share = { path = "../../crates/pre-share", default-features = false }
+orbis-integration-core.workspace = true
+orbis-webauthn = { workspace = true, optional = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+base64 = { workspace = true }
+cosmrs = { workspace = true }
+ring = "0.17"
+bs58 = "0.5"
+jsonwebtoken = "9"
+
+[features]
+default = ["bls12-381"]
+bls12-381 = ["crypto/bls12-381", "pre-share/bls12-381"]
+jubjub = ["crypto/jubjub", "pre-share/jubjub"]
+webauthn = ["dep:orbis-webauthn"]
+
+[lints]
+workspace = true

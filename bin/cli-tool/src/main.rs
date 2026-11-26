@@ -836,7 +836,7 @@ async fn main() -> Result<()> {
         }
         SubCommands::DeriveSignerDid => {
             let signing_key = network.require_signing_key()?;
-            let (public_key, did) = derive_signer_did(&signing_key, network.chain_config())?;
+            let (public_key, did) = derive_signer_did(&signing_key)?;
             println!("PUBLIC_KEY={}", public_key);
             println!("DID={}", did);
         }
