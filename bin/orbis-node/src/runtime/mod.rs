@@ -286,6 +286,16 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     // absent one — so an empty value here means "not configured," the same
     // as the flag being omitted entirely, not a literal empty rp_id/origin.
     let non_empty = |value: Option<String>| value.filter(|s| !s.is_empty());
+    // Built once at startup, not per request — it owns its own live-DNS
+    // resolver config, which isn't free to rebuild on every email-evidence
+    // request. `None` (the flag unset) rejects every such request on this
+    // node, the safe default.
+    let email_authenticator = config.args.email_evidence_enabled.then(|| {
+        Arc::new(
+            mail_auth::MessageAuthenticator::new_system_conf()
+                .expect("failed to initialize mail-auth DKIM authenticator"),
+        )
+    });
     let app_state = AppState::<DkgImpl>::new(
         config.identity.node_key.clone(),
         config.network.clone(),
@@ -294,6 +304,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
         config.bulletin,
         non_empty(config.args.webauthn_rp_id.clone()),
         non_empty(config.args.webauthn_origin.clone()),
+        email_authenticator,
     );
     let app_state_arc = Arc::new(app_state);
 

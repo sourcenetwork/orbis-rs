@@ -1,18 +1,18 @@
 //! StoreSecret: posting a locally-encrypted document.
 
 use authn::{create_authenticated_request, endpoints::store_secret::StoreSecretClaims};
-#[cfg(feature = "webauthn")]
+#[cfg(any(feature = "webauthn", feature = "email"))]
 use orbis_integration_core::StoreSecretOperation;
 use proto::v0::store_secret::store_secret_service_client::StoreSecretServiceClient;
 use proto::v0::store_secret::{
-    PetTagAttachment, StoreSecretRequest, StoreSecretResponse, WebAuthnAssertion,
+    EmailAssertion, PetTagAttachment, StoreSecretRequest, StoreSecretResponse, WebAuthnAssertion,
 };
 use sha2::{Digest, Sha256};
 
 use crate::client::OrbisClient;
 use crate::crypto::{PreparedPetTag, PreparedSecret};
 use crate::error::{Result, SdkError};
-#[cfg(feature = "webauthn")]
+#[cfg(any(feature = "webauthn", feature = "email"))]
 use crate::evidence::{ChallengeEvidence, WireEvidence};
 use crate::identity::JwtIdentitySigner;
 use crate::jwt::{sign_jwt, JWT_TTL};
@@ -61,7 +61,7 @@ impl OrbisClient {
         let (token, _metadata) = sign_jwt(signer, claims, JWT_TTL)?;
 
         let mut client = StoreSecretServiceClient::new(self.channel());
-        let request = build_request(prepared, ring_id, with_proof, pet_tag, None);
+        let request = build_request(prepared, ring_id, with_proof, pet_tag, None, None);
         let tonic_request = create_authenticated_request(request, &token)
             .map_err(|e| SdkError::Crypto(format!("failed to attach JWT: {e}")))?;
         let response = client.store_secret(tonic_request).await?.into_inner();
@@ -75,7 +75,7 @@ impl OrbisClient {
     /// build: nothing about the request depends on the evidence (there's
     /// no ephemeral key to generate up front), so the challenge is built
     /// and consumed in this one call.
-    #[cfg(feature = "webauthn")]
+    #[cfg(any(feature = "webauthn", feature = "email"))]
     pub async fn store_prepared_secret_with_evidence<E>(
         &self,
         prepared: &PreparedSecret,
@@ -110,6 +110,7 @@ impl OrbisClient {
             .produce(&operation)
             .map_err(|e| SdkError::Evidence(e.to_string()))?
             .into();
+        let (webauthn_assertion, email_assertion) = wire.into_store_secret_assertion();
 
         let mut client = StoreSecretServiceClient::new(self.channel());
         let request = build_request(
@@ -117,7 +118,8 @@ impl OrbisClient {
             ring_id,
             with_proof,
             pet_tag,
-            Some(wire.into_store_secret_assertion()),
+            webauthn_assertion,
+            email_assertion,
         );
         let response = client
             .store_secret(tonic::Request::new(request))
@@ -169,6 +171,7 @@ fn build_request(
     with_proof: bool,
     pet_tag: Option<&PreparedPetTag>,
     webauthn_assertion: Option<WebAuthnAssertion>,
+    email_assertion: Option<EmailAssertion>,
 ) -> StoreSecretRequest {
     let ctx = &prepared.context;
     StoreSecretRequest {
@@ -190,6 +193,7 @@ fn build_request(
             knowledge_proof_response: prepared_tag.tag_proof.response.clone(),
         }),
         webauthn_assertion,
+        email_assertion,
     }
 }
 

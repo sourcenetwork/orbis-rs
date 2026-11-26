@@ -83,7 +83,9 @@ where
         validate_sign_message_size(&request)?;
 
         // 1. Authentication.
-        let authenticated = self.authenticate_sign_request(request, current_time)?;
+        let authenticated = self
+            .authenticate_sign_request(request, current_time)
+            .await?;
 
         // 2. Bulletin reads.
         let bulletin_state = self

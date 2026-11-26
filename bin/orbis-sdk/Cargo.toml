@@ -15,6 +15,7 @@ common = { path = "../../crates/common" }
 bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera-go"] }
 orbis-integration-core.workspace = true
 orbis-webauthn = { workspace = true, optional = true }
+orbis-email = { workspace = true, optional = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -35,6 +36,7 @@ default = ["bls12-381"]
 bls12-381 = ["crypto/bls12-381", "pre-share/bls12-381"]
 jubjub = ["crypto/jubjub", "pre-share/jubjub"]
 webauthn = ["dep:orbis-webauthn"]
+email = ["dep:orbis-email"]
 
 [lints]
 workspace = true

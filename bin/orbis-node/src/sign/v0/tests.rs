@@ -1272,6 +1272,7 @@ async fn test_delegated_dkg_then_sign_policy_end_to_end() {
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: Some(sign_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 // Round 1 (FROST/jubjub) checks this against the JWT's claimed
                 // digest before generating a nonce — it must be the real
                 // message hash, not a placeholder, or every remote peer
@@ -1427,6 +1428,7 @@ async fn test_sign_policy_fails_invalid_jwt() {
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: Some("this.is.not.a.valid.jwt".to_string()),
                 webauthn_assertion: None,
+                email_assertion: None,
                 message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
@@ -1597,6 +1599,7 @@ async fn test_sign_policy_fails_forged_webauthn_assertion() {
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: None,
                 webauthn_assertion: Some(forged_evidence),
+                email_assertion: None,
                 message_sha256: Sha256::digest(&message).to_vec(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
@@ -1711,6 +1714,7 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: Some(sign_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
@@ -1932,6 +1936,7 @@ async fn test_sign_service_rejects_oversized_message() {
         message: oversized_message,
         valid_window: None,
         webauthn_assertion: None,
+        email_assertion: None,
     });
 
     let result = service.start_sign(request).await;
@@ -2095,6 +2100,7 @@ async fn test_sign_policy_fails_wrong_message_digest() {
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: Some(sign_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,

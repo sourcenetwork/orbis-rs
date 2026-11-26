@@ -29,6 +29,11 @@ pub struct PolicyContext {
     /// same raw bytes, never trusting the coordinator's word that it
     /// already passed.
     pub webauthn_assertion: Option<orbis_webauthn::WebAuthnEvidence>,
+    /// Email-authorized signing evidence, in place of `token_string` —
+    /// same mutual-exclusivity and re-verification notes as
+    /// `webauthn_assertion` apply, also with respect to that field. See
+    /// `sign::v0::email_auth`.
+    pub email_assertion: Option<orbis_email::EmailEvidence>,
     /// SHA-256 of the message being signed, computed once at stage 1.
     /// FROST's Round 1 (`handle_nonce_request`) has no message bytes of its
     /// own to hash — the JWT path defers message checking to Round 2, but

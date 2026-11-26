@@ -1,3 +1,4 @@
+mod email_auth;
 pub mod error;
 pub mod service;
 mod webauthn_auth;

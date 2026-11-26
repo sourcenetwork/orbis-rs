@@ -24,6 +24,65 @@ pub trait CanonicalOperation {
     fn canonical_bytes(&self) -> Vec<u8>;
 }
 
+/// Human-legible, deterministic rendering of an operation — for mechanisms
+/// where a person, not a dedicated signing key, is the one approving a
+/// request (today, `orbis-email`'s DKIM-signed-reply binding). A verifier
+/// reconstructs this exact text from the live request the same way it
+/// reconstructs [`CanonicalOperation::canonical_bytes`], and checks that
+/// authenticated evidence's content contains it. Unlike `canonical_bytes`,
+/// this is designed to be *read*, not just compared byte-for-byte: a
+/// person approving a request can see exactly what they're approving
+/// (what-you-sign-is-what-you-see), which an opaque hash or binary blob
+/// doesn't give them.
+///
+/// Deliberately a separate trait from [`CanonicalOperation`], not an
+/// additional required method on it: a mechanism like WebAuthn signs
+/// opaque bytes directly with no person reading a textual commitment, so
+/// it has no need to implement this, and no existing `CanonicalOperation`
+/// implementor (including test-only toy types elsewhere in this
+/// workspace) is forced to grow a method it never uses.
+pub trait CanonicalDisplay: CanonicalOperation {
+    fn canonical_display(&self) -> String;
+}
+
+/// Minimally escapes `value` for inclusion as a quoted field in
+/// [`CanonicalDisplay`] output — only so a legitimately-present string
+/// value can never be mistaken for the unquoted `(none)` sentinel
+/// [`display_optional_string`]/[`display_optional_bytes`] use for an
+/// absent field (e.g. a value that happens to equal the literal text
+/// `(none)` renders as `"(none)"`, visibly distinct). Not a security
+/// boundary — nothing downstream parses this text back apart; see this
+/// module's own doc comment.
+fn escape_display_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn display_optional_bytes(bytes: Option<&[u8]>) -> String {
+    match bytes {
+        Some(bytes) => hex::encode(bytes),
+        None => "(none)".to_string(),
+    }
+}
+
+fn display_optional_string(value: Option<&str>) -> String {
+    match value {
+        Some(value) => escape_display_value(value),
+        None => "(none)".to_string(),
+    }
+}
+
 /// Produces authentication evidence for an operation `Op`, authorizing it in
 /// place of a JWT. Each mechanism's own crate (`orbis-webauthn`, and in the
 /// future an email/DKIM crate) implements this for its own evidence type;
@@ -99,6 +158,22 @@ impl CanonicalOperation for SignOperation {
     }
 }
 
+impl CanonicalDisplay for SignOperation {
+    /// One labeled line per field, in the same order as
+    /// [`SignOperation::canonical_bytes`] — see that method and
+    /// [`CanonicalDisplay`]'s own doc comments.
+    fn canonical_display(&self) -> String {
+        format!(
+            "{}\nderivation: {}\nmessage_sha256: {}\nexpiry_unix: {}\nnonce: {}\n",
+            std::str::from_utf8(SIGN_OPERATION_DOMAIN).expect("domain separator is ASCII"),
+            escape_display_value(&self.derivation_id),
+            hex::encode(&self.message_sha256),
+            self.expiry,
+            hex::encode(self.nonce),
+        )
+    }
+}
+
 fn write_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
     out.extend_from_slice(bytes);
@@ -170,6 +245,26 @@ impl CanonicalOperation for PreOperation {
     }
 }
 
+impl CanonicalDisplay for PreOperation {
+    /// One labeled line per field, in the same order as
+    /// [`PreOperation::canonical_bytes`] — see that method,
+    /// [`CanonicalDisplay`]'s, and [`display_optional_bytes`]/
+    /// [`display_optional_string`]'s own doc comments.
+    fn canonical_display(&self) -> String {
+        format!(
+            "{}\nobject_id: {}\nrdr_pk: {}\nderivation: {}\nsalt: {}\nissued_at_unix: {}\nexpiry_unix: {}\nnonce: {}\n",
+            std::str::from_utf8(PRE_OPERATION_DOMAIN).expect("domain separator is ASCII"),
+            escape_display_value(&self.object_id),
+            hex::encode(&self.rdr_pk),
+            display_optional_bytes(self.derivation.as_deref()),
+            display_optional_string(self.salt.as_deref()),
+            self.issued_at,
+            self.expiry,
+            hex::encode(self.nonce),
+        )
+    }
+}
+
 /// Domain separator for the StoreSecret operation encoding. Bump the
 /// version suffix on any incompatible change to the encoded fields or
 /// their order.
@@ -233,6 +328,34 @@ impl CanonicalOperation for StoreSecretOperation {
     }
 }
 
+impl CanonicalDisplay for StoreSecretOperation {
+    /// One labeled line per field, in the same order as
+    /// [`StoreSecretOperation::canonical_bytes`] — see that method and
+    /// [`CanonicalDisplay`]'s own doc comment.
+    fn canonical_display(&self) -> String {
+        format!(
+            "{}\nencrypted_document_sha256: {}\nenc_cmt: {}\nring_id: {}\npolicy_id: {}\nresource: {}\npermission: {}\nchallenge: {}\nresponse: {}\nwith_proof: {}\ntier: {}\ntimestamp_unix: {}\nexpiry_unix: {}\nnonce: {}\n",
+            std::str::from_utf8(STORE_SECRET_OPERATION_DOMAIN).expect("domain separator is ASCII"),
+            hex::encode(&self.encrypted_document_sha256),
+            hex::encode(&self.enc_cmt),
+            escape_display_value(&self.ring_id),
+            escape_display_value(&self.policy_id),
+            escape_display_value(&self.resource),
+            escape_display_value(&self.permission),
+            hex::encode(&self.challenge),
+            hex::encode(&self.response),
+            self.with_proof,
+            display_optional_string(self.tier.as_deref()),
+            match self.timestamp {
+                Some(timestamp) => timestamp.to_string(),
+                None => "(none)".to_string(),
+            },
+            self.expiry,
+            hex::encode(self.nonce),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +405,40 @@ mod tests {
         assert_ne!(base.canonical_bytes(), different_expiry.canonical_bytes());
     }
 
+    #[test]
+    fn canonical_display_is_deterministic_and_sensitive_to_every_field() {
+        let base = sample();
+        assert_eq!(base.canonical_display(), base.canonical_display());
+
+        let mut different_derivation = base.clone();
+        different_derivation.derivation_id = "deriv-2".to_string();
+        assert_ne!(
+            base.canonical_display(),
+            different_derivation.canonical_display()
+        );
+
+        let mut different_message = base.clone();
+        different_message.message_sha256 = vec![9, 9, 9];
+        assert_ne!(
+            base.canonical_display(),
+            different_message.canonical_display()
+        );
+
+        let mut different_nonce = base.clone();
+        different_nonce.nonce = [8; 16];
+        assert_ne!(
+            base.canonical_display(),
+            different_nonce.canonical_display()
+        );
+
+        let mut different_expiry = base.clone();
+        different_expiry.expiry += 1;
+        assert_ne!(
+            base.canonical_display(),
+            different_expiry.canonical_display()
+        );
+    }
+
     fn sample_pre() -> PreOperation {
         PreOperation {
             object_id: "object-1".to_string(),
@@ -321,6 +478,34 @@ mod tests {
         let mut different = base.clone();
         different.issued_at += 1;
         assert_ne!(base.canonical_bytes(), different.canonical_bytes());
+    }
+
+    #[test]
+    fn pre_canonical_display_is_deterministic_and_distinguishes_absent_from_sentinel_value() {
+        let base = sample_pre();
+        assert_eq!(base.canonical_display(), base.canonical_display());
+
+        let mut different_rdr_pk = base.clone();
+        different_rdr_pk.rdr_pk = vec![9, 9, 9];
+        assert_ne!(
+            base.canonical_display(),
+            different_rdr_pk.canonical_display()
+        );
+
+        // A present salt whose value is literally the unquoted sentinel text
+        // must still render distinctly from a genuinely absent salt.
+        let absent = PreOperation {
+            salt: None,
+            ..base.clone()
+        };
+        let sentinel_value = PreOperation {
+            salt: Some("(none)".to_string()),
+            ..base
+        };
+        assert_ne!(
+            absent.canonical_display(),
+            sentinel_value.canonical_display()
+        );
     }
 
     fn sample_store_secret() -> StoreSecretOperation {

@@ -31,6 +31,7 @@ use crate::helpers::ring::RingConfig;
 use crate::reporting::v0::{build_signed_relay_statement, RelayStatementInputs};
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
+use crate::sign::v0::email_auth;
 use crate::sign::v0::helpers::{
     check_policy_access_at, fetch_bulletin_payloads_for_version, policy_access_timestamp,
 };
@@ -40,6 +41,7 @@ use authn::endpoints::sign::SignClaims;
 use authn::BearerToken;
 use authz::request::ValidWindow;
 use bulletin::r#trait::{KeyDerivation, RingPayload};
+use orbis_email::EmailEvidence;
 use orbis_webauthn::WebAuthnEvidence;
 use sha2::{Digest, Sha256};
 
@@ -47,6 +49,7 @@ use sha2::{Digest, Sha256};
 pub(super) struct AuthenticatedSignRequest {
     token_string: Option<String>,
     webauthn_assertion: Option<WebAuthnEvidence>,
+    email_assertion: Option<EmailEvidence>,
     /// Computed once here (needed either way: the WebAuthn branch requires
     /// it for verification itself, and it must reach `PolicyContext` so
     /// FROST's Round 1 peer re-check can verify WebAuthn evidence without
@@ -72,6 +75,7 @@ pub(super) struct SignBulletinState {
 pub(super) struct AuthorizedSignRequest {
     token_string: Option<String>,
     webauthn_assertion: Option<WebAuthnEvidence>,
+    email_assertion: Option<EmailEvidence>,
     message_sha256: Vec<u8>,
     token: BearerToken<SignClaims>,
     derivation_id: String,
@@ -147,17 +151,19 @@ where
     /// produces the same `BearerToken<SignClaims>` shape, so every
     /// downstream stage runs unchanged regardless of which method was
     /// used. No IO either way.
-    pub(super) fn authenticate_sign_request(
+    pub(super) async fn authenticate_sign_request(
         &self,
         request: Request<StartSignRequest>,
         current_time: u64,
     ) -> Result<AuthenticatedSignRequest, SignError> {
-        // Mutually exclusive by convention (see `WebAuthnAssertion`'s proto
-        // doc comment): a WebAuthn-bearing request's bearer header, if any,
-        // is never even read, so it can never end up on the wire to peers
-        // alongside the WebAuthn evidence that actually authenticates it.
-        let has_webauthn = request.get_ref().webauthn_assertion.is_some();
-        let token_string = if has_webauthn {
+        // Mutually exclusive by convention (see `WebAuthnAssertion`'s/
+        // `EmailAssertion`'s proto doc comments): a WebAuthn- or
+        // email-bearing request's bearer header, if any, is never even
+        // read, so it can never end up on the wire to peers alongside the
+        // evidence that actually authenticates it.
+        let has_evidence = request.get_ref().webauthn_assertion.is_some()
+            || request.get_ref().email_assertion.is_some();
+        let token_string = if has_evidence {
             None
         } else {
             authn::extract_bearer_token(&request)
@@ -170,6 +176,10 @@ where
             .webauthn_assertion
             .take()
             .map(webauthn_auth::evidence_from_proto);
+        let email_assertion = req
+            .email_assertion
+            .take()
+            .map(email_auth::evidence_from_proto);
         let message_sha256 = Sha256::digest(&req.message).to_vec();
         let fields = authn::endpoints::sign::SignFields {
             derivation_id: req.derivation_id.clone(),
@@ -183,11 +193,14 @@ where
                 webauthn_assertion.as_ref(),
                 self.state.webauthn_rp_id.as_deref(),
                 self.state.webauthn_origin.as_deref(),
+                email_assertion.as_ref(),
+                self.state.email_authenticator.as_deref(),
                 current_time,
                 MAX_TOKEN_LIFETIME_SECS,
                 MAX_JWT_BYTES,
                 JWT_CLOCK_SKEW_LEEWAY_SECS,
             )
+            .await
             .map_err(|e| SignError::Unauthorized(e.to_string()))?;
 
         let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
@@ -195,6 +208,7 @@ where
         Ok(AuthenticatedSignRequest {
             token_string,
             webauthn_assertion,
+            email_assertion,
             message_sha256,
             token,
             derivation_id: req.derivation_id,
@@ -278,6 +292,7 @@ where
         Ok(AuthorizedSignRequest {
             token_string: authenticated.token_string,
             webauthn_assertion: authenticated.webauthn_assertion,
+            email_assertion: authenticated.email_assertion,
             message_sha256: authenticated.message_sha256,
             token: authenticated.token,
             derivation_id: authenticated.derivation_id,
@@ -359,6 +374,7 @@ where
         let context = SignContext::Policy(Box::new(PolicyContext {
             token_string: authorized.token_string,
             webauthn_assertion: authorized.webauthn_assertion,
+            email_assertion: authorized.email_assertion,
             message_sha256: authorized.message_sha256,
             derivation_id: authorized.derivation_id,
             valid_window: authorized.valid_window,

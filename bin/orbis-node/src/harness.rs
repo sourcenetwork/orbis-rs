@@ -197,6 +197,7 @@ pub async fn spawn_harness_node(
         network_ingress: crate::helpers::launch::NetworkIngressArgs::default(),
         webauthn_rp_id: None,
         webauthn_origin: None,
+        email_evidence_enabled: false,
     };
 
     // `local_address` is the same hex-encoded iroh node ID `ensure_node_info`

@@ -93,6 +93,7 @@ base64 = "0.22"
 project-root = "0.2.2"
 bincode = "1.3"
 rmp-serde = "1"
+mail-auth = { version = "0.16", default-features = false, features = ["rust-crypto", "dns-hickory"] }
 
 # Metrics
 prometheus = { version = "0.13", default-features = false, features = ["process"] }

@@ -364,6 +364,12 @@ where
     /// Origin this node expects in a passkey-authorized Sign request's
     /// `clientDataJSON.origin`, paired with `webauthn_rp_id`.
     pub webauthn_origin: Option<String>,
+    /// DKIM authenticator for email-authorized requests (see
+    /// `sign::v0::email_auth`). `None` rejects every such request on this
+    /// node — the safe default for a ring that doesn't use email
+    /// authentication. Constructed once at startup (its own live-DNS
+    /// resolver config is not free to rebuild per request), not per call.
+    pub email_authenticator: Option<Arc<mail_auth::MessageAuthenticator>>,
 }
 
 impl<D> AppState<D>
@@ -378,6 +384,7 @@ where
         bulletin: Arc<dyn Bulletin + Send + Sync>,
         webauthn_rp_id: Option<String>,
         webauthn_origin: Option<String>,
+        email_authenticator: Option<Arc<mail_auth::MessageAuthenticator>>,
     ) -> Self {
         Self {
             node_key,
@@ -397,6 +404,7 @@ where
             defra: Arc::new(DefraNodeConfig::new()),
             webauthn_rp_id,
             webauthn_origin,
+            email_authenticator,
         }
     }
 }
@@ -418,6 +426,7 @@ where
             .field("defra", &"<DefraNodeConfig>")
             .field("webauthn_rp_id", &self.webauthn_rp_id)
             .field("webauthn_origin", &self.webauthn_origin)
+            .field("email_authenticator", &self.email_authenticator.is_some())
             .finish()
     }
 }

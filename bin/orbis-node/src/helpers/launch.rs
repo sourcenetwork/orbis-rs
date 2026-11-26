@@ -273,6 +273,12 @@ pub struct Args {
     /// `clientDataJSON.origin`, paired with `--webauthn-rp-id`.
     #[arg(long, env = "ORBIS_WEBAUTHN_ORIGIN")]
     pub webauthn_origin: Option<String>,
+    /// Accept DKIM-verified email evidence in place of a JWT (see
+    /// `orbis-email`). Off by default — the safe default for a ring that
+    /// doesn't use email authentication. Key resolution uses this node's
+    /// own live DNS; there is no further configuration.
+    #[arg(long, env = "ORBIS_EMAIL_EVIDENCE_ENABLED")]
+    pub email_evidence_enabled: bool,
 }
 
 /// Operator-tunable P2P (QUIC/Iroh) inbound ingress admission budgets, grouped

@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::client::OrbisClient;
 use crate::error::{Result, SdkError};
-#[cfg(feature = "webauthn")]
+#[cfg(any(feature = "webauthn", feature = "email"))]
 use crate::evidence::{ChallengeEvidence, WireEvidence};
 use crate::identity::JwtIdentitySigner;
 use crate::jwt::{now_unix, sign_jwt, JWT_TTL};
@@ -33,7 +33,7 @@ pub struct SignResult {
 /// The JWT path has no such split — a [`JwtIdentitySigner`] mints its own
 /// token synchronously, with no external ceremony to wait on — so
 /// [`OrbisClient::submit_sign_with_jwt`] takes its inputs directly instead.
-#[cfg_attr(not(feature = "webauthn"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "webauthn", feature = "email")), allow(dead_code))]
 pub struct PendingSign {
     operation: SignOperation,
     derivation_id: String,
@@ -48,6 +48,17 @@ impl PendingSign {
     /// of the other fields.
     pub fn challenge(&self) -> Vec<u8> {
         self.operation.canonical_bytes()
+    }
+
+    /// The exact text a challenge email must ask the reader to read,
+    /// approve, and reply to verbatim — recomputed, not stored, same as
+    /// [`PendingSign::challenge`]. See
+    /// `orbis_email::challenge_text`/`orbis_integration_core::CanonicalDisplay`
+    /// for why this is a separate, human-legible rendering rather than the
+    /// binary bytes [`PendingSign::challenge`] returns.
+    #[cfg(feature = "email")]
+    pub fn email_challenge_text(&self) -> String {
+        orbis_email::challenge_text(&self.operation)
     }
 
     /// Builds the [`orbis_webauthn::PasskeyAssertion`] evidence for this
@@ -70,6 +81,30 @@ impl PendingSign {
         Ok(orbis_webauthn::PasskeyAssertion {
             issuer_did: issuer_did.into(),
             assertion,
+            issued_at: now_unix()?,
+            expiry: self.operation.expiry,
+            nonce: self.operation.nonce,
+        })
+    }
+
+    /// Builds the [`orbis_email::SignedEmailAssertion`] evidence for this
+    /// pending challenge from an already-captured, DKIM-signed reply whose
+    /// body contains this challenge's exact text
+    /// ([`PendingSign::email_challenge_text`]).
+    ///
+    /// `expiry`/`nonce` are pulled from the exact values this challenge
+    /// committed to, mirroring [`PendingSign::passkey_evidence`]; `issued_at`
+    /// is freshly chosen for the same reason it is there — Sign's own
+    /// protocol doesn't cryptographically bind it.
+    #[cfg(feature = "email")]
+    pub fn email_evidence(
+        &self,
+        claimed_address: impl Into<String>,
+        raw_message: Vec<u8>,
+    ) -> Result<orbis_email::SignedEmailAssertion> {
+        Ok(orbis_email::SignedEmailAssertion {
+            claimed_address: claimed_address.into(),
+            raw_message,
             issued_at: now_unix()?,
             expiry: self.operation.expiry,
             nonce: self.operation.nonce,
@@ -136,6 +171,7 @@ impl OrbisClient {
             derivation_id,
             valid_window: valid_window(valid_window_start, valid_window_end),
             webauthn_assertion: None,
+            email_assertion: None,
         };
         let tonic_request = create_authenticated_request(request, &token)
             .map_err(|e| SdkError::Crypto(format!("failed to attach JWT: {e}")))?;
@@ -153,7 +189,7 @@ impl OrbisClient {
     /// `pending`'s challenge. `derivation_id` must have been granted (via
     /// ACP) to the identity `evidence` authenticates as; there is no
     /// separate enrollment step.
-    #[cfg(feature = "webauthn")]
+    #[cfg(any(feature = "webauthn", feature = "email"))]
     pub async fn submit_sign_with_evidence<E>(
         &self,
         pending: PendingSign,
@@ -167,13 +203,15 @@ impl OrbisClient {
             .produce(&pending.operation)
             .map_err(|e| SdkError::Evidence(e.to_string()))?
             .into();
+        let (webauthn_assertion, email_assertion) = wire.into_sign_assertion();
 
         let mut client = SignServiceClient::new(self.channel());
         let request = StartSignRequest {
             message: pending.message,
             derivation_id: pending.derivation_id,
             valid_window: valid_window(pending.valid_window_start, pending.valid_window_end),
-            webauthn_assertion: Some(wire.into_sign_assertion()),
+            webauthn_assertion,
+            email_assertion,
         };
         let response = client
             .start_sign(tonic::Request::new(request))

@@ -433,6 +433,7 @@ pub async fn setup_live_node_network(node_count: usize, db_prefix: &str) -> Live
                 network_ingress: NetworkIngressArgs::default(),
                 webauthn_rp_id: None,
                 webauthn_origin: None,
+                email_evidence_enabled: false,
             },
             cors_policy: CorsPolicy::Disabled,
             identity: bulletin::startup::NodeIdentity {

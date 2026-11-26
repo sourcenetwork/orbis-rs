@@ -44,6 +44,11 @@ pub struct PreRequestContext {
     /// same raw bytes, never trusting the leader's word that it already
     /// passed.
     pub webauthn_assertion: Option<orbis_webauthn::WebAuthnEvidence>,
+    /// Email-authorized decryption evidence, in place of `token_string` —
+    /// same mutual-exclusivity and re-verification notes as
+    /// `webauthn_assertion` apply, also with respect to that field. See
+    /// `pre::v0::email_auth`.
+    pub email_assertion: Option<orbis_email::EmailEvidence>,
     /// Optional key derivation bytes
     pub derivation: Option<Vec<u8>>,
     /// Optional salt for policy metadata binding

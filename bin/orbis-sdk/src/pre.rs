@@ -15,7 +15,7 @@ use zeroize::Zeroize;
 
 use crate::client::OrbisClient;
 use crate::error::{Result, SdkError};
-#[cfg(feature = "webauthn")]
+#[cfg(any(feature = "webauthn", feature = "email"))]
 use crate::evidence::{ChallengeEvidence, WireEvidence};
 use crate::identity::JwtIdentitySigner;
 use crate::jwt::{now_unix, sign_jwt, JWT_TTL};
@@ -52,7 +52,7 @@ struct DirectPreResponse {
 /// this one in-memory value: whoever drives the evidence ceremony in
 /// between (e.g. a browser) holds it, in whatever way they choose, until
 /// [`OrbisClient::submit_pre_with_evidence`] consumes it.
-#[cfg_attr(not(feature = "webauthn"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "webauthn", feature = "email")), allow(dead_code))]
 pub struct PendingPre {
     reader_sk_scalar: Fr,
     reader_pk_point: G1Affine,
@@ -99,6 +99,25 @@ impl PendingPre {
         .canonical_bytes()
     }
 
+    /// The exact text a challenge email must ask the reader to read,
+    /// approve, and reply to verbatim — recomputed, not stored, same as
+    /// [`PendingPre::challenge`]. See
+    /// `orbis_email::challenge_text`/`orbis_integration_core::CanonicalDisplay`
+    /// for why this is a separate, human-legible rendering rather than the
+    /// binary bytes [`PendingPre::challenge`] returns.
+    #[cfg(feature = "email")]
+    pub fn email_challenge_text(&self) -> String {
+        orbis_email::challenge_text(&PreOperation {
+            object_id: self.object_id.clone(),
+            rdr_pk: self.reader_pk_bytes.clone(),
+            derivation: self.derivation.clone(),
+            salt: self.salt.clone(),
+            issued_at: self.issued_at,
+            expiry: self.expiry,
+            nonce: self.nonce,
+        })
+    }
+
     /// Builds the [`orbis_webauthn::PasskeyAssertion`] evidence for this
     /// pending challenge from a raw WebAuthn assertion a ceremony against
     /// [`PendingPre::challenge`] produced.
@@ -119,6 +138,28 @@ impl PendingPre {
         orbis_webauthn::PasskeyAssertion {
             issuer_did: issuer_did.into(),
             assertion,
+            issued_at: self.issued_at,
+            expiry: self.expiry,
+            nonce: self.nonce,
+        }
+    }
+
+    /// Builds the [`orbis_email::SignedEmailAssertion`] evidence for this
+    /// pending challenge from an already-captured, DKIM-signed reply whose
+    /// body contains this challenge's exact text
+    /// ([`PendingPre::email_challenge_text`]). Same binding note as
+    /// [`PendingPre::passkey_evidence`] applies: all three of
+    /// `issued_at`/`expiry`/`nonce` are pulled from the exact values this
+    /// challenge committed to.
+    #[cfg(feature = "email")]
+    pub fn email_evidence(
+        &self,
+        claimed_address: impl Into<String>,
+        raw_message: Vec<u8>,
+    ) -> orbis_email::SignedEmailAssertion {
+        orbis_email::SignedEmailAssertion {
+            claimed_address: claimed_address.into(),
+            raw_message,
             issued_at: self.issued_at,
             expiry: self.expiry,
             nonce: self.nonce,
@@ -318,7 +359,7 @@ impl OrbisClient {
     /// challenge, and decrypts the result locally. `object_id`'s document's
     /// policy must have granted the right permission to the identity
     /// `evidence` authenticates as; there is no separate enrollment step.
-    #[cfg(feature = "webauthn")]
+    #[cfg(any(feature = "webauthn", feature = "email"))]
     pub async fn submit_pre_with_evidence<E>(
         &self,
         pending: PendingPre,
@@ -340,6 +381,7 @@ impl OrbisClient {
             })
             .map_err(|e| SdkError::Evidence(e.to_string()))?
             .into();
+        let (webauthn_assertion, email_assertion) = wire.into_pre_assertion();
 
         let rdr_pk_signature = ThresholdDealerNode::sign_reader_authorization(
             &pending.reader_sk_scalar,
@@ -361,7 +403,8 @@ impl OrbisClient {
                 response: rdr_pk_signature.response,
             }),
             audit_target_object_id: None,
-            webauthn_assertion: Some(wire.into_pre_assertion()),
+            webauthn_assertion,
+            email_assertion,
         };
 
         let response = client
@@ -467,6 +510,7 @@ impl OrbisClient {
             }),
             audit_target_object_id,
             webauthn_assertion: None,
+            email_assertion: None,
         };
         let tonic_request = create_authenticated_request(request, &token)
             .map_err(|e| SdkError::Crypto(format!("failed to attach JWT: {e}")))?;

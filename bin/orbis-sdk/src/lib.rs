@@ -28,7 +28,7 @@ mod client;
 mod crypto;
 mod dkg;
 mod error;
-#[cfg(feature = "webauthn")]
+#[cfg(any(feature = "webauthn", feature = "email"))]
 mod evidence;
 mod identity;
 mod jwt;
@@ -50,7 +50,7 @@ pub use crypto::{
 };
 pub use dkg::DkgResult;
 pub use error::{Result, SdkError};
-#[cfg(feature = "webauthn")]
+#[cfg(any(feature = "webauthn", feature = "email"))]
 pub use evidence::{ChallengeEvidence, WireEvidence};
 pub use identity::{
     derive_signer_did, reader_did_from_seed, secp256k1_pubkey_to_did, ChainIdentity,

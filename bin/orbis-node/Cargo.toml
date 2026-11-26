@@ -14,6 +14,8 @@ proto = { path = "../../crates/proto" }
 authn = { path = "../../crates/authn" }
 orbis-integration-core.workspace = true
 orbis-webauthn.workspace = true
+orbis-email.workspace = true
+mail-auth.workspace = true
 p256 = { version = "0.13", features = ["ecdsa"] }
 authz = { path = "../../crates/authz", default-features = false }
 bulletin = { path = "../../crates/bulletin", default-features = false }
