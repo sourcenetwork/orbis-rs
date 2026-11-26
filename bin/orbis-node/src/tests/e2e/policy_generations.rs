@@ -13,8 +13,10 @@ pub fn definition(signer: bool, reader: bool) -> String {
     } else {
         ""
     };
-    let sign_expression = if signer { "signer" } else { "owner" };
-    let read_expression = if reader { "reader" } else { "owner" };
+    // acp refuses `owner` in an expression; a permission without one is
+    // owner-only.
+    let sign_expression = if signer { "\n        expr: signer" } else { "" };
+    let read_expression = if reader { "\n        expr: reader" } else { "" };
     format!(
         "name: native_threshold
 resources:
@@ -32,12 +34,10 @@ resources:
         expr: operator
   - name: key
 {signer_relation}    permissions:
-      - name: sign
-        expr: {sign_expression}
+      - name: sign{sign_expression}
   - name: document
 {reader_relation}    permissions:
-      - name: read
-        expr: {read_expression}
+      - name: read{read_expression}
 "
     )
 }
@@ -46,7 +46,7 @@ pub async fn assert_relationship(
     client: &VeraClient,
     policy: B256,
     trusted: &ConsensusPublicKey,
-    expected: &vera_acp::Relationship,
+    expected: &acp::domain::Relationship,
 ) {
     let mut cursor = None;
     let mut minimum = 1;

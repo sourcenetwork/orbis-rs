@@ -60,7 +60,7 @@ required-features = ["vera"]
 [dev-dependencies]
 common = { path = "../common", default-features = false, features = ["test-helpers"] }
 alloy-sol-types = "1"
-vera-acp = { workspace = true }
+acp = { workspace = true }
 vera-modules = { workspace = true }
 vera-harness = { workspace = true }
 blst = "0.3"

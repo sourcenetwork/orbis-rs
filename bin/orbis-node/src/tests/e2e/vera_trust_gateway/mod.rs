@@ -129,11 +129,10 @@ pub async fn run() {
         .await
         .unwrap();
     confirmed(&network.client, granted.transaction_hash, &network.trusted).await;
-    let relationship = vera_acp::Relationship::with_entity(
-        "ring_policy",
-        &network.policy,
+    let relationship = acp::domain::Relationship::new(
+        acp::domain::Object::new("ring_policy", network.policy.as_str()),
         "creator",
-        actor.parse().unwrap(),
+        acp::domain::Subject::Actor(acp::domain::Actor::new(actor.parse().unwrap())),
     );
     super::policy_generations::assert_relationship(
         &network.client,
