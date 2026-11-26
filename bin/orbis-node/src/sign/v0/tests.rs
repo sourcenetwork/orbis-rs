@@ -1272,7 +1272,13 @@ async fn test_delegated_dkg_then_sign_policy_end_to_end() {
             SignContext::Policy(Box::new(PolicyContext {
                 token_string: Some(sign_token),
                 webauthn_assertion: None,
-                message_sha256: Vec::new(),
+                // Round 1 (FROST/jubjub) checks this against the JWT's claimed
+                // digest before generating a nonce — it must be the real
+                // message hash, not a placeholder, or every remote peer
+                // rejects with "Token message_sha256 does not match request
+                // message" (BLS never surfaces this: it's non-interactive and
+                // skips Round 1 entirely, recomputing the hash fresh in Round 2).
+                message_sha256: Sha256::digest(&message).to_vec(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
