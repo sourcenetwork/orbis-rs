@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passkey-authorized Sign</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+  section { margin-bottom: 32px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 16px; }
+  label { display: block; margin-top: 10px; font-size: 14px; }
+  input, textarea { width: 100%; padding: 6px; margin-top: 4px; box-sizing: border-box; font-family: inherit; }
+  button { margin-top: 12px; padding: 8px 16px; cursor: pointer; }
+  pre { background: #f6f6f6; padding: 8px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 13px; }
+  .error { color: #b00020; }
+  .hint { color: #555; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Passkey-authorized threshold signing</h1>
+<p class="hint">
+  Reference app for Orbis's passkey-sign integration. Register a passkey, then use it to
+  authorize a threshold Sign request against a running orbis-node ring — no JWT, no
+  password. The passkey's own public key <em>is</em> the identity ACP grants or revokes;
+  this page never verifies anything itself, every ring node does that independently.
+</p>
+
+<section>
+  <h2>1. Register a passkey</h2>
+  <button id="register">Register passkey</button>
+  <p class="hint">Grant the resulting DID permission via ACP (see this example's
+    <code>policies/README.md</code>) before trying to sign with it.</p>
+  <pre id="register-result">—</pre>
+</section>
+
+<section>
+  <h2>2. Sign with a passkey</h2>
+  <label>Derivation ID
+    <input id="derivation-id" placeholder="from vera-admin derivation-id">
+  </label>
+  <label>Message
+    <textarea id="message" rows="3" placeholder="message to sign"></textarea>
+  </label>
+  <button id="sign">Sign</button>
+  <pre id="sign-result">—</pre>
+</section>
+
+<section>
+  <h2>3. Decrypt via PRE with a passkey</h2>
+  <label>Ring public key (hex)
+    <input id="pre-ring-pk" placeholder="from DKG">
+  </label>
+  <label>Object ID
+    <input id="pre-object-id" placeholder="from store-secret / register-document">
+  </label>
+  <label>Derivation (hex, optional)
+    <input id="pre-derivation" placeholder="optional">
+  </label>
+  <label>Salt (optional)
+    <input id="pre-salt" placeholder="optional">
+  </label>
+  <button id="pre-decrypt">Decrypt</button>
+  <pre id="pre-decrypt-result">—</pre>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>

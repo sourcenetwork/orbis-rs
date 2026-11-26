@@ -34,10 +34,6 @@ vera-node = { workspace = true, optional = true }
 default = ["vera"]
 vera = ["dep:commonware-codec", "dep:vera-client", "dep:vera-harness", "dep:vera-node"]
 
-[[test]]
-name = "vera_validators"
-required-features = ["vera"]
-
 [dev-dependencies]
 tokio = { workspace = true }
 

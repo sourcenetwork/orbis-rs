@@ -5,7 +5,7 @@ use bulletin::{
         Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, KeyDerivation, NodeInfo,
         RingCancellationPayload, RingFinalizationPayload, RingPayload,
     },
-    vera::{VeraBulletin, VeraClient, VeraClientExt},
+    vera::{RingParticipantCommand, VeraBulletin, VeraClient, VeraClientExt},
 };
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -371,17 +371,22 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         &client,
         &worker,
         &trusted,
-        encode_ring_command(&RingCommand::Create(config), &token).unwrap(),
+        encode_ring_command(&RingCommand::Create(config.clone()), &token).unwrap(),
     )
     .await;
     receipt(&SdkVeraClient::new(&reader_url), creation, &trusted).await;
-    for _ in 0..2 {
-        let cancelled = backend
+    assert_eq!(
+        backend
             .post(BulletinWriteKind::CancelPendingRing, cancel.clone())
             .await
-            .unwrap();
-        assert_eq!(cancelled, pending_id);
-    }
+            .unwrap(),
+        pending_id
+    );
+    // A certified cancel deletes the ring, so a repeat cannot tell it from a ring that never existed.
+    assert!(matches!(
+        backend.post(BulletinWriteKind::CancelPendingRing, cancel.clone()).await,
+        Err(bulletin::error::BulletinError::NotFound { id }) if id == pending_id
+    ));
     assert!(matches!(
         backend.read(pending_id.clone(), BulletinKind::Ring).await,
         Err(bulletin::error::BulletinError::NotFound { id }) if id == pending_id
@@ -389,6 +394,32 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     drop(backend);
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let mut writer = open(&url, trusted, root.0, &directory, &storage);
+    assert!(writer.pending_id().unwrap().is_none());
+
+    config.nonce = [3; 32];
+    let interrupted_id = config.id().unwrap();
+    let creation = submit(
+        &client,
+        &worker,
+        &trusted,
+        encode_ring_command(&RingCommand::Create(config), &token).unwrap(),
+    )
+    .await;
+    receipt(&SdkVeraClient::new(&reader_url), creation, &trusted).await;
+    let expiry = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 120;
+    writer
+        .prepare_ring_participant_request(
+            interrupted_id.clone(),
+            RingParticipantCommand::Cancel,
+            expiry,
+        )
+        .unwrap();
+    drop(writer);
     let writer = open(&url, trusted, root.0, &directory, &storage);
     assert!(writer.pending_id().unwrap().is_some());
     let backend = VeraBulletin::connect(
@@ -399,13 +430,32 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     )
     .await
     .unwrap();
+    let interrupted = serde_json::to_vec(&RingCancellationPayload {
+        ring_id: interrupted_id.clone(),
+    })
+    .unwrap();
     assert_eq!(
         backend
-            .post(BulletinWriteKind::CancelPendingRing, cancel)
+            .post(BulletinWriteKind::CancelPendingRing, interrupted)
             .await
             .unwrap(),
-        pending_id
+        interrupted_id
     );
+    assert!(matches!(
+        backend.read(interrupted_id.clone(), BulletinKind::Ring).await,
+        Err(bulletin::error::BulletinError::NotFound { id }) if id == interrupted_id
+    ));
+    drop(backend);
+    let writer = open(&url, trusted, root.0, &directory, &storage);
+    assert!(writer.pending_id().unwrap().is_none());
+    let backend = VeraBulletin::connect(
+        writer,
+        SdkVeraClient::new(&reader_url),
+        30,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
     let restored: DocumentPayload = backend
         .read(document_id, BulletinKind::Document)
         .await
@@ -426,7 +476,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
 #[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn native_report_and_reshare_recover_certified_completion() {
     use bulletin::r#trait::BulletinReportSubmission;
-    use bulletin::vera::{RingParticipantCommand, RingPublicKeys, RingUpdate};
+    use bulletin::vera::{RingPublicKeys, RingUpdate};
     use vera_client::rings::{CommitteeScope, NodeOffline, ReportEnvelope};
     let deployment = 9072;
     let trusted = *KeySet::builder()

@@ -149,6 +149,12 @@ services:
       - ORBIS_PASSWORD_FILE=password
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001
       - RUST_LOG=info
+      # Unset unless a scenario overrides them on the host — empty is
+      # treated as "not configured" (`runtime::init_node` filters empty
+      # strings to `None`), the safe default that rejects every
+      # passkey-authorized Sign request.
+      - ORBIS_WEBAUTHN_RP_ID=${ORBIS_WEBAUTHN_RP_ID:-}
+      - ORBIS_WEBAUTHN_ORIGIN=${ORBIS_WEBAUTHN_ORIGIN:-}
       # The ordinary fixture image compiles deterministic startup only. This
       # runtime switch has an effect only when the harness selects the separate
       # diagnostic image, which explicitly compiles `unsafe-testing`.
@@ -204,6 +210,8 @@ services:
       - ORBIS_PASSWORD_FILE=password
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000002
       - RUST_LOG=info
+      - ORBIS_WEBAUTHN_RP_ID=${ORBIS_WEBAUTHN_RP_ID:-}
+      - ORBIS_WEBAUTHN_ORIGIN=${ORBIS_WEBAUTHN_ORIGIN:-}
       # The ordinary fixture image compiles deterministic startup only. This
       # runtime switch has an effect only when the harness selects the separate
       # diagnostic image, which explicitly compiles `unsafe-testing`.
@@ -259,6 +267,8 @@ services:
       - ORBIS_PASSWORD_FILE=password
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000003
       - RUST_LOG=info
+      - ORBIS_WEBAUTHN_RP_ID=${ORBIS_WEBAUTHN_RP_ID:-}
+      - ORBIS_WEBAUTHN_ORIGIN=${ORBIS_WEBAUTHN_ORIGIN:-}
       # The ordinary fixture image compiles deterministic startup only. This
       # runtime switch has an effect only when the harness selects the separate
       # diagnostic image, which explicitly compiles `unsafe-testing`.
@@ -315,6 +325,8 @@ services:
       - ORBIS_PASSWORD_FILE=password
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000004
       - RUST_LOG=info
+      - ORBIS_WEBAUTHN_RP_ID=${ORBIS_WEBAUTHN_RP_ID:-}
+      - ORBIS_WEBAUTHN_ORIGIN=${ORBIS_WEBAUTHN_ORIGIN:-}
       # The ordinary fixture image compiles deterministic startup only. This
       # runtime switch has an effect only when the harness selects the separate
       # diagnostic image, which explicitly compiles `unsafe-testing`.

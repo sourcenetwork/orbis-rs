@@ -356,6 +356,14 @@ where
     /// own signing key), used when a ring's `pre_share_endpoints` selects Defra-backed
     /// PRE share storage.
     pub defra: Arc<DefraNodeConfig>,
+    /// Relying-party ID this node expects in a passkey-authorized Sign
+    /// request's WebAuthn assertion (see `sign::v0::webauthn_auth`). `None`
+    /// rejects every such request on this node — the safe default for a
+    /// ring that doesn't use passkey signing.
+    pub webauthn_rp_id: Option<String>,
+    /// Origin this node expects in a passkey-authorized Sign request's
+    /// `clientDataJSON.origin`, paired with `webauthn_rp_id`.
+    pub webauthn_origin: Option<String>,
 }
 
 impl<D> AppState<D>
@@ -368,6 +376,8 @@ where
         local_storage: LocalStorageImpl,
         authz: Arc<dyn Authz + Send + Sync>,
         bulletin: Arc<dyn Bulletin + Send + Sync>,
+        webauthn_rp_id: Option<String>,
+        webauthn_origin: Option<String>,
     ) -> Self {
         Self {
             node_key,
@@ -385,6 +395,8 @@ where
             reporting_state: Arc::new(ReportingState::new()),
             jti_guard: Arc::new(JtiReplayGuard::new()),
             defra: Arc::new(DefraNodeConfig::new()),
+            webauthn_rp_id,
+            webauthn_origin,
         }
     }
 }
@@ -404,6 +416,8 @@ where
             .field("sign_response_state", &"<SignResponseManager>")
             .field("reporting_state", &"<ReportingState>")
             .field("defra", &"<DefraNodeConfig>")
+            .field("webauthn_rp_id", &self.webauthn_rp_id)
+            .field("webauthn_origin", &self.webauthn_origin)
             .finish()
     }
 }

@@ -1,0 +1,23 @@
+[package]
+name = "orbis-webauthn"
+description = "Passkey and FIDO2 security-key integration for Orbis flows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+readme = "README.md"
+
+[dependencies]
+orbis-integration-core.workspace = true
+authn = { path = "../../authn" }
+webauthn-rs-core = "0.5"
+p256 = { version = "0.13", features = ["ecdsa"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

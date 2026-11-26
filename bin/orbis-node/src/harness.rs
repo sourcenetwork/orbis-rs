@@ -186,6 +186,8 @@ pub async fn spawn_harness_node(
         grpc_concurrency_limit_per_connection: constants::GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: constants::GRPC_MAX_CONCURRENT_STREAMS,
         network_ingress: crate::helpers::launch::NetworkIngressArgs::default(),
+        webauthn_rp_id: None,
+        webauthn_origin: None,
     };
 
     // `local_address` is the same hex-encoded iroh node ID `ensure_node_info`

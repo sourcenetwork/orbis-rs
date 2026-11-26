@@ -110,6 +110,8 @@ async fn make_test_node_config(
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             network_ingress: NetworkIngressArgs::default(),
+            webauthn_rp_id: None,
+            webauthn_origin: None,
         },
         cors_policy: CorsPolicy::Disabled,
         identity: bulletin::startup::NodeIdentity {
@@ -176,6 +178,8 @@ fn node_info_test_args(
         grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
         network_ingress: NetworkIngressArgs::default(),
+        webauthn_rp_id: None,
+        webauthn_origin: None,
     }
 }
 
@@ -563,6 +567,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             document: None,
             rdr_pk_signature: None,
             audit_target_object_id: None,
+            webauthn_assertion: None,
         })
         .await
         .expect_err("oversized pre request should fail during decode");
@@ -576,6 +581,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             message: vec![0u8; MAX_SIGN_MESSAGE_BYTES],
             derivation_id: "derivation-id".to_string(),
             valid_window: None,
+            webauthn_assertion: None,
         })
         .await
         .expect_err("sign request at message limit should reach auth");
@@ -590,6 +596,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             message: vec![0u8; MAX_SIGN_REQUEST_BYTES],
             derivation_id: "derivation-id".to_string(),
             valid_window: None,
+            webauthn_assertion: None,
         })
         .await
         .expect_err("oversized sign request should fail during decode");
@@ -612,6 +619,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             tier: None,
             timestamp: None,
             pet_tag: None,
+            webauthn_assertion: None,
         })
         .await
         .expect_err("oversized store-secret request should fail during decode");
@@ -788,6 +796,8 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             network_ingress: NetworkIngressArgs::default(),
+            webauthn_rp_id: None,
+            webauthn_origin: None,
         },
         cors_policy,
         identity: identity.clone(),

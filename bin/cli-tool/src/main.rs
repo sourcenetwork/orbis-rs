@@ -3,10 +3,10 @@ mod commands;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 pub use commands::{
-    derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_pre_and_save, do_retrieve_pre,
-    do_sign, do_store_secret, prepare_secret, query_node_info, query_pet_ring_state,
-    query_ring_state, reader_did_from_seed, store_prepared_secret, PendingPreRetrieval,
-    PreparedSecret, SignResult,
+    derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_pre_and_save, do_pre_with_passkey,
+    do_retrieve_pre, do_sign, do_sign_with_passkey, do_store_secret, prepare_secret,
+    query_node_info, query_pet_ring_state, query_ring_state, reader_did_from_seed,
+    store_prepared_secret, PendingPreRetrieval, PreparedSecret, SignResult,
 };
 
 /// Network and signing configuration, shared across every subcommand.
@@ -99,6 +99,43 @@ pub enum SubCommands {
         /// that `retrieve-pre` can decrypt later, independently of this process.
         #[clap(long)]
         save_only: bool,
+    },
+    /// Decrypt via PRE, authorized by a WebAuthn assertion instead of a
+    /// JWT — the passkey's own public key is the identity ACP grants or
+    /// revokes directly. There is no browser or hardware authenticator
+    /// here: `--passkey-key-hex` supplies a raw P-256 private key
+    /// directly, standing in for one. Fine for scripting/testing; a real
+    /// end-user flow drives this through an actual WebAuthn ceremony.
+    PreWithPasskey {
+        /// Ring public key (from DKG) in hex format
+        #[clap(long)]
+        ring_pk: String,
+        /// Id of object
+        #[clap(long)]
+        object_id: String,
+        /// Hex-encoded 32-byte P-256 private key, standing in for a passkey.
+        #[clap(long, env = "ORBIS_PASSKEY_KEY_HEX", hide_env_values = true)]
+        passkey_key_hex: String,
+        /// Relying-party ID to embed in the assertion; must match the
+        /// node's own `--webauthn-rp-id`.
+        #[clap(long)]
+        rp_id: String,
+        /// Origin to embed in the assertion; must match the node's own
+        /// `--webauthn-origin`.
+        #[clap(long)]
+        origin: String,
+        /// Optional derivation path (hex encoded)
+        #[clap(long)]
+        derivation: Option<String>,
+        /// Optional salt
+        #[clap(long)]
+        salt: Option<String>,
+        /// Start of the validity window (Unix timestamp, inclusive). Requires --valid-window-end.
+        #[clap(long)]
+        valid_window_start: Option<u64>,
+        /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
+        #[clap(long)]
+        valid_window_end: Option<u64>,
     },
     /// Decrypt a PRE response saved earlier via `pre --save-only`
     RetrievePre {
@@ -260,6 +297,37 @@ pub enum SubCommands {
         #[clap(long)]
         valid_window_end: Option<u64>,
     },
+    /// Start a threshold Sign session authorized by a WebAuthn assertion
+    /// instead of a JWT — the passkey's own public key is the identity ACP
+    /// grants/revokes directly. There is no browser or hardware
+    /// authenticator here: `--passkey-key-hex` supplies a raw P-256 private
+    /// key directly, standing in for one. Fine for scripting/testing; a
+    /// real end-user flow drives this through an actual WebAuthn ceremony.
+    SignWithPasskey {
+        /// Message to sign (hex encoded)
+        #[clap(long)]
+        message: String,
+        /// Derivation ID of a key derivation registered with Vera
+        #[clap(long)]
+        derivation_id: String,
+        /// Hex-encoded 32-byte P-256 private key, standing in for a passkey.
+        #[clap(long, env = "ORBIS_PASSKEY_KEY_HEX", hide_env_values = true)]
+        passkey_key_hex: String,
+        /// Relying-party ID to embed in the assertion; must match the
+        /// node's own `--webauthn-rp-id`.
+        #[clap(long)]
+        rp_id: String,
+        /// Origin to embed in the assertion; must match the node's own
+        /// `--webauthn-origin`.
+        #[clap(long)]
+        origin: String,
+        /// Start of the validity window (Unix timestamp, inclusive). Requires --valid-window-end.
+        #[clap(long)]
+        valid_window_start: Option<u64>,
+        /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
+        #[clap(long)]
+        valid_window_end: Option<u64>,
+    },
 }
 
 /// Returns `secret` if given, otherwise prompts for it interactively with hidden input.
@@ -357,6 +425,41 @@ async fn main() -> Result<()> {
                 )
                 .await?;
             }
+        }
+        SubCommands::PreWithPasskey {
+            ring_pk,
+            object_id,
+            passkey_key_hex,
+            rp_id,
+            origin,
+            derivation,
+            salt,
+            valid_window_start,
+            valid_window_end,
+        } => {
+            require_valid_window_pair(valid_window_start, valid_window_end)?;
+            let derivation_bytes = parse_derivation_hex(derivation)?;
+            let key_bytes = hex::decode(&passkey_key_hex)
+                .map_err(|e| anyhow::anyhow!("Failed to decode passkey key hex: {}", e))?;
+            let key_bytes: [u8; 32] = key_bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("--passkey-key-hex must be 32 bytes"))?;
+            let signing_key = p256::ecdsa::SigningKey::from_bytes((&key_bytes).into())
+                .map_err(|e| anyhow::anyhow!("Invalid P-256 private key: {}", e))?;
+            do_pre_with_passkey(
+                network.endpoint.clone(),
+                network.chain_id.clone(),
+                ring_pk,
+                object_id,
+                &signing_key,
+                &rp_id,
+                &origin,
+                derivation_bytes,
+                salt,
+                valid_window_start,
+                valid_window_end,
+            )
+            .await?;
         }
         SubCommands::RetrievePre { pending_json } => {
             do_retrieve_pre(pending_json).await?;
@@ -505,6 +608,37 @@ async fn main() -> Result<()> {
                 message_bytes,
                 derivation_id,
                 Some(reader_did_pk),
+                valid_window_start,
+                valid_window_end,
+            )
+            .await?;
+        }
+        SubCommands::SignWithPasskey {
+            message,
+            derivation_id,
+            passkey_key_hex,
+            rp_id,
+            origin,
+            valid_window_start,
+            valid_window_end,
+        } => {
+            require_valid_window_pair(valid_window_start, valid_window_end)?;
+            let message_bytes = hex::decode(&message)
+                .map_err(|e| anyhow::anyhow!("Failed to decode message hex: {}", e))?;
+            let key_bytes = hex::decode(&passkey_key_hex)
+                .map_err(|e| anyhow::anyhow!("Failed to decode passkey key hex: {}", e))?;
+            let key_bytes: [u8; 32] = key_bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("--passkey-key-hex must be 32 bytes"))?;
+            let signing_key = p256::ecdsa::SigningKey::from_bytes((&key_bytes).into())
+                .map_err(|e| anyhow::anyhow!("Invalid P-256 private key: {}", e))?;
+            do_sign_with_passkey(
+                network.endpoint.clone(),
+                message_bytes,
+                derivation_id,
+                &signing_key,
+                &rp_id,
+                &origin,
                 valid_window_start,
                 valid_window_end,
             )

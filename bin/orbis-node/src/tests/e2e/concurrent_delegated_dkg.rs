@@ -3,7 +3,8 @@
 //!
 //! Runs on [`super::live_node`]'s in-process bootstrap.
 
-use authn::{create_authenticated_request, DkgClaims, JwtSigner};
+use authn::endpoints::dkg::DkgClaims;
+use authn::{create_authenticated_request, JwtSigner};
 use proto::v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest};
 
 #[tokio::test]

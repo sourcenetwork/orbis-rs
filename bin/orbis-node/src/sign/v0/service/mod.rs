@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 mod stages;
-use stages::{authenticate_sign_request, encode_sign_response, validate_sign_message_size};
+use stages::{encode_sign_response, validate_sign_message_size};
 
 /// Implementation of the v0 SignService.
 ///
@@ -83,7 +83,7 @@ where
         validate_sign_message_size(&request)?;
 
         // 1. Authentication.
-        let authenticated = authenticate_sign_request(request, current_time)?;
+        let authenticated = self.authenticate_sign_request(request, current_time)?;
 
         // 2. Bulletin reads.
         let bulletin_state = self

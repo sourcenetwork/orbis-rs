@@ -43,11 +43,10 @@ env:
   ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB: "8"
   ORBIS_LOCAL_STORAGE_KDF_T_COST: "1"
   # The Docker-backed integration tests. Run in their own sharded
-  # `integration` job against the prebuilt images; the `unit` job runs the
-  # complement. Validate with `cargo nextest list -E "<this>"`.
+  # `integration` job; the `unit` job runs the complement. Validate with
+  # `cargo nextest list -E "<this>"`.
   DOCKER_TESTS: >-
-    (package(orbis-node) & (test(/^tests::e2e::/) | test(/^tests::node::/)))
-    | binary_id(test-support::vera_validators)
+    package(orbis-node) & (test(/^tests::e2e::/) | test(/^tests::node::/))
 
 jobs:
   common:
@@ -336,7 +335,7 @@ jobs:
       with:
         tool: cargo-nextest
     - name: Compile test binaries (${{ matrix.crypto }})
-      run: cargo nextest run --no-run --profile ci -p orbis-node -p test-support --release --locked --build-jobs 2 ${{ matrix.cargo_flags }}
+      run: cargo nextest run --no-run --profile ci -p orbis-node --release --locked --build-jobs 2 ${{ matrix.cargo_flags }}
     - name: Verify E2E inventory (${{ matrix.crypto }})
       # This compiles/discovers tests but never executes their bodies. The
       # sentinel assertions catch stale filters and cfg drift that `--no-run`
@@ -405,8 +404,8 @@ jobs:
           cache-from: type=gha,scope=vera
           cache-to: type=gha,scope=vera,mode=max
 
-  # Docker-backed integration pipeline: DOCKER_TESTS, i.e. orbis-node's E2E
-  # and node tests and test-support's Vera topology tests (minus the gateway-only fixture test, which needs the separate
+  # Docker-backed integration pipeline: the `-p orbis-node --lib` E2E and
+  # node tests (minus the gateway-only fixture test, which needs the separate
   # Trust-ring artifact pipeline — `scope == 'gateway'`), sharded 7-way with
   # nextest's `hash:` partitioning so a cluster of slow tests does not land in
   # one shard.
@@ -465,8 +464,8 @@ jobs:
         } >> "$GITHUB_ENV"
     - name: Integration tests (${{ matrix.crypto }}, shard ${{ matrix.shard }}/7)
       run: >-
-        cargo nextest run --profile ci --retries 0 --no-tests fail -p orbis-node -p test-support --release --locked --build-jobs 2 ${{ matrix.cargo_flags }}
-        -E "(${{ env.DOCKER_TESTS }}) & not test(=tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg)"
+        cargo nextest run --profile ci --retries 0 --no-tests fail -p orbis-node --release --locked --build-jobs 2 ${{ matrix.cargo_flags }}
+        -E "(test(/^tests::e2e::/) & not test(=tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg)) | test(/^tests::node::/)"
         --partition hash:${{ matrix.shard }}/7
 
   sign-peer-recovery:

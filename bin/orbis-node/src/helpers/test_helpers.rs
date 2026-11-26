@@ -116,7 +116,15 @@ pub async fn create_test_app_state_with_bulletin(
             .await
             .expect("Failed to initialize dummy Authz"),
     );
-    AppState::<DkgImpl>::new(node_key, network, local_storage, authz, bulletin)
+    AppState::<DkgImpl>::new(
+        node_key,
+        network,
+        local_storage,
+        authz,
+        bulletin,
+        None,
+        None,
+    )
 }
 
 /// Create a test AppState with default values
@@ -489,6 +497,67 @@ pub async fn setup_three_node_network_with_sign(
     db_name: &str,
 ) -> ThreeNodeNetwork {
     setup_three_node_network_impl(start_routers, db_name, TestRouterHandlers::All, vec![]).await
+}
+
+/// Shared implementation behind the `setup_three_node_network_with_*_and_webauthn` variants.
+///
+/// Builds the network with routers held back, sets `webauthn_rp_id`/`webauthn_origin` on
+/// every node's `AppState` (both are `None` by default, which makes WebAuthn auth
+/// unconditionally fail as `NotConfigured`), then starts the routers — so every peer's
+/// router captures a clone of the app state that already has WebAuthn configured, letting
+/// WebAuthn-authorized requests be independently verified by every node, not just rejected
+/// up front for lacking configuration.
+async fn setup_three_node_network_with_webauthn(
+    db_name: &str,
+    handlers: TestRouterHandlers,
+    webauthn_rp_id: &str,
+    webauthn_origin: &str,
+) -> ThreeNodeNetwork {
+    let mut network = setup_three_node_network_impl(false, db_name, handlers, vec![]).await;
+
+    for (node, name) in [
+        (&mut network.alice, "Alice"),
+        (&mut network.bob, "Bob"),
+        (&mut network.charlie, "Charlie"),
+    ] {
+        node.app_state.webauthn_rp_id = Some(webauthn_rp_id.to_string());
+        node.app_state.webauthn_origin = Some(webauthn_origin.to_string());
+        node.router = Some(start_test_router(name, &node.app_state, handlers));
+    }
+
+    network
+}
+
+/// Like [`setup_three_node_network_with_sign`], but with WebAuthn configured on every node
+/// so WebAuthn-authorized Sign requests can be independently verified by each peer.
+pub async fn setup_three_node_network_with_sign_and_webauthn(
+    db_name: &str,
+    webauthn_rp_id: &str,
+    webauthn_origin: &str,
+) -> ThreeNodeNetwork {
+    setup_three_node_network_with_webauthn(
+        db_name,
+        TestRouterHandlers::All,
+        webauthn_rp_id,
+        webauthn_origin,
+    )
+    .await
+}
+
+/// Like [`setup_three_node_network_with_pre`], but with WebAuthn configured on every node
+/// so WebAuthn-authorized PRE requests can be independently verified by each peer.
+pub async fn setup_three_node_network_with_pre_and_webauthn(
+    db_name: &str,
+    webauthn_rp_id: &str,
+    webauthn_origin: &str,
+) -> ThreeNodeNetwork {
+    setup_three_node_network_with_webauthn(
+        db_name,
+        TestRouterHandlers::DkgPre,
+        webauthn_rp_id,
+        webauthn_origin,
+    )
+    .await
 }
 
 pub async fn setup_three_node_network_with_sign_and_trusted_relays(

@@ -259,6 +259,16 @@ pub struct Args {
     /// see [`NetworkIngressArgs`].
     #[command(flatten)]
     pub network_ingress: NetworkIngressArgs,
+    /// Relying-party ID this node expects in a passkey-authorized Sign
+    /// request's WebAuthn assertion. Omit to reject every such request on
+    /// this node — the safe default for a ring that doesn't use passkey
+    /// signing. Must be paired with `--webauthn-origin`.
+    #[arg(long, env = "ORBIS_WEBAUTHN_RP_ID")]
+    pub webauthn_rp_id: Option<String>,
+    /// Origin this node expects in a passkey-authorized Sign request's
+    /// `clientDataJSON.origin`, paired with `--webauthn-rp-id`.
+    #[arg(long, env = "ORBIS_WEBAUTHN_ORIGIN")]
+    pub webauthn_origin: Option<String>,
 }
 
 /// Operator-tunable P2P (QUIC/Iroh) inbound ingress admission budgets, grouped

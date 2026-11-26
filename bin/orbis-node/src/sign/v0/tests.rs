@@ -9,7 +9,8 @@ use crate::helpers::ring::RingConfig;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
     setup_three_node_network_with_sign, setup_three_node_network_with_sign_and_trusted_relays,
-    test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
+    setup_three_node_network_with_sign_and_webauthn, test_db_path, TestKeyPair,
+    TEST_FRESH_DKG_RING_ID,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
@@ -19,7 +20,8 @@ use crate::sign::v0::messages::{PolicyContext, SignContext};
 #[cfg(feature = "jubjub")]
 use crate::sign::v0::messages::{SignMessage, SignRequest};
 use crate::sign::v0::service::SignServiceImpl;
-use authn::{DkgClaims, SignClaims};
+use authn::endpoints::dkg::DkgClaims;
+use authn::endpoints::sign::SignClaims;
 use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{
@@ -27,6 +29,8 @@ use bulletin::r#trait::{
 };
 use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
 use crypto::{DkgImpl, SignImpl};
+use orbis_integration_core::{CanonicalOperation, SignOperation};
+use p256::ecdsa::SigningKey;
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::v0::sign::{sign_service_server::SignService, StartSignRequest};
 use sha2::{Digest, Sha256};
@@ -1266,7 +1270,15 @@ async fn test_delegated_dkg_then_sign_policy_end_to_end() {
             },
             message.clone(),
             SignContext::Policy(Box::new(PolicyContext {
-                token_string: sign_token,
+                token_string: Some(sign_token),
+                webauthn_assertion: None,
+                // Round 1 (FROST/jubjub) checks this against the JWT's claimed
+                // digest before generating a nonce — it must be the real
+                // message hash, not a placeholder, or every remote peer
+                // rejects with "Token message_sha256 does not match request
+                // message" (BLS never surfaces this: it's non-interactive and
+                // skips Round 1 entirely, recomputing the hash fresh in Round 2).
+                message_sha256: Sha256::digest(&message).to_vec(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
@@ -1413,7 +1425,9 @@ async fn test_sign_policy_fails_invalid_jwt() {
             },
             b"some message".to_vec(),
             SignContext::Policy(Box::new(PolicyContext {
-                token_string: "this.is.not.a.valid.jwt".to_string(),
+                token_string: Some("this.is.not.a.valid.jwt".to_string()),
+                webauthn_assertion: None,
+                message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
@@ -1433,6 +1447,174 @@ async fn test_sign_policy_fails_invalid_jwt() {
     );
 
     println!("SUCCESS! Policy signing correctly failed with invalid JWT");
+
+    network
+        .shutdown_routers()
+        .await
+        .expect("Failed to shutdown");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// Policy signing should fail when the WebAuthn assertion claims a DID it doesn't actually
+/// control — signed by a different P-256 key than the one `issuer_did` decodes to. Every
+/// peer independently re-verifies the raw assertion bytes (never trusting the coordinator's
+/// word that auth already passed, mirroring [`test_sign_policy_fails_invalid_jwt`] for the
+/// WebAuthn path), so this should fail the same way a garbage JWT does.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_sign_policy_fails_forged_webauthn_assertion() {
+    const WEBAUTHN_RP_ID: &str = "orbis-sign.test";
+    const WEBAUTHN_ORIGIN: &str = "https://orbis-sign.test";
+
+    let db_name = "test_sign_policy_fails_forged_webauthn_assertion";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    let mut network =
+        setup_three_node_network_with_sign_and_webauthn(db_name, WEBAUTHN_RP_ID, WEBAUTHN_ORIGIN)
+            .await;
+    let peer_ids = network.get_all_peer_ids();
+
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("create DKG JWT");
+    let result = node1_service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await;
+    assert!(result.is_ok());
+
+    let (ring_payload, ring_id) = wait_for_dkg_completion(&network).await;
+
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("requires DummyBulletin");
+    let key_derivation = setup_key_derivation_in_bulletin(dummy_bulletin, &ring_id);
+
+    let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
+
+    let message = b"some message".to_vec();
+
+    // The assertion is built honestly around the real request (same derivation_id and
+    // message digest a peer will reconstruct) so the *only* thing wrong with it is the
+    // signing key — isolating the test to the signature check, not an incidental mismatch.
+    let mut claimed_scalar = [0u8; 32];
+    claimed_scalar[31] = 90;
+    let claimed_key = SigningKey::from_bytes((&claimed_scalar).into())
+        .expect("small nonzero scalar is a valid P-256 key");
+    let claimed_compressed_pubkey: [u8; 33] = claimed_key
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed P-256 point is 33 bytes");
+    let claimed_issuer_did = authn::did_from_p256_public_key(&claimed_compressed_pubkey);
+
+    let mut actual_signer_scalar = [0u8; 32];
+    actual_signer_scalar[31] = 91;
+    let actual_signer_key = SigningKey::from_bytes((&actual_signer_scalar).into())
+        .expect("small nonzero scalar is a valid P-256 key");
+
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before epoch")
+        .as_secs();
+    let expiry = issued_at + 300;
+    let nonce = [9u8; 16];
+    let operation = SignOperation {
+        derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
+        message_sha256: Sha256::digest(&message).to_vec(),
+        expiry,
+        nonce,
+    };
+    let assertion = orbis_webauthn::build_test_assertion(
+        &actual_signer_key,
+        WEBAUTHN_RP_ID,
+        WEBAUTHN_ORIGIN,
+        &operation.canonical_bytes(),
+    );
+    let forged_evidence = orbis_webauthn::WebAuthnEvidence {
+        issuer_did: claimed_issuer_did,
+        authenticator_data: assertion.authenticator_data,
+        client_data_json: assertion.client_data_json,
+        signature: assertion.signature,
+        issued_at,
+        expiry,
+        nonce: nonce.to_vec(),
+    };
+
+    let sign_result = sign_coordinator
+        .initiate_signing(
+            format!(
+                "req-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            ),
+            RingConfig {
+                ring_id: String::new(),
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_node_keys.len(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
+                pre_share_endpoints: vec![],
+            },
+            message.clone(),
+            SignContext::Policy(Box::new(PolicyContext {
+                token_string: None,
+                webauthn_assertion: Some(forged_evidence),
+                message_sha256: Sha256::digest(&message).to_vec(),
+                derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
+                valid_window: None,
+                key_derivation,
+                relay_statement: None,
+                relay_signature: Vec::new(),
+            })),
+            SigningOptions::default(),
+        )
+        .await;
+
+    assert!(
+        sign_result.is_err(),
+        "Should fail with forged WebAuthn assertion"
+    );
+    let err = sign_result.unwrap_err().to_string();
+    assert!(
+        err.contains("Insufficient") || err.contains("Timeout"),
+        "Error should indicate peers rejected the request: {}",
+        err
+    );
+
+    println!("SUCCESS! Policy signing correctly failed with forged WebAuthn assertion");
 
     network
         .shutdown_routers()
@@ -1522,7 +1704,9 @@ async fn test_sign_policy_fails_wrong_derivation_id() {
             },
             b"some message".to_vec(),
             SignContext::Policy(Box::new(PolicyContext {
-                token_string: sign_token,
+                token_string: Some(sign_token),
+                webauthn_assertion: None,
+                message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,
@@ -1741,6 +1925,7 @@ async fn test_sign_service_rejects_oversized_message() {
         derivation_id: "test-derivation".to_string(),
         message: oversized_message,
         valid_window: None,
+        webauthn_assertion: None,
     });
 
     let result = service.start_sign(request).await;
@@ -1902,7 +2087,9 @@ async fn test_sign_policy_fails_wrong_message_digest() {
             },
             different_message,
             SignContext::Policy(Box::new(PolicyContext {
-                token_string: sign_token,
+                token_string: Some(sign_token),
+                webauthn_assertion: None,
+                message_sha256: Vec::new(),
                 derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
                 valid_window: None,
                 key_derivation,

@@ -333,9 +333,6 @@ through `ORBIS_VERA_DIAGNOSTIC_IMAGE`; ordinary scenarios continue using
 the matching curve before each run.
 
 The Vera CI command runs the shared scenarios serially without retries.
-The same job runs `test-support`'s Docker topology tests
-(`-p test-support --test vera_validators`, same features) against the same
-images; the unit job excludes them.
 Command logs and Vera/Orbis stores remain private under `RUNNER_TEMP`; Compose
 control files remain in private temporary directories. No runtime evidence is
 uploaded. CI emits only allowlisted numeric diagnostics, fixed phase/file labels
