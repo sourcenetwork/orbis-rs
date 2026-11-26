@@ -457,6 +457,18 @@ impl CosmosNetworkBuilder {
                 command.env_remove("GENESIS_PATCH_FILE");
             }
 
+            // Opt-in pass-through for a passkey-sign scenario: unset by
+            // default (every other scenario's nodes reject
+            // WebAuthn-authorized Sign requests, the safe default),
+            // forwarded only when a test sets these on its own process
+            // before calling `provision`.
+            if let Some(rp_id) = std::env::var_os("ORBIS_WEBAUTHN_RP_ID") {
+                command.env("ORBIS_WEBAUTHN_RP_ID", rp_id);
+            }
+            if let Some(origin) = std::env::var_os("ORBIS_WEBAUTHN_ORIGIN") {
+                command.env("ORBIS_WEBAUTHN_ORIGIN", origin);
+            }
+
             command.status()
         };
 

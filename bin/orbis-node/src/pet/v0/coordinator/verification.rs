@@ -42,7 +42,8 @@ use crate::reporting::v0::types::{
     PetBlindSignedReveal, ReportedDocumentEvidence,
 };
 use crate::ring_state::RingShareBundle;
-use authn::{resolve_jwt_did, BearerToken, PreClaims};
+use authn::endpoints::pre::PreClaims;
+use authn::{resolve_jwt_did, BearerToken};
 use authz::r#trait::Authz;
 use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::Bulletin;

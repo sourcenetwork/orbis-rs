@@ -98,6 +98,104 @@ func (x *PetTagAttachment) GetKnowledgeProofResponse() []byte {
 	return nil
 }
 
+// A WebAuthn assertion authorizing this request in place of a JWT bearer
+// token — see the identically-shaped message in `pre_service.proto`/
+// `sign_service.proto` for why each service carries its own copy rather
+// than importing a shared one (same precedent as `TimestampRange`).
+// Mutually exclusive with the request's JWT bearer header; if both are
+// present, the WebAuthn evidence takes priority and the header is ignored.
+type WebAuthnAssertion struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	IssuerDid         string                 `protobuf:"bytes,1,opt,name=issuer_did,json=issuerDid,proto3" json:"issuer_did,omitempty"`
+	AuthenticatorData []byte                 `protobuf:"bytes,2,opt,name=authenticator_data,json=authenticatorData,proto3" json:"authenticator_data,omitempty"`
+	ClientDataJson    []byte                 `protobuf:"bytes,3,opt,name=client_data_json,json=clientDataJson,proto3" json:"client_data_json,omitempty"`
+	Signature         []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`
+	IssuedAt          uint64                 `protobuf:"varint,5,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	Expiry            uint64                 `protobuf:"varint,6,opt,name=expiry,proto3" json:"expiry,omitempty"`
+	Nonce             []byte                 `protobuf:"bytes,7,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *WebAuthnAssertion) Reset() {
+	*x = WebAuthnAssertion{}
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WebAuthnAssertion) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WebAuthnAssertion) ProtoMessage() {}
+
+func (x *WebAuthnAssertion) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WebAuthnAssertion.ProtoReflect.Descriptor instead.
+func (*WebAuthnAssertion) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *WebAuthnAssertion) GetIssuerDid() string {
+	if x != nil {
+		return x.IssuerDid
+	}
+	return ""
+}
+
+func (x *WebAuthnAssertion) GetAuthenticatorData() []byte {
+	if x != nil {
+		return x.AuthenticatorData
+	}
+	return nil
+}
+
+func (x *WebAuthnAssertion) GetClientDataJson() []byte {
+	if x != nil {
+		return x.ClientDataJson
+	}
+	return nil
+}
+
+func (x *WebAuthnAssertion) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+func (x *WebAuthnAssertion) GetIssuedAt() uint64 {
+	if x != nil {
+		return x.IssuedAt
+	}
+	return 0
+}
+
+func (x *WebAuthnAssertion) GetExpiry() uint64 {
+	if x != nil {
+		return x.Expiry
+	}
+	return 0
+}
+
+func (x *WebAuthnAssertion) GetNonce() []byte {
+	if x != nil {
+		return x.Nonce
+	}
+	return nil
+}
+
 type StoreSecretRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The ENCRYPTED document (serialized Secret struct from crypto crate)
@@ -124,14 +222,17 @@ type StoreSecretRequest struct {
 	// timestamp for the policy
 	Timestamp *uint64 `protobuf:"varint,11,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
 	// PET tag, present only when the ring requires PET.
-	PetTag        *PetTagAttachment `protobuf:"bytes,12,opt,name=pet_tag,json=petTag,proto3,oneof" json:"pet_tag,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	PetTag *PetTagAttachment `protobuf:"bytes,12,opt,name=pet_tag,json=petTag,proto3,oneof" json:"pet_tag,omitempty"`
+	// WebAuthn assertion authorizing this request in place of a JWT. See
+	// `WebAuthnAssertion`'s own doc comment for the mutual-exclusivity note.
+	WebauthnAssertion *WebAuthnAssertion `protobuf:"bytes,13,opt,name=webauthn_assertion,json=webauthnAssertion,proto3,oneof" json:"webauthn_assertion,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *StoreSecretRequest) Reset() {
 	*x = StoreSecretRequest{}
-	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -143,7 +244,7 @@ func (x *StoreSecretRequest) String() string {
 func (*StoreSecretRequest) ProtoMessage() {}
 
 func (x *StoreSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -156,7 +257,7 @@ func (x *StoreSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StoreSecretRequest.ProtoReflect.Descriptor instead.
 func (*StoreSecretRequest) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{1}
+	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *StoreSecretRequest) GetEncryptedDocument() []byte {
@@ -243,6 +344,13 @@ func (x *StoreSecretRequest) GetPetTag() *PetTagAttachment {
 	return nil
 }
 
+func (x *StoreSecretRequest) GetWebauthnAssertion() *WebAuthnAssertion {
+	if x != nil {
+		return x.WebauthnAssertion
+	}
+	return nil
+}
+
 type StoreSecretResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Status    string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -260,7 +368,7 @@ type StoreSecretResponse struct {
 
 func (x *StoreSecretResponse) Reset() {
 	*x = StoreSecretResponse{}
-	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -272,7 +380,7 @@ func (x *StoreSecretResponse) String() string {
 func (*StoreSecretResponse) ProtoMessage() {}
 
 func (x *StoreSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -285,7 +393,7 @@ func (x *StoreSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StoreSecretResponse.ProtoReflect.Descriptor instead.
 func (*StoreSecretResponse) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{2}
+	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StoreSecretResponse) GetStatus() string {
@@ -339,7 +447,16 @@ const file_orbis_v0_store_secret_store_secret_service_proto_rawDesc = "" +
 	"\x0fephemeral_point\x18\x01 \x01(\fR\x0eephemeralPoint\x12-\n" +
 	"\x12masked_fingerprint\x18\x02 \x01(\fR\x11maskedFingerprint\x12:\n" +
 	"\x19knowledge_proof_challenge\x18\x03 \x01(\fR\x17knowledgeProofChallenge\x128\n" +
-	"\x18knowledge_proof_response\x18\x04 \x01(\fR\x16knowledgeProofResponse\"\xcd\x03\n" +
+	"\x18knowledge_proof_response\x18\x04 \x01(\fR\x16knowledgeProofResponse\"\xf4\x01\n" +
+	"\x11WebAuthnAssertion\x12\x1d\n" +
+	"\n" +
+	"issuer_did\x18\x01 \x01(\tR\tissuerDid\x12-\n" +
+	"\x12authenticator_data\x18\x02 \x01(\fR\x11authenticatorData\x12(\n" +
+	"\x10client_data_json\x18\x03 \x01(\fR\x0eclientDataJson\x12\x1c\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\x12\x1b\n" +
+	"\tissued_at\x18\x05 \x01(\x04R\bissuedAt\x12\x16\n" +
+	"\x06expiry\x18\x06 \x01(\x04R\x06expiry\x12\x14\n" +
+	"\x05nonce\x18\a \x01(\fR\x05nonce\"\xc2\x04\n" +
 	"\x12StoreSecretRequest\x12-\n" +
 	"\x12encrypted_document\x18\x01 \x01(\fR\x11encryptedDocument\x12\x17\n" +
 	"\aenc_cmt\x18\x02 \x01(\fR\x06encCmt\x12\x17\n" +
@@ -356,12 +473,14 @@ const file_orbis_v0_store_secret_store_secret_service_proto_rawDesc = "" +
 	"\x04tier\x18\n" +
 	" \x01(\tH\x00R\x04tier\x88\x01\x01\x12!\n" +
 	"\ttimestamp\x18\v \x01(\x04H\x01R\ttimestamp\x88\x01\x01\x12E\n" +
-	"\apet_tag\x18\f \x01(\v2'.orbis.v0.store_secret.PetTagAttachmentH\x02R\x06petTag\x88\x01\x01B\a\n" +
+	"\apet_tag\x18\f \x01(\v2'.orbis.v0.store_secret.PetTagAttachmentH\x02R\x06petTag\x88\x01\x01\x12\\\n" +
+	"\x12webauthn_assertion\x18\r \x01(\v2(.orbis.v0.store_secret.WebAuthnAssertionH\x03R\x11webauthnAssertion\x88\x01\x01B\a\n" +
 	"\x05_tierB\f\n" +
 	"\n" +
 	"_timestampB\n" +
 	"\n" +
-	"\b_pet_tag\"\xba\x01\n" +
+	"\b_pet_tagB\x15\n" +
+	"\x13_webauthn_assertion\"\xba\x01\n" +
 	"\x13StoreSecretResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1d\n" +
@@ -386,21 +505,23 @@ func file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP() []byte 
 	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescData
 }
 
-var file_orbis_v0_store_secret_store_secret_service_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_orbis_v0_store_secret_store_secret_service_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_orbis_v0_store_secret_store_secret_service_proto_goTypes = []any{
 	(*PetTagAttachment)(nil),    // 0: orbis.v0.store_secret.PetTagAttachment
-	(*StoreSecretRequest)(nil),  // 1: orbis.v0.store_secret.StoreSecretRequest
-	(*StoreSecretResponse)(nil), // 2: orbis.v0.store_secret.StoreSecretResponse
+	(*WebAuthnAssertion)(nil),   // 1: orbis.v0.store_secret.WebAuthnAssertion
+	(*StoreSecretRequest)(nil),  // 2: orbis.v0.store_secret.StoreSecretRequest
+	(*StoreSecretResponse)(nil), // 3: orbis.v0.store_secret.StoreSecretResponse
 }
 var file_orbis_v0_store_secret_store_secret_service_proto_depIdxs = []int32{
 	0, // 0: orbis.v0.store_secret.StoreSecretRequest.pet_tag:type_name -> orbis.v0.store_secret.PetTagAttachment
-	1, // 1: orbis.v0.store_secret.StoreSecretService.StoreSecret:input_type -> orbis.v0.store_secret.StoreSecretRequest
-	2, // 2: orbis.v0.store_secret.StoreSecretService.StoreSecret:output_type -> orbis.v0.store_secret.StoreSecretResponse
-	2, // [2:3] is the sub-list for method output_type
-	1, // [1:2] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	1, // 1: orbis.v0.store_secret.StoreSecretRequest.webauthn_assertion:type_name -> orbis.v0.store_secret.WebAuthnAssertion
+	2, // 2: orbis.v0.store_secret.StoreSecretService.StoreSecret:input_type -> orbis.v0.store_secret.StoreSecretRequest
+	3, // 3: orbis.v0.store_secret.StoreSecretService.StoreSecret:output_type -> orbis.v0.store_secret.StoreSecretResponse
+	3, // [3:4] is the sub-list for method output_type
+	2, // [2:3] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_orbis_v0_store_secret_store_secret_service_proto_init() }
@@ -408,14 +529,14 @@ func file_orbis_v0_store_secret_store_secret_service_proto_init() {
 	if File_orbis_v0_store_secret_store_secret_service_proto != nil {
 		return
 	}
-	file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1].OneofWrappers = []any{}
+	file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_v0_store_secret_store_secret_service_proto_rawDesc), len(file_orbis_v0_store_secret_store_secret_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

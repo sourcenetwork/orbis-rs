@@ -1,4 +1,7 @@
 use super::*;
+use crate::endpoints::dkg::DkgClaims;
+use crate::endpoints::pre::PreClaims;
+use crate::endpoints::sign::SignClaims;
 use crate::jwt_builder::JwtSigner;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

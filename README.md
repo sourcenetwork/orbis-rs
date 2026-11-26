@@ -370,6 +370,14 @@ explicitly opt into the previous open policy with `--cors-permissive`; see
 - **DKG Service** - Initiate and participate in distributed key generation
 - **PRE Service** - Request proxy re-encryption for designated readers
 
+## Integration examples
+
+Reusable libraries under [`crates/integrations`](crates/integrations/README.md)
+support the reference apps under
+[`bin/example-integrations`](bin/example-integrations/README.md): passkey signing,
+FIDO2 YubiKey signing, and email-based PRE decryption. These are currently
+compilable scaffolds; the end-to-end flows are not implemented yet.
+
 ## Development
 
 ```bash

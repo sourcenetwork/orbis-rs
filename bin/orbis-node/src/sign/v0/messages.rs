@@ -17,8 +17,25 @@ pub const REFRESH_HEALTH_CHECK_DOMAIN: &str = "orbis-pss-refresh-healthcheck-v1"
 /// Payload for the `Policy` variant of [`SignContext`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyContext {
-    /// Raw JWT string issued by the caller
-    pub token_string: String,
+    /// Raw JWT string issued by the caller. `None` when `webauthn_assertion`
+    /// is set instead — the two authentication methods are mutually
+    /// exclusive for a given request.
+    pub token_string: Option<String>,
+    /// Passkey-authorized signing evidence, in place of `token_string`.
+    /// `None` for the ordinary JWT path. See `sign::v0::webauthn_auth` —
+    /// converted once at the service boundary
+    /// (`stages::authenticate_sign_request`) and carried unverified from
+    /// there on; every peer node independently re-verifies it from these
+    /// same raw bytes, never trusting the coordinator's word that it
+    /// already passed.
+    pub webauthn_assertion: Option<orbis_webauthn::WebAuthnEvidence>,
+    /// SHA-256 of the message being signed, computed once at stage 1.
+    /// FROST's Round 1 (`handle_nonce_request`) has no message bytes of its
+    /// own to hash — the JWT path defers message checking to Round 2, but
+    /// WebAuthn verification can't: the expected challenge (and so the
+    /// signature check itself) depends on this digest, so it has to be
+    /// available already in Round 1.
+    pub message_sha256: Vec<u8>,
     /// Object ID of the key derivation entry
     pub derivation_id: String,
     /// Optional valid window for time-bounded authz checks

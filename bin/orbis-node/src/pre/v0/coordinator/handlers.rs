@@ -4,7 +4,7 @@ use crate::helpers::auth::request_actor;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::helpers::{
     build_ciphertext_context, build_reader_authorization_context, check_policy_access,
-    decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads, validate_pre_claims,
+    decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads,
     verify_encryption_binding,
 };
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
@@ -17,7 +17,8 @@ use crate::reporting::v0::{
     RelayRequestTimestampBinding,
 };
 use crate::ring_state::RingShareBundle;
-use authn::{resolve_jwt_did, BearerToken, PreClaims};
+use authn::endpoints::pre::PreClaims;
+use authn::BearerToken;
 use authz::request::AccessCheckRequest;
 use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
@@ -159,22 +160,27 @@ where
             .map_err(|e| PreError::Generic(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
 
-        let token: BearerToken<PreClaims> = resolve_jwt_did(
-            &ctx.token_string,
-            current_time,
-            MAX_TOKEN_LIFETIME_SECS,
-            MAX_JWT_BYTES,
-            JWT_CLOCK_SKEW_LEEWAY_SECS,
-        )
-        .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-        // 2. Authorize: Validate JWT claims match request fields
-        validate_pre_claims(
-            &token,
-            &ctx.rdr_pk_bytes,
-            &ctx.object_id,
-            &ctx.derivation,
-            &ctx.salt,
-        )?;
+        // Independently re-verified here regardless of method — never trust the
+        // leader's word that authentication already passed.
+        let fields = authn::endpoints::pre::PreFields {
+            object_id: ctx.object_id.clone(),
+            rdr_pk: ctx.rdr_pk_bytes.clone(),
+            derivation: ctx.derivation.clone(),
+            salt: ctx.salt.clone(),
+        };
+        let token: BearerToken<PreClaims> =
+            crate::helpers::auth::resolve_request_auth::<authn::endpoints::pre::PreEndpoint>(
+                &fields,
+                ctx.token_string.as_deref(),
+                ctx.webauthn_assertion.as_ref(),
+                self.app_state.webauthn_rp_id.as_deref(),
+                self.app_state.webauthn_origin.as_deref(),
+                current_time,
+                MAX_TOKEN_LIFETIME_SECS,
+                MAX_JWT_BYTES,
+                JWT_CLOCK_SKEW_LEEWAY_SECS,
+            )
+            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
 
         // When the caller supplied the document inline (ctx.document), it's used directly and
         // independently re-verified against object_id here — this node does not trust that the

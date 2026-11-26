@@ -5,6 +5,7 @@ pub mod messages;
 pub mod protocol_handler;
 pub mod response_state;
 pub mod service;
+pub(crate) mod webauthn_auth;
 
 #[cfg(test)]
 mod tests;

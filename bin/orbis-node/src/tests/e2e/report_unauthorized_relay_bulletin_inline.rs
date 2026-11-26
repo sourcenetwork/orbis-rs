@@ -431,7 +431,7 @@ async fn relay_statement_preserves_jwt_issued_time() {
     let (pre_jwt, pre_metadata) = signer
         .create_pre_jwt(vec![1, 2, 3], "object", None, None)
         .expect("create PRE JWT");
-    let pre_token = authn::resolve_jwt_did::<authn::PreClaims>(
+    let pre_token = authn::resolve_jwt_did::<authn::endpoints::pre::PreClaims>(
         &pre_jwt,
         current_unix_time_secs(),
         MAX_TOKEN_LIFETIME_SECS,
