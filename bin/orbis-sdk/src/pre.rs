@@ -484,10 +484,12 @@ impl OrbisClient {
 /// already traveled in `pending` or (for the `Stored` delivery mode) is
 /// fetched directly from Defra, never from orbis-node itself.
 pub async fn retrieve_pre(pending: PendingPreRetrieval) -> Result<Vec<u8>> {
-    let reader_sk_bytes = hex::decode(&pending.reader_sk_hex)
+    let mut reader_sk_bytes = hex::decode(&pending.reader_sk_hex)
         .map_err(|e| SdkError::Encoding(format!("failed to decode reader secret key hex: {e}")))?;
     let reader_sk_scalar = Fr::from_bytes(&reader_sk_bytes)
-        .map_err(|e| SdkError::Encoding(format!("failed to deserialize reader secret key: {e}")))?;
+        .map_err(|e| SdkError::Encoding(format!("failed to deserialize reader secret key: {e}")));
+    reader_sk_bytes.zeroize();
+    let reader_sk_scalar = reader_sk_scalar?;
     let ring_pk_bytes = hex::decode(&pending.ring_pk)
         .map_err(|e| SdkError::Encoding(format!("failed to decode ring_pk hex: {e}")))?;
 
@@ -525,6 +527,11 @@ async fn decrypt_pre_response(
     ring_pk_bytes: &[u8],
     derivation: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
+    // Zeroized on every exit (including the early `?` returns below), not
+    // just after a successful decrypt — a `Zeroizing` guard runs on drop
+    // regardless of which path leaves the function.
+    let reader_sk_scalar = zeroize::Zeroizing::new(reader_sk_scalar);
+
     let (xnc_cmt, secret, context, effective_derivation) = match pre_response {
         PreResponse::Direct(direct) => {
             let xnc_cmt_bytes = hex::decode(&direct.xnc_cmt)

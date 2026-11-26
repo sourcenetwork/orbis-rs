@@ -223,6 +223,10 @@ pub fn prove_pet_tag_knowledge(
     tag: PetTag,
     r_tag: Fr,
 ) -> Result<PreparedPetTag> {
+    // `r_tag` is secret ephemeral randomness (see `generate_pet_tag`'s doc
+    // comment) — zeroize it on every exit rather than leaving it sitting in
+    // this frame until overwritten.
+    let r_tag = zeroize::Zeroizing::new(r_tag);
     let pet_pk_bytes = hex::decode(pet_pk_hex)
         .map_err(|e| SdkError::Encoding(format!("invalid pet_pk hex: {e}")))?;
 

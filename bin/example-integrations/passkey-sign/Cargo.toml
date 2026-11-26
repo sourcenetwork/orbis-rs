@@ -10,7 +10,7 @@ readme = "README.md"
 [dependencies]
 orbis-webauthn.workspace = true
 authn = { path = "../../../crates/authn" }
-orbis-sdk = { path = "../../orbis-sdk", default-features = false, features = ["webauthn"] }
+orbis-sdk = { workspace = true, features = ["webauthn"] }
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 axum = "0.8"
 tokio = { workspace = true }

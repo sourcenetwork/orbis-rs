@@ -8,7 +8,6 @@ license.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 zeroize = { workspace = true }
 ark-bls12-381 = { version = "0.4", optional = true }
 # Constant-time scalar multiplication for the handful of BLS12-381 group

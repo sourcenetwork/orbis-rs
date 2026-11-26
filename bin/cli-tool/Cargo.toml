@@ -16,7 +16,7 @@ uuid = { version = "1.0", features = ["v4"] }
 crypto = { path = "../../crates/crypto", default-features = false }
 authn = { path = "../../crates/authn" }
 orbis-webauthn.workspace = true
-orbis-sdk = { path = "../orbis-sdk", default-features = false, features = ["webauthn"] }
+orbis-sdk = { workspace = true, features = ["webauthn"] }
 p256 = { version = "0.13", features = ["ecdsa"] }
 authz = { path = "../../crates/authz" }
 common = { path = "../../crates/common", features = ["funding"] }
