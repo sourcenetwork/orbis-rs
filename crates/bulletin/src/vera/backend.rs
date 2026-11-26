@@ -269,7 +269,7 @@ impl VeraBulletin {
                 if signed.request.ring_id == id
                     && matches!(signed.request.command, RingParticipantCommand::Cancel)
                 {
-                    self.finish_retained(writer).await?;
+                    self.finish(writer).await?;
                     return Ok(id);
                 }
             }
@@ -284,7 +284,7 @@ impl VeraBulletin {
                     expiry,
                 )
                 .map_err(error)?;
-            self.finish_retained(writer).await?;
+            self.finish(writer).await?;
         }
         Ok(id)
     }
