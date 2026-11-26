@@ -22,6 +22,8 @@ authz = { path = "../authz", default-features = false }
 vera-crypto = { workspace = true, optional = true }
 vera-client = { workspace = true, optional = true }
 vera-domain = { workspace = true, optional = true }
+vera-modules = { workspace = true, optional = true }
+alloy-sol-types = { version = "1", optional = true }
 alloy-primitives = { version = "1", optional = true }
 k256 = { workspace = true, optional = true }
 local-storage = { path = "../local-storage", optional = true, default-features = false }
@@ -36,7 +38,7 @@ cosmos-identity = ["common/cosmos", "dep:local-storage", "dep:zeroize", "dep:get
 # production backend is selected. This is deliberately separate from the
 # node's dangerous `unsafe-testing` diagnostic surface.
 fixture-startup = ["common/funding"]
-vera = ["common/vera", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
+vera = ["common/vera", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:alloy-sol-types", "dep:vera-modules", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
 # Compiles the in-memory mock type without selecting it as the production
 # implementation. Used by in-process tests and benchmarks.
 dummy-type = []

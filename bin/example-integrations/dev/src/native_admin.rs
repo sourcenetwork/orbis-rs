@@ -168,33 +168,35 @@ async fn submit(
     confirmed(client, id, trusted, phase).await
 }
 
-/// Creates a new ACP policy from `definition` and returns its id.
+/// Creates a new ACP policy from `definition` and returns its id, predicted
+/// from the definition, the worker and the nonce.
 pub async fn create_policy(
     client: &VeraClient,
     worker: &BlsSigner,
     trusted: &ConsensusPublicKey,
     definition: &str,
 ) -> Result<String> {
-    let before: std::collections::HashSet<String> = client
-        .get_policy_ids()
-        .await
-        .map_err(|e| anyhow!("list policy ids: {e}"))?
-        .into_iter()
-        .collect();
+    let nonce = vera_client::random_policy_nonce();
+    let id = vera_client::predict_policy_id(
+        definition,
+        &vera_client::PolicyMarshalingType::ShortYaml,
+        &nonce,
+        worker.did(),
+    )
+    .map_err(|e| anyhow!("predict policy id: {e}"))?;
     let created = client
-        .native_create_policy(worker, definition.as_bytes(), 1)
+        .native_create_policy(worker, definition.as_bytes(), 1, nonce)
         .await
         .map_err(|e| anyhow!("create policy: {e}"))?;
     confirmed(client, created.transaction_hash, trusted, "create policy").await?;
-    let mut added = client
+    if !client
         .get_policy_ids()
         .await
         .map_err(|e| anyhow!("list policy ids: {e}"))?
-        .into_iter()
-        .filter(|id| !before.contains(id));
-    let id = added
-        .next()
-        .ok_or_else(|| anyhow!("created policy did not appear in catalogue"))?;
+        .contains(&id)
+    {
+        return Err(anyhow!("created policy did not appear in catalogue"));
+    }
     Ok(id)
 }
 

@@ -167,11 +167,11 @@ class Qualification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             trust = Path(raw)
             (trust / '.github/workflows').mkdir(parents=True)
-            (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA + '\n')
+            (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA_VERIFIER + '\n')
             (trust / '.github/workflows/native-gateway.yml').write_text(
                 'ref: ${{ needs.runtimes.outputs.defra }}\n')
             (trust / '.github/native-ring-versions.json').write_text(
-                json.dumps({'vera': driver.VERA, 'defra': driver.DEFRA}))
+                json.dumps({'vera': driver.VERA, 'vera_verifier': driver.VERA_VERIFIER, 'defra': driver.DEFRA}))
             with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40}), \
                     patch.object(driver, 'source', side_effect=lambda path, ref: {'head': ref}):
                 self.assertEqual(driver.pins(root, trust, root, root, 'b' * 40)['vera'],
@@ -182,7 +182,7 @@ class Qualification(unittest.TestCase):
                     selected.write_text(json.dumps(altered))
                     with self.assertRaises(driver.Failure):
                         driver.pins(root, trust, root, root, 'b' * 40)
-                selected.write_text(json.dumps({'vera': driver.VERA, 'defra': driver.DEFRA}))
+                selected.write_text(json.dumps({'vera': driver.VERA, 'vera_verifier': driver.VERA_VERIFIER, 'defra': driver.DEFRA}))
                 with patch.object(driver, 'VERA_SDK', 'c' * 40), self.assertRaises(driver.Failure):
                     driver.pins(root, trust, root, root, 'b' * 40)
                 (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + 'c' * 40 + '\n')
@@ -194,10 +194,10 @@ class Qualification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             trust = Path(raw)
             (trust / '.github/workflows').mkdir(parents=True)
-            (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA + '\n')
+            (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA_VERIFIER + '\n')
             selected = 'c' * 40
             (trust / '.github/native-ring-versions.json').write_text(
-                json.dumps({'vera': driver.VERA, 'defra': selected}))
+                json.dumps({'vera': driver.VERA, 'vera_verifier': driver.VERA_VERIFIER, 'defra': selected}))
             with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40}), \
                     patch.object(driver, 'DEFRA', selected), \
                     patch.object(driver, 'source', side_effect=lambda path, ref: {'head': ref}):
@@ -374,7 +374,7 @@ class Qualification(unittest.TestCase):
             self.assertEqual(builder[key], runtime[key])
         self.assertEqual(builder['target'], 'builder')
         self.assertNotIn('target', runtime)  # the unchanged final production stage
-        self.assertEqual(runtime['args']['VERA_REVISION'], driver.VERA)
+        self.assertEqual(runtime['args']['VERA_REVISION'], driver.VERA_VERIFIER)
         self.assertEqual(runtime['cache-to'], ['type=registry,ref=ghcr.io/source/test:buildcache,mode=max'])
 
     def test_artifact_selection_rejects_wrong_curve_missing_base_outside_and_duplicates(self):
@@ -496,7 +496,7 @@ class Qualification(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'fixture-artifact')
                 hashes[name] = driver.sha(path)
-            manifest = {'version': 1, 'profile': 'release', 'rust': '1.99.1', 'binary_sha256': hashes,
+            manifest = {'vera_verifier_revision': driver.VERA_VERIFIER, 'version': 1, 'profile': 'release', 'rust': '1.99.1', 'binary_sha256': hashes,
                         'sources': {name: {'head': ref} for name, ref in (
                             ('orbis', 'a' * 40), ('trust', 'b' * 40), ('vera', driver.VERA), ('defra', driver.DEFRA))}}
             (payload / 'manifest.json').write_text(json.dumps(manifest))

@@ -251,12 +251,52 @@ impl VeraBulletin {
         }
     }
 
+    async fn cancel_pending_ring(
+        &self,
+        writer: &mut VeraClient,
+        id: String,
+        expiry: u64,
+    ) -> Result<String> {
+        use alloy_sol_types::SolCall as _;
+        use vera_client::rings::SignedRingParticipantRequest;
+        use vera_modules::vera::abi::IVera::applyRingParticipantRequestCall;
+
+        if let Some(call) = writer.pending_call().map_err(error)? {
+            if call.starts_with(&applyRingParticipantRequestCall::SELECTOR) {
+                let call = applyRingParticipantRequestCall::abi_decode(&call).map_err(error)?;
+                let signed: SignedRingParticipantRequest =
+                    serde_json::from_slice(&call.request).map_err(error)?;
+                if signed.request.ring_id == id
+                    && matches!(signed.request.command, RingParticipantCommand::Cancel)
+                {
+                    self.finish(writer).await?;
+                    return Ok(id);
+                }
+            }
+        }
+        self.settle(writer).await?;
+        let ring = self.ring(&id).await?;
+        if !matches!(ring.state, RingState::Cancelled { .. }) {
+            writer
+                .prepare_ring_participant_request(
+                    id.clone(),
+                    RingParticipantCommand::Cancel,
+                    expiry,
+                )
+                .map_err(error)?;
+            self.finish(writer).await?;
+        }
+        Ok(id)
+    }
+
     async fn post_inner(&self, kind: BulletinWriteKind, payload: &[u8]) -> Result<String> {
         if payload.len() > 512 << 10 {
             return Err(error("bulletin request exceeds byte limit"));
         }
         let mut writer = self.writer.lock().await;
-        self.settle(&mut writer).await?;
+        if kind != BulletinWriteKind::CancelPendingRing {
+            self.settle(&mut writer).await?;
+        }
         let expiry = now()?
             .checked_add(120)
             .ok_or_else(|| error("request expiry overflow"))?;
@@ -277,20 +317,9 @@ impl VeraBulletin {
             BulletinWriteKind::CancelPendingRing => {
                 let request: RingCancellationPayload =
                     serde_json::from_slice(payload).map_err(error)?;
-                if matches!(
-                    self.ring(&request.ring_id).await?.state,
-                    RingState::Cancelled { .. }
-                ) {
-                    return Ok(request.ring_id);
-                }
-                writer
-                    .prepare_ring_participant_request(
-                        request.ring_id.clone(),
-                        RingParticipantCommand::Cancel,
-                        expiry,
-                    )
-                    .map_err(error)?;
-                request.ring_id
+                return self
+                    .cancel_pending_ring(&mut writer, request.ring_id, expiry)
+                    .await;
             }
             BulletinWriteKind::NodeInfo => {
                 let mut info: NodeInfo = serde_json::from_slice(payload).map_err(error)?;

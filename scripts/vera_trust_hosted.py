@@ -15,9 +15,11 @@ import tarfile
 import tempfile
 import time
 
-VERA = '45cd086b9c58b5960f09aa14e3803dd26a125d16'
-VERA_SDK = '45cd086b9c58b5960f09aa14e3803dd26a125d16'
-DEFRA = 'b758f89a532d8d8add94911e0c580bfcf8804cff'
+VERA = 'fc0bd8e47019a5f3175239884ab4ae935f3b973f'
+VERA_VERIFIER = '9de4ac3391caf3b7ac85e317177daa9b9ced8a5a'
+VERIFIER_HEADER_SHA256 = '23a08dade8e2408d567df5bbf4c894689a51e3f24f478809cff5c3a3b9502b15'
+VERA_SDK = 'fc0bd8e47019a5f3175239884ab4ae935f3b973f'
+DEFRA = '2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606'
 SELECTOR = 'tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
@@ -259,10 +261,10 @@ def pins(root, trust, vera, defra, trust_ref):
     if references['revision'](root) != VERA_SDK or references['revision'](
             root, 'defradb.rs', ('bin/orbis-node/Cargo.toml',)) != DEFRA:
         raise Failure()
-    if re.findall(r'^ARG VERA_REVISION=([0-9a-f]{40})$', (trust / 'Dockerfile.native').read_text(), re.M) != [VERA]:
+    if re.findall(r'^ARG VERA_REVISION=([0-9a-f]{40})$', (trust / 'Dockerfile.native').read_text(), re.M) != [VERA_VERIFIER]:
         raise Failure()
     selected = json.loads((trust / '.github/native-ring-versions.json').read_text())
-    if not isinstance(selected, dict) or selected.get('vera') != VERA or selected.get('defra') != DEFRA:
+    if not isinstance(selected, dict) or selected.get('vera') != VERA or selected.get('defra') != DEFRA or selected.get('vera_verifier') != VERA_VERIFIER:
         raise Failure()
     return sources
 
@@ -279,7 +281,7 @@ def bake(trust, image, trust_ref, local=False, actions_cache=False):
     # Both targets share the exact context, Dockerfile and args in one BuildKit
     # graph. The final target remains the real distroless production stage.
     common = {'context': str(trust), 'dockerfile': 'Dockerfile.native',
-              'args': {'VERA_REVISION': VERA, 'VERSION': 'vera-trust-rings', 'REVISION': trust_ref},
+              'args': {'VERA_REVISION': VERA_VERIFIER, 'VERSION': 'vera-trust-rings', 'REVISION': trust_ref},
               'cache-from': [f'type=registry,ref={image.rsplit(":", 1)[0]}:buildcache'],
               'platforms': ['linux/amd64']}
     gateway = {**common, 'tags': [image], 'output': ['type=docker' if local else 'type=image,push=true']}
@@ -326,9 +328,9 @@ def build(root, args, output):
     STAGE = 20
     prebuilt = getattr(args, 'defra_artifacts', None)
     if prebuilt is None:
-        command(['cargo', '+1.99.1', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defra', '--features', 'vera'],
+        command(['cargo', '+1.99.1', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defradb', '--features', 'vera'],
                 defra, env, output / 'defra-build.log')
-        shutil.copy2(target / 'release/defra', payload / 'bin/defra')
+        shutil.copy2(target / 'release/defradb', payload / 'bin/defra')
         shutil.rmtree(target)
     else:
         restore_defra(Path(prebuilt), defra, payload / 'bin/defra')
@@ -358,7 +360,7 @@ def build(root, args, output):
             command(['docker', 'cp', container + ':' + src, str(payload / dst)], root, env, output / ('copy-' + Path(dst).name + '.log'))
     finally:
         command(['docker', 'rm', '--force', container], root, env, output / 'builder-cleanup.log', 30)
-    if sha(payload / 'include/vera_verifier.h') != sha(vera / 'crates/vera-verifier/include/vera_verifier.h'):
+    if sha(payload / 'include/vera_verifier.h') != VERIFIER_HEADER_SHA256:
         raise Failure()
     STAGE = 40
     go_version = capture(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'go', 'trust-ring-builder:local', 'version'])
@@ -377,7 +379,7 @@ def build(root, args, output):
         raise Failure()
     STAGE = 50
     (output / 'commands.json').write_text(json.dumps(COMMANDS, indent=2) + '\n')
-    manifest = {'version': 1, 'sources': sources, 'trust_image': image_ref,
+    manifest = {'version': 1, 'vera_verifier_revision': VERA_VERIFIER, 'sources': sources, 'trust_image': image_ref,
                 'binary_sha256': {name: sha(payload / name) for name in FILES},
                 'build_sha256': {name: sha(output / name) for name in ('bake.json', 'buildkit.json', 'commands.json')},
                 'profile': 'release', 'rust': '1.99.1', 'cargo_version': cargo_version, 'go_version': go_version, 'normal_gateway_before_test_driver': True,
@@ -442,7 +444,7 @@ def restore(directory, destination, expected_orbis, expected_trust):
                 shutil.copyfileobj(content, output, 1024 * 1024)
             target.chmod(0o555 if member.name.startswith(('bin/', 'lib/')) else 0o444)
     manifest = json.loads((destination / 'manifest.json').read_text())
-    if manifest['version'] != 1 or manifest['profile'] != 'release' or manifest['rust'] != '1.99.1':
+    if manifest.get('vera_verifier_revision') != VERA_VERIFIER or manifest['version'] != 1 or manifest['profile'] != 'release' or manifest['rust'] != '1.99.1':
         raise Failure()
     for name, expected in [('orbis', expected_orbis), ('trust', expected_trust), ('vera', VERA), ('defra', DEFRA)]:
         if manifest['sources'][name]['head'] != revision(expected):
@@ -570,7 +572,7 @@ def run(root, args, output):
                 root, env, output / 'gateway-load.log')
     gateway_image = image_id(root, env, manifest['trust_image'], output / 'gateway-pull.log')
     info = json.loads(capture(['docker', 'image', 'inspect', gateway_image]))[0]['Config']
-    if info['User'] != '65532:65532' or info['Labels']['org.opencontainers.image.revision'] != args.trust_ref or info['Labels']['io.sourcenetwork.vera.revision'] != VERA:
+    if info['User'] != '65532:65532' or info['Labels']['org.opencontainers.image.revision'] != args.trust_ref or info['Labels']['io.sourcenetwork.vera.revision'] != VERA_VERIFIER:
         raise Failure()
     labels = json.loads(capture(['docker', 'image', 'inspect', images['ORBIS_VERA_NODE_IMAGE']]))[0]['Config']['Labels']
     verify_runtime_labels(labels, runtime, args.curve, images['ORBIS_VERA_NODE_IMAGE'])
@@ -636,7 +638,7 @@ def run(root, args, output):
         source(root, manifest['sources']['orbis']['head'])
         (output / 'result.json').write_text(json.dumps({'source': manifest['sources'], 'orbis_runtime_revision': runtime,
             'orbis_image_revision': labels['org.opencontainers.image.revision'],
-                                                      'vera_sdk_revision': VERA_SDK, 'binary_sha256': binary_hash,
+            'vera_verifier_revision': VERA_VERIFIER, 'vera_sdk_revision': VERA_SDK, 'binary_sha256': binary_hash,
             'images': {**images, 'trust': gateway_image}, 'image_binary_sha256': image_binaries, 'curve': args.curve, 'executions': 2, 'passed': 2,
             'production_kdf_stores': 6, 'go_tests': 2, 'ring_records_checked': 16}, indent=2) + '\n')
     finally:

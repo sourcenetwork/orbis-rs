@@ -65,7 +65,8 @@ impl Peers {
                 remote_signer: Some(signer),
                 signing_authorization: None,
             },
-        );
+        )
+        .expect("store the remote signing identity");
         let source = Node::builder()
             .data_path(path.join("source"))
             .with_node_identity_did(&signer_did)

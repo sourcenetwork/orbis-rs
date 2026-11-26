@@ -5,7 +5,7 @@ use bulletin::{
         Bulletin, BulletinKind, BulletinWriteKind, DocumentPayload, KeyDerivation, NodeInfo,
         RingCancellationPayload, RingFinalizationPayload, RingPayload,
     },
-    vera::{VeraBulletin, VeraClient, VeraClientExt},
+    vera::{RingParticipantCommand, VeraBulletin, VeraClient, VeraClientExt},
 };
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -173,9 +173,21 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     assert_eq!(restored, info);
 
     let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
-    let created = client.native_create_policy(&worker, b"name: ring_objects\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n", 1).await.unwrap();
+    let definition = "name: ring_objects\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n";
+    let nonce = vera_client::random_policy_nonce();
+    let policy = vera_client::predict_policy_id(
+        definition,
+        &vera_client::PolicyMarshalingType::ShortYaml,
+        &nonce,
+        worker.did(),
+    )
+    .unwrap();
+    let created = client
+        .native_create_policy(&worker, definition.as_bytes(), 1, nonce)
+        .await
+        .unwrap();
     receipt(&client, created.transaction_hash, &trusted).await;
-    let policy = client.get_policy_ids().await.unwrap().pop().unwrap();
+    assert!(client.get_policy_ids().await.unwrap().contains(&policy));
     let policy_bytes = B256::from_slice(&hex::decode(&policy).unwrap());
     let registered = client
         .native_register_object(&worker, policy_bytes, &policy, "ring_policy")
@@ -347,6 +359,46 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     assert_eq!(restored, derivation);
     config.nonce = [2; 32];
     let pending_id = config.id().unwrap();
+    let cancel = serde_json::to_vec(&RingCancellationPayload {
+        ring_id: pending_id.clone(),
+    })
+    .unwrap();
+    assert!(matches!(
+        backend.post(BulletinWriteKind::CancelPendingRing, cancel.clone()).await,
+        Err(bulletin::error::BulletinError::NotFound { id }) if id == pending_id
+    ));
+    let creation = submit(
+        &client,
+        &worker,
+        &trusted,
+        encode_ring_command(&RingCommand::Create(config.clone()), &token).unwrap(),
+    )
+    .await;
+    receipt(&SdkVeraClient::new(&reader_url), creation, &trusted).await;
+    assert_eq!(
+        backend
+            .post(BulletinWriteKind::CancelPendingRing, cancel.clone())
+            .await
+            .unwrap(),
+        pending_id
+    );
+    // A certified cancel deletes the ring, so a repeat cannot tell it from a ring that never existed.
+    assert!(matches!(
+        backend.post(BulletinWriteKind::CancelPendingRing, cancel.clone()).await,
+        Err(bulletin::error::BulletinError::NotFound { id }) if id == pending_id
+    ));
+    assert!(matches!(
+        backend.read(pending_id.clone(), BulletinKind::Ring).await,
+        Err(bulletin::error::BulletinError::NotFound { id }) if id == pending_id
+    ));
+    drop(backend);
+    cluster.restart_node(3).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let mut writer = open(&url, trusted, root.0, &directory, &storage);
+    assert!(writer.pending_id().unwrap().is_none());
+
+    config.nonce = [3; 32];
+    let interrupted_id = config.id().unwrap();
     let creation = submit(
         &client,
         &worker,
@@ -355,22 +407,45 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     )
     .await;
     receipt(&SdkVeraClient::new(&reader_url), creation, &trusted).await;
-    let cancel = serde_json::to_vec(&RingCancellationPayload {
-        ring_id: pending_id.clone(),
+    let expiry = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 120;
+    writer
+        .prepare_ring_participant_request(
+            interrupted_id.clone(),
+            RingParticipantCommand::Cancel,
+            expiry,
+        )
+        .unwrap();
+    drop(writer);
+    let writer = open(&url, trusted, root.0, &directory, &storage);
+    assert!(writer.pending_id().unwrap().is_some());
+    let backend = VeraBulletin::connect(
+        writer,
+        SdkVeraClient::new(&reader_url),
+        30,
+        Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    let interrupted = serde_json::to_vec(&RingCancellationPayload {
+        ring_id: interrupted_id.clone(),
     })
     .unwrap();
-    backend
-        .post(BulletinWriteKind::CancelPendingRing, cancel.clone())
-        .await
-        .unwrap();
-    backend
-        .post(BulletinWriteKind::CancelPendingRing, cancel)
-        .await
-        .unwrap();
-    assert!(backend.read(pending_id, BulletinKind::Ring).await.is_err());
+    assert_eq!(
+        backend
+            .post(BulletinWriteKind::CancelPendingRing, interrupted)
+            .await
+            .unwrap(),
+        interrupted_id
+    );
+    assert!(matches!(
+        backend.read(interrupted_id.clone(), BulletinKind::Ring).await,
+        Err(bulletin::error::BulletinError::NotFound { id }) if id == interrupted_id
+    ));
     drop(backend);
-    cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let writer = open(&url, trusted, root.0, &directory, &storage);
     assert!(writer.pending_id().unwrap().is_none());
     let backend = VeraBulletin::connect(
@@ -401,7 +476,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
 #[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn native_report_and_reshare_recover_certified_completion() {
     use bulletin::r#trait::BulletinReportSubmission;
-    use bulletin::vera::{RingParticipantCommand, RingPublicKeys, RingUpdate};
+    use bulletin::vera::{RingPublicKeys, RingUpdate};
     use vera_client::rings::{CommitteeScope, NodeOffline, ReportEnvelope};
     let deployment = 9072;
     let trusted = *KeySet::builder()
@@ -442,9 +517,21 @@ async fn native_report_and_reshare_recover_certified_completion() {
         authority.verifying_key().to_sec1_bytes().as_ref(),
     )
     .unwrap();
-    let created = client.native_create_policy(&worker, b"name: recovery\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n", 1).await.unwrap();
+    let definition = "name: recovery\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n";
+    let nonce = vera_client::random_policy_nonce();
+    let policy = vera_client::predict_policy_id(
+        definition,
+        &vera_client::PolicyMarshalingType::ShortYaml,
+        &nonce,
+        worker.did(),
+    )
+    .unwrap();
+    let created = client
+        .native_create_policy(&worker, definition.as_bytes(), 1, nonce)
+        .await
+        .unwrap();
     receipt(&client, created.transaction_hash, &trusted).await;
-    let policy = client.get_policy_ids().await.unwrap().pop().unwrap();
+    assert!(client.get_policy_ids().await.unwrap().contains(&policy));
     let policy_bytes = B256::from_slice(&hex::decode(&policy).unwrap());
     let registered = client
         .native_register_object(&worker, policy_bytes, &policy, "ring_policy")

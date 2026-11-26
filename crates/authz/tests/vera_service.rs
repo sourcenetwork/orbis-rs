@@ -96,8 +96,8 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_evidence() {
     .unwrap();
     let signer = BlsSigner::new(7u64.into(), deployment).unwrap();
     let created = writer.native_create_policy(&signer,
-        b"name: native_auth\nresources:\n  - name: document\n    relations:\n      - name: reader\n    permissions:\n      - name: read\n        expr: reader\n", 1).await.unwrap();
-    assert_eq!(created.status, 1);
+        b"name: native_auth\nresources:\n  - name: document\n    relations:\n      - name: reader\n    permissions:\n      - name: read\n        expr: reader\n", 1, vera_client::random_policy_nonce()).await.unwrap();
+    assert!(created.success);
     receipt(&reader, created.transaction_hash, &trusted).await;
     let policies = writer.get_policy_ids().await.unwrap();
     assert_eq!(policies.len(), 1);
