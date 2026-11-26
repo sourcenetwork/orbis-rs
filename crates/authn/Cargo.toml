@@ -9,6 +9,7 @@ license.workspace = true
 bs58 = "0.5"
 ring = "0.17"
 ed25519-dalek = "2.2"
+p256 = { version = "0.13", features = ["ecdsa"] }
 thiserror = { workspace = true }
 serde = { workspace = true }
 base64 = { workspace = true }

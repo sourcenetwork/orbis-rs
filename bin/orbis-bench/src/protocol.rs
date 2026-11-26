@@ -573,6 +573,7 @@ pub async fn pre_call(
                 response: rdr_pk_signature.response,
             }),
             audit_target_object_id: fixture.audit_target_object_id.clone(),
+            webauthn_assertion: None,
         },
         &token,
     )?;
@@ -644,6 +645,7 @@ pub async fn sign_call(
             message: message.clone(),
             derivation_id: fixture.derivation_id.clone(),
             valid_window: None,
+            webauthn_assertion: None,
         },
         &token,
     )?;

@@ -73,6 +73,115 @@ func (x *TimestampRange) GetEnd() uint64 {
 	return 0
 }
 
+// A WebAuthn assertion (`navigator.credentials.get()` output) authorizing a
+// Sign request in place of a JWT. The passkey's own credential public key
+// is the identity: `issuer_did` is the `did:key` it decodes to, and ACP
+// grants/revokes that DID directly — there is no separate enrollment
+// registry. `issued_at`/`expiry`/`nonce` complete the exact operation the
+// assertion's `client_data_json.challenge` must commit to (alongside this
+// request's own `derivation_id`/`message` and the derivation's live
+// ring_id); every other field of that commitment is already present on
+// `StartSignRequest`, so it is never caller-suppliable. Same shape as
+// `orbis.v0.pre.WebAuthnAssertion` — kept as its own message per service
+// rather than a shared import, matching this file's own `TimestampRange`
+// precedent. See `orbis_webauthn::WebAuthnEvidence`/
+// `orbis_integration_core::SignOperation`.
+type WebAuthnAssertion struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	IssuerDid         string                 `protobuf:"bytes,1,opt,name=issuer_did,json=issuerDid,proto3" json:"issuer_did,omitempty"`
+	AuthenticatorData []byte                 `protobuf:"bytes,2,opt,name=authenticator_data,json=authenticatorData,proto3" json:"authenticator_data,omitempty"`
+	ClientDataJson    []byte                 `protobuf:"bytes,3,opt,name=client_data_json,json=clientDataJson,proto3" json:"client_data_json,omitempty"`
+	Signature         []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`
+	// Unix seconds, client-chosen. Not cryptographically bound by Sign's own
+	// protocol the way PRE's reader-key proof-of-possession binds it, but
+	// carried identically for both so the node-side adapter is the same
+	// generic code either way (see `orbis_webauthn::verify_and_build_token`).
+	IssuedAt      uint64 `protobuf:"varint,7,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	Expiry        uint64 `protobuf:"varint,5,opt,name=expiry,proto3" json:"expiry,omitempty"`
+	Nonce         []byte `protobuf:"bytes,6,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WebAuthnAssertion) Reset() {
+	*x = WebAuthnAssertion{}
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WebAuthnAssertion) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WebAuthnAssertion) ProtoMessage() {}
+
+func (x *WebAuthnAssertion) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WebAuthnAssertion.ProtoReflect.Descriptor instead.
+func (*WebAuthnAssertion) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *WebAuthnAssertion) GetIssuerDid() string {
+	if x != nil {
+		return x.IssuerDid
+	}
+	return ""
+}
+
+func (x *WebAuthnAssertion) GetAuthenticatorData() []byte {
+	if x != nil {
+		return x.AuthenticatorData
+	}
+	return nil
+}
+
+func (x *WebAuthnAssertion) GetClientDataJson() []byte {
+	if x != nil {
+		return x.ClientDataJson
+	}
+	return nil
+}
+
+func (x *WebAuthnAssertion) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+func (x *WebAuthnAssertion) GetIssuedAt() uint64 {
+	if x != nil {
+		return x.IssuedAt
+	}
+	return 0
+}
+
+func (x *WebAuthnAssertion) GetExpiry() uint64 {
+	if x != nil {
+		return x.Expiry
+	}
+	return 0
+}
+
+func (x *WebAuthnAssertion) GetNonce() []byte {
+	if x != nil {
+		return x.Nonce
+	}
+	return nil
+}
+
 type StartSignRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Raw bytes to sign
@@ -80,14 +189,19 @@ type StartSignRequest struct {
 	// Object ID of the KeyDerivation entry on the bulletin
 	DerivationId string `protobuf:"bytes,2,opt,name=derivation_id,json=derivationId,proto3" json:"derivation_id,omitempty"`
 	// Optional timestamp range for validity window
-	ValidWindow   *TimestampRange `protobuf:"bytes,3,opt,name=valid_window,json=validWindow,proto3,oneof" json:"valid_window,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ValidWindow *TimestampRange `protobuf:"bytes,3,opt,name=valid_window,json=validWindow,proto3,oneof" json:"valid_window,omitempty"`
+	// Passkey-authorized signing: present instead of a bearer JWT. Mutually
+	// exclusive with the JWT path in practice (a request authenticated this
+	// way carries no Authorization header), not enforced by the message
+	// shape itself.
+	WebauthnAssertion *WebAuthnAssertion `protobuf:"bytes,4,opt,name=webauthn_assertion,json=webauthnAssertion,proto3,oneof" json:"webauthn_assertion,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *StartSignRequest) Reset() {
 	*x = StartSignRequest{}
-	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -99,7 +213,7 @@ func (x *StartSignRequest) String() string {
 func (*StartSignRequest) ProtoMessage() {}
 
 func (x *StartSignRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -112,7 +226,7 @@ func (x *StartSignRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartSignRequest.ProtoReflect.Descriptor instead.
 func (*StartSignRequest) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{1}
+	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *StartSignRequest) GetMessage() []byte {
@@ -136,6 +250,13 @@ func (x *StartSignRequest) GetValidWindow() *TimestampRange {
 	return nil
 }
 
+func (x *StartSignRequest) GetWebauthnAssertion() *WebAuthnAssertion {
+	if x != nil {
+		return x.WebauthnAssertion
+	}
+	return nil
+}
+
 type StartSignResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Status    string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -149,7 +270,7 @@ type StartSignResponse struct {
 
 func (x *StartSignResponse) Reset() {
 	*x = StartSignResponse{}
-	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -161,7 +282,7 @@ func (x *StartSignResponse) String() string {
 func (*StartSignResponse) ProtoMessage() {}
 
 func (x *StartSignResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -174,7 +295,7 @@ func (x *StartSignResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartSignResponse.ProtoReflect.Descriptor instead.
 func (*StartSignResponse) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{2}
+	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StartSignResponse) GetStatus() string {
@@ -212,12 +333,23 @@ const file_orbis_v0_sign_sign_service_proto_rawDesc = "" +
 	" orbis/v0/sign/sign_service.proto\x12\rorbis.v0.sign\"8\n" +
 	"\x0eTimestampRange\x12\x14\n" +
 	"\x05start\x18\x01 \x01(\x04R\x05start\x12\x10\n" +
-	"\x03end\x18\x02 \x01(\x04R\x03end\"\xa9\x01\n" +
+	"\x03end\x18\x02 \x01(\x04R\x03end\"\xf4\x01\n" +
+	"\x11WebAuthnAssertion\x12\x1d\n" +
+	"\n" +
+	"issuer_did\x18\x01 \x01(\tR\tissuerDid\x12-\n" +
+	"\x12authenticator_data\x18\x02 \x01(\fR\x11authenticatorData\x12(\n" +
+	"\x10client_data_json\x18\x03 \x01(\fR\x0eclientDataJson\x12\x1c\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\x12\x1b\n" +
+	"\tissued_at\x18\a \x01(\x04R\bissuedAt\x12\x16\n" +
+	"\x06expiry\x18\x05 \x01(\x04R\x06expiry\x12\x14\n" +
+	"\x05nonce\x18\x06 \x01(\fR\x05nonce\"\x96\x02\n" +
 	"\x10StartSignRequest\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\fR\amessage\x12#\n" +
 	"\rderivation_id\x18\x02 \x01(\tR\fderivationId\x12E\n" +
-	"\fvalid_window\x18\x03 \x01(\v2\x1d.orbis.v0.sign.TimestampRangeH\x00R\vvalidWindow\x88\x01\x01B\x0f\n" +
-	"\r_valid_window\"\x82\x01\n" +
+	"\fvalid_window\x18\x03 \x01(\v2\x1d.orbis.v0.sign.TimestampRangeH\x00R\vvalidWindow\x88\x01\x01\x12T\n" +
+	"\x12webauthn_assertion\x18\x04 \x01(\v2 .orbis.v0.sign.WebAuthnAssertionH\x01R\x11webauthnAssertion\x88\x01\x01B\x0f\n" +
+	"\r_valid_windowB\x15\n" +
+	"\x13_webauthn_assertion\"\x82\x01\n" +
 	"\x11StartSignResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1d\n" +
@@ -240,21 +372,23 @@ func file_orbis_v0_sign_sign_service_proto_rawDescGZIP() []byte {
 	return file_orbis_v0_sign_sign_service_proto_rawDescData
 }
 
-var file_orbis_v0_sign_sign_service_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_orbis_v0_sign_sign_service_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_orbis_v0_sign_sign_service_proto_goTypes = []any{
 	(*TimestampRange)(nil),    // 0: orbis.v0.sign.TimestampRange
-	(*StartSignRequest)(nil),  // 1: orbis.v0.sign.StartSignRequest
-	(*StartSignResponse)(nil), // 2: orbis.v0.sign.StartSignResponse
+	(*WebAuthnAssertion)(nil), // 1: orbis.v0.sign.WebAuthnAssertion
+	(*StartSignRequest)(nil),  // 2: orbis.v0.sign.StartSignRequest
+	(*StartSignResponse)(nil), // 3: orbis.v0.sign.StartSignResponse
 }
 var file_orbis_v0_sign_sign_service_proto_depIdxs = []int32{
 	0, // 0: orbis.v0.sign.StartSignRequest.valid_window:type_name -> orbis.v0.sign.TimestampRange
-	1, // 1: orbis.v0.sign.SignService.StartSign:input_type -> orbis.v0.sign.StartSignRequest
-	2, // 2: orbis.v0.sign.SignService.StartSign:output_type -> orbis.v0.sign.StartSignResponse
-	2, // [2:3] is the sub-list for method output_type
-	1, // [1:2] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	1, // 1: orbis.v0.sign.StartSignRequest.webauthn_assertion:type_name -> orbis.v0.sign.WebAuthnAssertion
+	2, // 2: orbis.v0.sign.SignService.StartSign:input_type -> orbis.v0.sign.StartSignRequest
+	3, // 3: orbis.v0.sign.SignService.StartSign:output_type -> orbis.v0.sign.StartSignResponse
+	3, // [3:4] is the sub-list for method output_type
+	2, // [2:3] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_orbis_v0_sign_sign_service_proto_init() }
@@ -262,14 +396,14 @@ func file_orbis_v0_sign_sign_service_proto_init() {
 	if File_orbis_v0_sign_sign_service_proto != nil {
 		return
 	}
-	file_orbis_v0_sign_sign_service_proto_msgTypes[1].OneofWrappers = []any{}
+	file_orbis_v0_sign_sign_service_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_v0_sign_sign_service_proto_rawDesc), len(file_orbis_v0_sign_sign_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

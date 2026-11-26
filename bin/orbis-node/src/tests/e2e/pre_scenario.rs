@@ -369,7 +369,7 @@ pub(super) async fn verify_existing_at(
     );
 }
 
-fn prepare(
+pub(super) fn prepare(
     plaintext: &[u8],
     ring_pk: &str,
     policy_id: &str,
@@ -460,7 +460,7 @@ async fn verify_store_signature(
         .expect("StoreSecret signature must verify over authoritative bulletin bytes");
 }
 
-async fn store_with_retry(
+pub(super) async fn store_with_retry(
     environment: &TestEnvironmentImpl,
     ring: &RingId,
     prepared: &cli_tool::PreparedSecret,

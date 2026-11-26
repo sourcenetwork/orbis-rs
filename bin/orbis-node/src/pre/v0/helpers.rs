@@ -5,7 +5,8 @@ use crate::pre::v0::{
     messages::PreMessage,
     response_state::PreResponseManager,
 };
-use authn::{BearerToken, PreClaims};
+use authn::endpoints::pre::PreClaims;
+use authn::BearerToken;
 use authz::r#trait::Authz;
 use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
@@ -283,44 +284,6 @@ pub fn verify_encryption_binding(
 
     ThresholdDealerNode::verify_encryption(&proof, context, secret)
         .map_err(|e| PreError::Crypto(format!("Policy binding verification failed: {}", e)))
-}
-
-/// Validates JWT claims against the PRE request parameters.
-pub fn validate_pre_claims(
-    token: &BearerToken<PreClaims>,
-    rdr_pk: &Vec<u8>,
-    object_id: &String,
-    derivation: &Option<Vec<u8>>,
-    salt: &Option<String>,
-) -> Result<()> {
-    if token.claims.rdr_pk != *rdr_pk {
-        return Err(PreError::Unauthorized(format!(
-            "Token rdr_pk '{:?}' does not match request rdr_pk '{:?}'",
-            token.claims.rdr_pk, rdr_pk
-        )));
-    }
-
-    if token.claims.object_id != *object_id {
-        return Err(PreError::Unauthorized(format!(
-            "Token object_id '{}' does not match request object_id '{}'",
-            token.claims.object_id, object_id
-        )));
-    }
-
-    if token.claims.derivation != *derivation {
-        return Err(PreError::Unauthorized(format!(
-            "Token derivation '{:?}' does not match request derivation '{:?}'",
-            token.claims.derivation, derivation
-        )));
-    }
-
-    if token.claims.salt != *salt {
-        return Err(PreError::Unauthorized(format!(
-            "Token salt '{:?}' does not match request salt '{:?}'",
-            token.claims.salt, salt
-        )));
-    }
-    Ok(())
 }
 
 /// Store a received response (called by protocol handler)

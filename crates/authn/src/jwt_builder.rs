@@ -4,8 +4,12 @@
 //! - Creating signed JWT tokens with DID-based key pairs
 //! - Extracting bearer tokens from gRPC request metadata
 
+use crate::endpoints::dkg::DkgClaims;
+use crate::endpoints::pre::PreClaims;
+use crate::endpoints::sign::SignClaims;
+use crate::endpoints::store_secret::StoreSecretClaims;
 use crate::error::{AuthNError, Result};
-use crate::{BearerToken, DkgClaims, PreClaims, SignClaims, StoreSecretClaims};
+use crate::BearerToken;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use pkcs8::{
     der::{asn1::OctetStringRef, Encode},

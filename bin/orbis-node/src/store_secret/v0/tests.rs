@@ -9,18 +9,23 @@ use crate::helpers::test_helpers::{
 };
 use crate::ring_state::RingIndexEntry;
 use crate::store_secret::StoreSecretServiceImpl;
-use authn::StoreSecretClaims;
+use authn::endpoints::store_secret::StoreSecretClaims;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
 use crypto::{DkgImpl, PreImpl as ThresholdDealerNode, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use orbis_integration_core::{CanonicalOperation, StoreSecretOperation};
+use p256::ecdsa::SigningKey;
 use proto::v0::store_secret::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
 use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
 use tonic::Request;
+
+const WEBAUTHN_RP_ID: &str = "orbis-store-secret.test";
+const WEBAUTHN_ORIGIN: &str = "https://orbis-store-secret.test";
 
 /// Default test values for StoreSecret requests
 const TEST_ENCRYPTED_DOC: &str = "{}";
@@ -107,6 +112,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         tier: None,
         timestamp: None,
         pet_tag: None,
+        webauthn_assertion: None,
     }
 }
 
@@ -327,6 +333,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         tier: None,
         timestamp: None,
         pet_tag: None,
+        webauthn_assertion: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -514,6 +521,7 @@ async fn test_store_secret_idempotent() {
         tier: None,
         timestamp: None,
         pet_tag: None,
+        webauthn_assertion: None,
     };
 
     // Snapshot post count before any store_secret call. The bulletin already holds
@@ -556,6 +564,7 @@ async fn test_store_secret_idempotent() {
         tier: None,
         timestamp: None,
         pet_tag: None,
+        webauthn_assertion: None,
     };
 
     let tonic_request2 = create_authenticated_request(request2, &token).unwrap();
@@ -625,6 +634,173 @@ async fn test_store_secret_fails_encrypted_document_mismatch() {
         status.message().contains("encrypted_document_sha256"),
         "Error message should mention encrypted_document_sha256: {}",
         status.message()
+    );
+    cleanup_db(&db_path);
+}
+
+/// Test that StoreSecret succeeds when authorized by a WebAuthn assertion
+/// instead of a JWT — the only coverage this path gets, since (unlike
+/// Sign/PRE) StoreSecret has no Docker e2e scenario exercising it.
+#[tokio::test]
+async fn test_store_secret_succeeds_with_webauthn() {
+    let db_name = "test_store_secret_succeeds_with_webauthn";
+    let db_path = test_db_path(db_name);
+
+    let bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to create DummyBulletin"),
+    );
+
+    let (_sk, ring_pk) = ThresholdDealerNode::generate_keypair();
+    let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring_pk");
+    let ring_pk_hex = hex::encode(&ring_pk_bytes);
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: ring_pk_hex.clone(),
+        peer_node_keys: vec!["peer1".to_string()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
+        pre_share_endpoints: vec![],
+    };
+
+    let ring_id = "test-store-secret-webauthn-ring".to_string();
+    bulletin
+        .set_ring(ring_id.clone(), ring_payload)
+        .expect("seed ring");
+
+    let mut app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
+    app_state.webauthn_rp_id = Some(WEBAUTHN_RP_ID.to_string());
+    app_state.webauthn_origin = Some(WEBAUTHN_ORIGIN.to_string());
+
+    let ring_index = vec![RingIndexEntry {
+        ring_pk_str: ring_id.clone(),
+        bulletin_post_id: ring_id.clone(),
+        indexed_at_secs: 0,
+    }];
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&ring_index).unwrap(),
+        )
+        .unwrap();
+
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
+
+    let plaintext = b"webauthn-authorized store secret";
+    let policy_id = "test_policy";
+    let resource = "test_resource";
+    let permission = "read";
+    let ciphertext_context = crypto::context::CiphertextContext {
+        ring_pk: ring_pk_bytes.clone(),
+        policy_id: policy_id.to_string(),
+        resource: resource.to_string(),
+        permission: permission.to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+        pet_tag: None,
+    };
+    let (_enc_cmt, secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, &ciphertext_context)
+            .expect("encrypt with proof");
+
+    let encrypted_doc = serde_json::to_vec(&secret).expect("serialize Secret");
+    let enc_cmt_bytes = secret.enc_cmt.clone();
+    let challenge_bytes = proof.challenge.clone();
+    let response_bytes = proof.response.clone();
+    let encrypted_document_sha256 = Sha256::digest(&encrypted_doc).to_vec();
+
+    let mut scalar = [0u8; 32];
+    scalar[31] = 61;
+    let signing_key = SigningKey::from_bytes((&scalar).into())
+        .expect("small nonzero scalar is a valid P-256 key");
+    let compressed_pubkey: [u8; 33] = signing_key
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed P-256 point is 33 bytes");
+    let issuer_did = authn::did_from_p256_public_key(&compressed_pubkey);
+
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before epoch")
+        .as_secs();
+    let expiry = issued_at + 300;
+    let nonce = [7u8; 16];
+    let operation = StoreSecretOperation {
+        encrypted_document_sha256: encrypted_document_sha256.clone(),
+        enc_cmt: enc_cmt_bytes.clone(),
+        ring_id: ring_id.clone(),
+        policy_id: policy_id.to_string(),
+        resource: resource.to_string(),
+        permission: permission.to_string(),
+        challenge: challenge_bytes.clone(),
+        response: response_bytes.clone(),
+        with_proof: false,
+        tier: None,
+        timestamp: None,
+        expiry,
+        nonce,
+    };
+    let assertion = orbis_webauthn::build_test_assertion(
+        &signing_key,
+        WEBAUTHN_RP_ID,
+        WEBAUTHN_ORIGIN,
+        &operation.canonical_bytes(),
+    );
+
+    let request = StoreSecretRequest {
+        encrypted_document: encrypted_doc.clone(),
+        enc_cmt: enc_cmt_bytes.clone(),
+        ring_id: ring_id.clone(),
+        policy_id: policy_id.to_string(),
+        resource: resource.to_string(),
+        permission: permission.to_string(),
+        challenge: challenge_bytes.clone(),
+        response: response_bytes.clone(),
+        with_proof: false,
+        tier: None,
+        timestamp: None,
+        pet_tag: None,
+        webauthn_assertion: Some(proto::v0::store_secret::WebAuthnAssertion {
+            issuer_did,
+            authenticator_data: assertion.authenticator_data,
+            client_data_json: assertion.client_data_json,
+            signature: assertion.signature,
+            issued_at,
+            expiry,
+            nonce: nonce.to_vec(),
+        }),
+    };
+
+    let posts_before = bulletin.get_posts().len();
+    let result = service.store_secret(Request::new(request)).await;
+    assert!(
+        result.is_ok(),
+        "WebAuthn-authorized store_secret should succeed: {:?}",
+        result.err()
+    );
+    let response = result.unwrap().into_inner();
+    assert!(
+        !response.object_id.is_empty(),
+        "WebAuthn-authorized store_secret must return an object id"
+    );
+    assert_eq!(
+        bulletin.get_posts().len(),
+        posts_before + 1,
+        "exactly one new document post should have been added"
     );
     cleanup_db(&db_path);
 }

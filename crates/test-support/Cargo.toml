@@ -50,10 +50,6 @@ required-features = ["cosmos"]
 name = "cosmos_environment"
 required-features = ["cosmos"]
 
-[[test]]
-name = "vera_validators"
-required-features = ["vera"]
-
 [dev-dependencies]
 # `tests/blockchain_vera_go.rs` — live-chain tests for common's VeraClient/TxSigner.
 tokio = { workspace = true }

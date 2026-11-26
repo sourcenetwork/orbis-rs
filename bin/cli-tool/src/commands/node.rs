@@ -189,6 +189,7 @@ pub async fn store_prepared_secret(
             knowledge_proof_challenge: prepared_tag.tag_proof.challenge.clone(),
             knowledge_proof_response: prepared_tag.tag_proof.response.clone(),
         }),
+        webauthn_assertion: None,
     };
 
     // Create JWT for authentication with all request fields
@@ -594,6 +595,7 @@ async fn request_pre_reencryption(
             response: rdr_pk_signature.response,
         }),
         audit_target_object_id,
+        webauthn_assertion: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token)
@@ -619,6 +621,293 @@ async fn request_pre_reencryption(
         .map_err(|e| anyhow!("Failed to parse PRE response: {}", e))?;
 
     Ok((pre_response, reader_sk_scalar, ring_pk_bytes))
+}
+
+/// Everything about a passkey-authorized PRE request that's fixed *before*
+/// the WebAuthn ceremony runs, built by [`build_passkey_pre_challenge`] and
+/// consumed by [`finish_passkey_pre`]. Kept in memory between the two (by
+/// whoever drives a real browser ceremony in between, e.g.
+/// `passkey-sign`'s reference app) — never serialized onto the wire itself;
+/// only its [`PendingPasskeyPre::challenge`] bytes are, as the WebAuthn
+/// `challenge`.
+///
+/// Splitting this out of [`request_pre_reencryption_with_passkey`] is what
+/// lets a real browser ceremony sit in between the two halves: everything
+/// here (in particular, the ephemeral reader keypair, which must exist
+/// before the challenge can even be built, since it embeds `rdr_pk`) has to
+/// be decided before the assertion exists, but the actual submit-and-decrypt
+/// step can't run until after it does.
+pub struct PendingPasskeyPre {
+    reader_sk_scalar: Fr,
+    reader_pk_bytes: Vec<u8>,
+    reader_auth_context: crypto::context::ReaderAuthorizationContext,
+    object_id: String,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+    ring_pk_bytes: Vec<u8>,
+    issued_at: u64,
+    expiry: u64,
+    nonce: [u8; 16],
+}
+
+impl PendingPasskeyPre {
+    /// The exact bytes a WebAuthn ceremony's `challenge` must embed for
+    /// this pending request — recomputed, not stored, since it's a pure
+    /// function of the other fields (see
+    /// `orbis_integration_core::PreOperation::canonical_bytes`).
+    pub fn challenge(&self) -> Vec<u8> {
+        use orbis_integration_core::CanonicalOperation;
+        orbis_integration_core::PreOperation {
+            object_id: self.object_id.clone(),
+            rdr_pk: self.reader_pk_bytes.clone(),
+            derivation: self.derivation.clone(),
+            salt: self.salt.clone(),
+            issued_at: self.issued_at,
+            expiry: self.expiry,
+            nonce: self.nonce,
+        }
+        .canonical_bytes()
+    }
+}
+
+/// Builds everything about a passkey-authorized PRE request that doesn't
+/// depend on the WebAuthn assertion itself — including generating the
+/// fresh ephemeral reader keypair every PRE request needs (same
+/// non-negotiable reasoning as [`request_pre_reencryption`]'s own step 1).
+/// Call [`PendingPasskeyPre::challenge`] on the result to get the bytes a
+/// WebAuthn ceremony's `challenge` must embed, then pass both to
+/// [`finish_passkey_pre`] once that ceremony produces an assertion.
+#[allow(clippy::too_many_arguments)]
+pub fn build_passkey_pre_challenge(
+    chain_id: String,
+    ring_pk: String,
+    object_id: String,
+    issuer_did: &str,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<PendingPasskeyPre> {
+    let (reader_sk_scalar, reader_pk_point) = crypto::helpers::generate_keypair()
+        .map_err(|e| anyhow!("Failed to generate reader keypair: {}", e))?;
+    let reader_pk_bytes = CryptoSerialize::to_bytes(&reader_pk_point)
+        .map_err(|e| anyhow!("Failed to serialize reader public key: {}", e))?;
+
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| anyhow!("system clock before epoch: {e}"))?
+        .as_secs();
+    let expiry = issued_at + 300;
+    let nonce: [u8; 16] = rand::random();
+
+    let ring_pk_bytes =
+        hex::decode(&ring_pk).map_err(|e| anyhow!("Failed to decode ring_pk hex: {}", e))?;
+    let valid_window_binding = match (valid_window_start, valid_window_end) {
+        (Some(start), Some(end)) => Some(crypto::context::ValidWindowBinding { start, end }),
+        _ => None,
+    };
+    let reader_auth_context = crypto::context::ReaderAuthorizationContext {
+        chain_id,
+        ring_pk: ring_pk_bytes.clone(),
+        jwt_issuer: issuer_did.to_string(),
+        jwt_subject: None,
+        resolved_actor: issuer_did.to_string(),
+        jwt_id: hex::encode(nonce),
+        jwt_issued_time: issued_at,
+        jwt_expiration_time: expiry,
+        jwt_not_before: None,
+        object_id: object_id.clone(),
+        recipient_pk: reader_pk_bytes.clone(),
+        derivation: derivation.clone(),
+        salt: salt.clone(),
+        valid_window: valid_window_binding,
+        audit_target_object_id: None,
+    };
+
+    Ok(PendingPasskeyPre {
+        reader_sk_scalar,
+        reader_pk_bytes,
+        reader_auth_context,
+        object_id,
+        derivation,
+        salt,
+        valid_window_start,
+        valid_window_end,
+        ring_pk_bytes,
+        issued_at,
+        expiry,
+        nonce,
+    })
+}
+
+/// Finishes a passkey-authorized PRE request given the `pending` state
+/// [`build_passkey_pre_challenge`] produced and the WebAuthn assertion a
+/// ceremony against [`PendingPasskeyPre::challenge`] produced — signs the
+/// reader-key proof-of-possession transcript, submits the request, and
+/// decrypts the result.
+///
+/// The transcript signed here must match, field for field, what each ring
+/// node will independently rebuild from the synthetic token orbis-node's
+/// `helpers::auth::resolve_request_auth` produces server-side via its
+/// WebAuthn path (`authn::endpoints::pre::PreEndpoint`) — in particular
+/// `jwt_issued_time` comes from `pending`'s client-chosen `issued_at`,
+/// never from verification-time "now".
+pub async fn finish_passkey_pre(
+    endpoint: String,
+    pending: PendingPasskeyPre,
+    issuer_did: String,
+    assertion: orbis_webauthn::RawAssertion,
+) -> Result<Vec<u8>> {
+    let rdr_pk_signature = ThresholdDealerNode::sign_reader_authorization(
+        &pending.reader_sk_scalar,
+        &G1Affine::from_bytes(&pending.reader_pk_bytes)
+            .map_err(|e| anyhow!("Failed to deserialize reader public key: {}", e))?,
+        &pending.reader_auth_context,
+    )
+    .map_err(|e| anyhow!("Failed to sign reader authorization: {}", e))?;
+
+    let mut client = PreServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let valid_window = match (pending.valid_window_start, pending.valid_window_end) {
+        (Some(start), Some(end)) => Some(proto::v0::pre::TimestampRange { start, end }),
+        _ => None,
+    };
+
+    let request = proto::v0::pre::StartPreRequest {
+        rdr_pk: pending.reader_pk_bytes.clone(),
+        object_id: pending.object_id.clone(),
+        derivation: pending.derivation.clone(),
+        salt: pending.salt.clone(),
+        valid_window,
+        document: None,
+        rdr_pk_signature: Some(proto::v0::pre::ReaderAuthorizationSignature {
+            challenge: rdr_pk_signature.challenge,
+            response: rdr_pk_signature.response,
+        }),
+        audit_target_object_id: None,
+        webauthn_assertion: Some(proto::v0::pre::WebAuthnAssertion {
+            issuer_did,
+            authenticator_data: assertion.authenticator_data,
+            client_data_json: assertion.client_data_json,
+            signature: assertion.signature,
+            issued_at: pending.issued_at,
+            expiry: pending.expiry,
+            nonce: pending.nonce.to_vec(),
+        }),
+    };
+
+    let response = client
+        .start_pre(Request::new(request))
+        .await
+        .context("PRE request failed")?;
+
+    let response = response.into_inner();
+
+    println!("PRE Result:");
+    println!("{}", "=".repeat(60));
+    println!("  Status: {}", response.status);
+    println!("  Message: {}", response.message);
+
+    if response.encrypted_secret.is_empty() {
+        return Err(anyhow!("PRE response did not contain encrypted_secret"));
+    }
+
+    let pre_response: PreResponse = serde_json::from_slice(&response.encrypted_secret)
+        .map_err(|e| anyhow!("Failed to parse PRE response: {}", e))?;
+
+    decrypt_pre_response(
+        pre_response,
+        pending.reader_sk_scalar,
+        &pending.ring_pk_bytes,
+        pending.derivation.as_deref(),
+    )
+    .await
+}
+
+/// Same contract as [`request_pre_reencryption`], but authorized by a
+/// WebAuthn assertion instead of a JWT — mirrors `do_sign_with_passkey`'s
+/// relationship to `do_sign`. `signing_key` stands in for a real passkey
+/// (see `do_sign_with_passkey`'s doc comment for why); this is the
+/// synchronous, no-real-browser shape of [`build_passkey_pre_challenge`] +
+/// [`finish_passkey_pre`], for CLI/scripted use.
+#[allow(clippy::too_many_arguments)]
+async fn request_pre_reencryption_with_passkey(
+    endpoint: String,
+    chain_id: String,
+    ring_pk: String,
+    object_id: String,
+    signing_key: &p256::ecdsa::SigningKey,
+    rp_id: &str,
+    origin: &str,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<Vec<u8>> {
+    println!("Starting passkey-authorized PRE session:");
+    println!("  Endpoint: {}", endpoint);
+
+    let compressed_pubkey: [u8; 33] = signing_key
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed P-256 point is 33 bytes");
+    let issuer_did = authn::did_from_p256_public_key(&compressed_pubkey);
+
+    let pending = build_passkey_pre_challenge(
+        chain_id,
+        ring_pk,
+        object_id,
+        &issuer_did,
+        derivation,
+        salt,
+        valid_window_start,
+        valid_window_end,
+    )?;
+    let assertion =
+        orbis_webauthn::build_test_assertion(signing_key, rp_id, origin, &pending.challenge());
+
+    finish_passkey_pre(endpoint, pending, issuer_did, assertion).await
+}
+
+/// Call `PreService.StartPre` with a passkey-authorized request — a WebAuthn
+/// assertion in place of a JWT. `object_id`'s document's policy must have
+/// granted `read` (or whichever permission it names) to the `did:key` the
+/// signing key's own public key decodes to; there is no separate enrollment
+/// step.
+#[allow(clippy::too_many_arguments)]
+pub async fn do_pre_with_passkey(
+    endpoint: String,
+    chain_id: String,
+    ring_pk: String,
+    object_id: String,
+    signing_key: &p256::ecdsa::SigningKey,
+    rp_id: &str,
+    origin: &str,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<Vec<u8>> {
+    request_pre_reencryption_with_passkey(
+        endpoint,
+        chain_id,
+        ring_pk,
+        object_id,
+        signing_key,
+        rp_id,
+        origin,
+        derivation,
+        salt,
+        valid_window_start,
+        valid_window_end,
+    )
+    .await
 }
 
 /// Step 5 of a PRE request: decrypt a parsed [`PreResponse`], handling both
@@ -745,6 +1034,7 @@ pub async fn do_sign(
         message: message.clone(),
         derivation_id: derivation_id.clone(),
         valid_window,
+        webauthn_assertion: None,
     };
 
     let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
@@ -759,6 +1049,110 @@ pub async fn do_sign(
 
     let response = client
         .start_sign(tonic_request)
+        .await
+        .context("Sign request failed")?;
+
+    let response = response.into_inner();
+
+    println!("Sign Result:");
+    println!("{}", "=".repeat(60));
+    println!("  Status: {}", response.status);
+    println!("  Message: {}", response.message);
+    println!("  Signature: {}", response.signature);
+
+    Ok(SignResult {
+        status: response.status,
+        message: response.message,
+        created_at: response.created_at,
+        signature: response.signature,
+    })
+}
+
+/// Call `SignService.StartSign` with a passkey-authorized request — a
+/// WebAuthn assertion in place of a JWT. `derivation_id` must have been
+/// granted (via ACP) to the `did:key` the signing key's own public key
+/// decodes to (see `authn::did_from_p256_public_key`); there is no
+/// separate enrollment step.
+///
+/// `signing_key` stands in for a real passkey: there is no browser or
+/// hardware authenticator to drive here, so the caller supplies a raw
+/// P-256 key directly and this builds the exact wire-format assertion a
+/// real one would have produced (`orbis_webauthn::build_test_assertion`).
+/// Fine for CLI tooling and tests; never represents a real end-user flow.
+pub async fn do_sign_with_passkey(
+    endpoint: String,
+    message: Vec<u8>,
+    derivation_id: String,
+    signing_key: &p256::ecdsa::SigningKey,
+    rp_id: &str,
+    origin: &str,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<SignResult> {
+    use sha2::{Digest, Sha256};
+
+    println!("Starting passkey-authorized Sign session:");
+    println!("  Endpoint: {}", endpoint);
+    println!("  Derivation ID: {}", derivation_id);
+    println!("  Message length: {} bytes", message.len());
+    println!();
+
+    let mut client = SignServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let valid_window = match (valid_window_start, valid_window_end) {
+        (Some(start), Some(end)) => Some(proto::v0::sign::TimestampRange { start, end }),
+        _ => None,
+    };
+
+    let compressed_pubkey: [u8; 33] = signing_key
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed P-256 point is 33 bytes");
+    let issuer_did = authn::did_from_p256_public_key(&compressed_pubkey);
+
+    use orbis_integration_core::CanonicalOperation;
+
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| anyhow!("system clock before epoch: {e}"))?
+        .as_secs();
+    let expiry = issued_at + 300;
+    let nonce: [u8; 16] = rand::random();
+
+    let operation = orbis_integration_core::SignOperation {
+        derivation_id: derivation_id.clone(),
+        message_sha256: Sha256::digest(&message).to_vec(),
+        expiry,
+        nonce,
+    };
+    let assertion = orbis_webauthn::build_test_assertion(
+        signing_key,
+        rp_id,
+        origin,
+        &operation.canonical_bytes(),
+    );
+
+    let request = proto::v0::sign::StartSignRequest {
+        message: message.clone(),
+        derivation_id: derivation_id.clone(),
+        valid_window,
+        webauthn_assertion: Some(proto::v0::sign::WebAuthnAssertion {
+            issuer_did,
+            authenticator_data: assertion.authenticator_data,
+            client_data_json: assertion.client_data_json,
+            signature: assertion.signature,
+            issued_at,
+            expiry,
+            nonce: nonce.to_vec(),
+        }),
+    };
+
+    let response = client
+        .start_sign(Request::new(request))
         .await
         .context("Sign request failed")?;
 

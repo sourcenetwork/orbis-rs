@@ -19,15 +19,15 @@ use crate::sign::v0::helpers::{
     check_policy_access, decode_ring_pk_bytes, deserialize_commitments,
     fetch_bulletin_payloads_for_version, load_dist_key_share, refresh_health_check_context_key,
     ring_reshare_update_context_key, validate_refresh_health_check_statement,
-    validate_ring_reshare_update_statement, validate_sign_claims,
-    verify_message_and_get_info_for_version,
+    validate_ring_reshare_update_statement, verify_message_and_get_info_for_version,
 };
 use crate::sign::v0::messages::{
     NonceRequest, PolicyContext, RefreshHealthCheckContext, RingReshareUpdateContext, SignContext,
     SignMessage, SignRequest,
 };
 use crate::sign::v0::response_state::NonceStoreOutcome;
-use authn::{resolve_jwt_did, BearerToken, SignClaims};
+use authn::endpoints::sign::SignClaims;
+use authn::BearerToken;
 use authz::request::AccessCheckRequest;
 use bulletin::r#trait::{BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::sign_node_message_with_hex_key;
@@ -37,6 +37,7 @@ use crypto::r#trait::{
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr, SigShareInner, SignaturePoint};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug)]
@@ -255,21 +256,34 @@ where
         let mut staged_sign_bundle: Option<RingShareBundle> = None;
         let authoritative_ring_pk_hex = match &context {
             SignContext::Policy(ctx) => {
-                let (token_string, derivation_id, valid_window) =
-                    (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
+                let (derivation_id, valid_window) = (&ctx.derivation_id, &ctx.valid_window);
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
                     .as_secs();
-                let token: BearerToken<SignClaims> = resolve_jwt_did(
-                    token_string,
+                // Independently re-verified here regardless of method — never trust the
+                // coordinator's word that authentication already passed. WebAuthn's
+                // challenge binds `message_sha256`, so unlike the JWT path it can't defer
+                // that check to Round 2: `ctx.message_sha256` (set once at stage 1) is what
+                // makes that possible without the raw message, which Round 1 never carries.
+                let fields = authn::endpoints::sign::SignFields {
+                    derivation_id: derivation_id.clone(),
+                    message_sha256: ctx.message_sha256.clone(),
+                };
+                let token: BearerToken<SignClaims> = crate::helpers::auth::resolve_request_auth::<
+                    authn::endpoints::sign::SignEndpoint,
+                >(
+                    &fields,
+                    ctx.token_string.as_deref(),
+                    ctx.webauthn_assertion.as_ref(),
+                    self.app_state.webauthn_rp_id.as_deref(),
+                    self.app_state.webauthn_origin.as_deref(),
                     current_time,
                     MAX_TOKEN_LIFETIME_SECS,
                     MAX_JWT_BYTES,
                     JWT_CLOCK_SKEW_LEEWAY_SECS,
                 )
-                .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-                validate_sign_claims(&token, derivation_id, None)?;
+                .map_err(|e| SignError::Unauthorized(e.to_string()))?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
                     derivation_id,
@@ -580,22 +594,30 @@ where
         message: &[u8],
         ctx: &PolicyContext,
     ) -> Result<SignRequestAuthorization> {
-        let (token_string, derivation_id, valid_window) =
-            (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
-        // Always re-validate JWT (pure crypto, no IO)
+        let (derivation_id, valid_window) = (&ctx.derivation_id, &ctx.valid_window);
+        // Always re-verify authentication here (pure crypto, no IO), regardless of method.
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| SignError::Generic(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
-        let token: BearerToken<SignClaims> = resolve_jwt_did(
-            token_string,
-            current_time,
-            MAX_TOKEN_LIFETIME_SECS,
-            MAX_JWT_BYTES,
-            JWT_CLOCK_SKEW_LEEWAY_SECS,
-        )
-        .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-        validate_sign_claims(&token, derivation_id, Some(message))?;
+        let message_sha256 = Sha256::digest(message).to_vec();
+        let fields = authn::endpoints::sign::SignFields {
+            derivation_id: derivation_id.clone(),
+            message_sha256,
+        };
+        let token: BearerToken<SignClaims> =
+            crate::helpers::auth::resolve_request_auth::<authn::endpoints::sign::SignEndpoint>(
+                &fields,
+                ctx.token_string.as_deref(),
+                ctx.webauthn_assertion.as_ref(),
+                self.app_state.webauthn_rp_id.as_deref(),
+                self.app_state.webauthn_origin.as_deref(),
+                current_time,
+                MAX_TOKEN_LIFETIME_SECS,
+                MAX_JWT_BYTES,
+                JWT_CLOCK_SKEW_LEEWAY_SECS,
+            )
+            .map_err(|e| SignError::Unauthorized(e.to_string()))?;
 
         // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
         let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(

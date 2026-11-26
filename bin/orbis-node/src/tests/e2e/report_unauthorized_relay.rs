@@ -313,7 +313,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         .create_sign_jwt(&derivation_id, sign_message)
         .expect("create Sign JWT");
 
-    let sign_issued_time = authn::resolve_jwt_did::<authn::SignClaims>(
+    let sign_issued_time = authn::resolve_jwt_did::<authn::endpoints::sign::SignClaims>(
         &sign_token,
         current_unix_time_secs(),
         crate::constants::MAX_TOKEN_LIFETIME_SECS,
@@ -398,7 +398,7 @@ async fn relay_statement_preserves_jwt_issued_time() {
     let (pre_jwt, pre_metadata) = signer
         .create_pre_jwt(vec![1, 2, 3], "object", None, None)
         .expect("create PRE JWT");
-    let pre_token = authn::resolve_jwt_did::<authn::PreClaims>(
+    let pre_token = authn::resolve_jwt_did::<authn::endpoints::pre::PreClaims>(
         &pre_jwt,
         current_unix_time_secs(),
         MAX_TOKEN_LIFETIME_SECS,
@@ -411,7 +411,7 @@ async fn relay_statement_preserves_jwt_issued_time() {
     let sign_jwt = signer
         .create_sign_jwt("object", b"message")
         .expect("create Sign JWT");
-    let sign_token = authn::resolve_jwt_did::<authn::SignClaims>(
+    let sign_token = authn::resolve_jwt_did::<authn::endpoints::sign::SignClaims>(
         &sign_jwt,
         current_unix_time_secs(),
         MAX_TOKEN_LIFETIME_SECS,

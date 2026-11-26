@@ -1,5 +1,6 @@
 mod did_key;
 
+pub mod endpoints;
 pub mod error;
 pub mod jwt_builder;
 
@@ -92,66 +93,25 @@ pub fn validate_relay_issuer(issuer_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Claims for PRE (Proxy Re-Encryption) endpoints
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct PreClaims {
-    /// Reader's public key (compressed G1 point bytes)
-    pub rdr_pk: Vec<u8>,
-    /// Secret object Id to re-encrypt
-    pub object_id: String,
-    /// Optional derivation path
-    pub derivation: Option<Vec<u8>>,
-    /// Optional salt for proof
-    pub salt: Option<String>,
+/// Decodes a P-256 public key from a `did:key:z...` issuer DID.
+///
+/// Used by WebAuthn-authenticated requests, where a passkey's own credential
+/// public key *is* the identity ACP grants/revokes directly — there is no
+/// separate enrollment registry to resolve through.
+pub fn p256_public_key_from_did(did: &str) -> Result<[u8; 33]> {
+    did_key::p256_public_key(did)
 }
 
-/// Claims for Sign (threshold signing) endpoints
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct SignClaims {
-    /// Object ID of the key derivation entry on the bulletin
-    pub derivation_id: String,
-    /// SHA-256 digest of the message to sign
-    pub message_sha256: Vec<u8>,
-}
-
-/// Claims for DKG endpoints
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct DkgClaims {
-    /// Pre-created blank ring entry targeted by this DKG.
-    pub ring_id: String,
-}
-
-/// Claims for StoreSecret endpoints
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct StoreSecretClaims {
-    /// SHA-256 digest of the encrypted document
-    pub encrypted_document_sha256: Vec<u8>,
-    /// The encryption commitment (compressed G1 point bytes)
-    pub enc_cmt: Vec<u8>,
-    /// Ring ID to use for encryption
-    pub ring_id: String,
-    /// Policy ID for access control
-    pub policy_id: String,
-    /// Resource type for the policy
-    pub resource: String,
-    /// Permission required for the policy
-    pub permission: String,
-    /// Fiat-Shamir challenge (Schnorr PoK of the encryption randomness)
-    pub challenge: Vec<u8>,
-    /// Proof response `z = k + c*r`
-    pub response: Vec<u8>,
-    /// Add a proof to the store secret call
-    pub with_proof: bool,
-    /// tier required for policy
-    pub tier: Option<String>,
-    /// timestamp required for policy
-    pub timestamp: Option<u64>,
+/// Encodes a compressed SEC1 P-256 public key as the `did:key` identity it
+/// stands for. The inverse of [`p256_public_key_from_did`].
+pub fn did_from_p256_public_key(compressed_pubkey: &[u8; 33]) -> String {
+    did_key::encode_p256_did(compressed_pubkey)
 }
 
 /// Resolves and verifies a JWT token, returning the decoded BearerToken with custom claims.
 ///
 /// # Type Parameters
-/// * `T` - The custom claims type. Use `()` for no custom claims, `PreClaims` for PRE endpoints, etc.
+/// * `T` - The custom claims type. Use `()` for no custom claims, `endpoints::pre::PreClaims` for PRE endpoints, etc.
 ///
 /// `clock_skew_leeway_secs` is applied to wall-clock comparisons for `exp`, `iat`,
 /// and `nbf`, but it does not expand the token's maximum allowed lifetime.
@@ -159,12 +119,12 @@ pub struct StoreSecretClaims {
 /// # Examples
 /// ```ignore
 /// // For PRE endpoint with rdr_pk claim
-/// let token: BearerToken<PreClaims> =
+/// let token: BearerToken<endpoints::pre::PreClaims> =
 ///     resolve_jwt_did(token_str, current_time, max_lifetime, max_jwt_bytes, clock_skew)?;
 /// assert_eq!(token.claims.rdr_pk, request.rdr_pk);
 ///
 /// // For DKG endpoint with no custom claims
-/// let token: BearerToken<DkgClaims> =
+/// let token: BearerToken<endpoints::dkg::DkgClaims> =
 ///     resolve_jwt_did(token_str, current_time, max_lifetime, max_jwt_bytes, clock_skew)?;
 ///
 /// // Or simply use unit type for basic auth

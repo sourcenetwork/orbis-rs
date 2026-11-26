@@ -303,6 +303,22 @@ async fn bring_up_orbis_nodes(
             ));
         }
     }
+    // Opt-in pass-through for a passkey-sign scenario: unset by default
+    // (every other scenario's nodes reject WebAuthn-authorized Sign
+    // requests, the safe default), forwarded only when a test sets these
+    // on its own process before calling `provision`.
+    if let Some(rp_id) = std::env::var_os("ORBIS_WEBAUTHN_RP_ID") {
+        node_env.push((
+            "ORBIS_WEBAUTHN_RP_ID".to_string(),
+            rp_id.to_string_lossy().into_owned(),
+        ));
+    }
+    if let Some(origin) = std::env::var_os("ORBIS_WEBAUTHN_ORIGIN") {
+        node_env.push((
+            "ORBIS_WEBAUTHN_ORIGIN".to_string(),
+            origin.to_string_lossy().into_owned(),
+        ));
+    }
 
     // Materialize all bind mounts before the first Compose invocation and
     // retain their interpolation variables. They are part of the project's
