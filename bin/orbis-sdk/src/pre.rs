@@ -11,6 +11,7 @@ use orbis_integration_core::{CanonicalOperation, PreOperation};
 use proto::v0::pre::pre_service_client::PreServiceClient;
 use proto::v0::pre::{InlineDocument, StartPreRequest, TimestampRange};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 use crate::client::OrbisClient;
 use crate::error::{Result, SdkError};
@@ -66,6 +67,19 @@ pub struct PendingPre {
     issued_at: u64,
     expiry: u64,
     nonce: [u8; 16],
+}
+
+// Manual impl, mirroring the convention `crypto::r#trait::types` already
+// uses for every struct holding a raw secret scalar (`PriShare`,
+// `DistKeyShare`, `ReencryptReply`, ...): letting this drop normally would
+// leave the ephemeral reader's decryption key sitting in freed-but-unzeroed
+// memory for however long this process keeps running afterward — a real
+// exposure window for a long-lived server, not something "the process will
+// exit eventually" excuses.
+impl Drop for PendingPre {
+    fn drop(&mut self) {
+        self.reader_sk_scalar.zeroize();
+    }
 }
 
 impl PendingPre {
@@ -190,12 +204,29 @@ pub fn build_pre_challenge(
 /// immediately. `reader_sk_hex` is the ephemeral reader secret key that
 /// call generated for this one request; losing it means the response can
 /// never be decrypted, by design.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct PendingPreRetrieval {
     reader_sk_hex: String,
     ring_pk: String,
     derivation: Option<Vec<u8>>,
     response: PreResponse,
+}
+
+// Manual impl (rather than derive), matching `crypto::r#trait::types`'s own
+// convention for any type holding a raw secret: `Serialize` deliberately
+// exposes `reader_sk_hex` (serializing this out is the whole point of the
+// save-now/decrypt-later path), but a log or panic message printing this
+// value via `{:?}` would leak the reader's decryption key for no reason —
+// those are different concerns.
+impl std::fmt::Debug for PendingPreRetrieval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingPreRetrieval")
+            .field("reader_sk_hex", &"[REDACTED]")
+            .field("ring_pk", &self.ring_pk)
+            .field("derivation", &self.derivation)
+            .field("response", &self.response)
+            .finish()
+    }
 }
 
 impl OrbisClient {
@@ -319,10 +350,10 @@ impl OrbisClient {
 
         let mut client = PreServiceClient::new(self.channel());
         let request = StartPreRequest {
-            rdr_pk: pending.reader_pk_bytes,
-            object_id: pending.object_id,
+            rdr_pk: pending.reader_pk_bytes.clone(),
+            object_id: pending.object_id.clone(),
             derivation: pending.derivation.clone(),
-            salt: pending.salt,
+            salt: pending.salt.clone(),
             valid_window: valid_window(pending.valid_window_start, pending.valid_window_end),
             document: None,
             rdr_pk_signature: Some(proto::v0::pre::ReaderAuthorizationSignature {
@@ -594,6 +625,43 @@ mod tests {
         let round_tripped: PendingPreRetrieval =
             serde_json::from_str(&round_tripped_json).expect("deserialize again");
 
+        // `Debug` redacts `reader_sk_hex` (see its own impl's doc comment),
+        // so check it survives the round trip directly rather than relying
+        // on the `Debug` comparison below to catch a mismatch there.
+        assert_eq!(pending.reader_sk_hex, round_tripped.reader_sk_hex);
         assert_eq!(format!("{:?}", pending), format!("{:?}", round_tripped));
+    }
+
+    #[test]
+    fn pending_pre_retrieval_debug_redacts_the_reader_secret_key() {
+        let pending = PendingPreRetrieval {
+            reader_sk_hex: "supersecrethex".to_string(),
+            ring_pk: "ring-pk-hex".to_string(),
+            derivation: None,
+            response: PreResponse::Direct(Box::new(DirectPreResponse {
+                xnc_cmt: "deadbeef".to_string(),
+                secret: serde_json::from_value(serde_json::json!({
+                    "enc_cmt": [1, 2, 3],
+                    "encrypted_data": [4, 5, 6],
+                    "nonce": [7, 8, 9, 10, 11, 12]
+                }))
+                .expect("deserialize Secret"),
+                context: serde_json::from_value(serde_json::json!({
+                    "ring_pk": [1, 2, 3],
+                    "policy_id": "policy-1",
+                    "resource": "resource",
+                    "permission": "read",
+                    "tier": null,
+                    "timestamp": null,
+                    "salt": null,
+                    "pet_tag": null
+                }))
+                .expect("deserialize CiphertextContext"),
+            })),
+        };
+
+        let debug = format!("{pending:?}");
+        assert!(!debug.contains("supersecrethex"), "got: {debug}");
+        assert!(debug.contains("[REDACTED]"), "got: {debug}");
     }
 }
