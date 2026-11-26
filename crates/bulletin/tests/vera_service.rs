@@ -771,8 +771,11 @@ async fn native_report_and_reshare_recover_certified_completion() {
         DelegationScope::PolicyCommands,
     )
     .unwrap();
-    let grant =
-        vera_acp::Relationship::with_entity("ring", &ring_id, "operator", actor.parse().unwrap());
+    let grant = acp::domain::Relationship::new(
+        acp::domain::Object::new("ring", ring_id.as_str()),
+        "operator",
+        acp::domain::Subject::Actor(acp::domain::Actor::new(actor.parse().unwrap())),
+    );
     let call = vera_modules::acp::abi::IAcp::bearerPolicyCmdCall {
         bearerToken: grant_token,
         policyId: policy_bytes,
