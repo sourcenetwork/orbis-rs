@@ -33,9 +33,9 @@ allow = [
 # Confidence threshold for license text scanning (when SPDX field is absent)
 confidence-threshold = 0.8
 exceptions = [
-    { name = "acp", version = "=0.0.1", allow = ["BUSL-1.1"] },
+    { name = "sourcenetwork-acp", version = "=0.0.1", allow = ["BUSL-1.1"] },
     { name = "orbis-reporting", version = "=0.0.3", allow = ["BUSL-1.1"] },
-    { name = "zanzi", version = "=0.0.1", allow = ["BUSL-1.1"] },
+    { name = "sourcenetwork-zanzi", version = "=0.0.1", allow = ["BUSL-1.1"] },
 ]
 
 # ---------------------------------------------------------------------------
@@ -87,7 +87,6 @@ allow-git = [
     # entry replaces a stale `iverc/commonware-upstream` fork URL that no
     # longer matches what's actually patched.
     "https://github.com/commonwarexyz/monorepo",
-    "https://github.com/sourcenetwork/acp",
     "https://github.com/sourcenetwork/backbone.git",
     "https://github.com/sourcenetwork/defradb.rs",
     "https://github.com/sourcenetwork/orbis-rs",
