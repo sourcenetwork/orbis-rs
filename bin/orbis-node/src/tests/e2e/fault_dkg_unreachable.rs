@@ -5,12 +5,8 @@
 //! participation, so the service returns an error immediately when it
 //! cannot establish connections to all participants.
 //!
-//! Harness-unification migration, PR 6: migrated off `fault_injection.rs`'s
-//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one
-//! — ported from blocking node 2's hex id on the other two nodes'
-//! `FaultNetworkController`s to simply aborting node 2 outright before
-//! `do_dkg`, same "the outcome is what's under test" reasoning as the
-//! below-threshold siblings. Fully dual-backend — no `#[ignore]` needed.
+//! Runs on [`super::live_node`]'s in-process bootstrap. Aborting node 2 is as
+//! unreachable as blocking it, and the outcome is what's under test.
 
 #[tokio::test]
 #[serial_test::serial]

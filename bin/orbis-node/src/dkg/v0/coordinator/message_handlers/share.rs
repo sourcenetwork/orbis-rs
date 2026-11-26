@@ -387,14 +387,19 @@ mod tests {
         DKG_SHARE_DOMAIN,
     };
     use bulletin::{dummy::DummyBulletin, r#trait::NodeInfo};
-    use common::blockchain::{
-        sign_node_message_with_hex_key, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
-    };
+    use common::blockchain::sign_node_message_with_hex_key;
     use crypto::r#trait::{Dkg as _, DkgRole};
     use crypto::DkgImpl;
     use std::sync::Arc;
 
-    /// Sorts before `TEST_ACCOUNT_PUBKEY_HEX` (which starts with "02"), so
+    /// Secp256k1 signing key of the accused responder.
+    const ACCUSED_HEX_KEY: &str =
+        "c4a48e2fce1481cd3294b4490f6678090ea98d3d0e5cd984558ab0968741b104";
+    /// Compressed public key of `ACCUSED_HEX_KEY`.
+    const ACCUSED_PUBKEY_HEX: &str =
+        "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
+
+    /// Sorts before `ACCUSED_PUBKEY_HEX` (which starts with "02"), so
     /// `node_key_for_canonical_node_id(2, [placeholder, accused])` resolves
     /// canonical node_id 2 to the accused key.
     const NODE1_PLACEHOLDER_KEY: &str =
@@ -402,7 +407,7 @@ mod tests {
     const RECEIVER_NODE_KEY: &str = "receiver-node-1";
 
     /// A fully-signed `SignedDkgShare` from node 2 ("accused",
-    /// `TEST_ACCOUNT_PUBKEY_HEX`) to node 1 (this test's coordinator). The
+    /// `ACCUSED_PUBKEY_HEX`) to node 1 (this test's coordinator). The
     /// nested commitment is deliberately garbage too — any decode failure
     /// (commitment or share) counts as proof of a bad share per
     /// `share_evidence_proves_failure`, so this doesn't need real DKG crypto,
@@ -418,7 +423,7 @@ mod tests {
             protocol_version: 0,
             request_id: request_id.clone(),
             signed_at: 100,
-            responder_node_key: TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+            responder_node_key: ACCUSED_PUBKEY_HEX.to_string(),
             origin_protocol: "pss_refresh".to_string(),
             accused_committee_scope: CommitteeScope::Current,
             signing_committee_scope: CommitteeScope::Current,
@@ -429,7 +434,7 @@ mod tests {
             crypto_backend: DkgImpl::name(),
         };
         let commitment_signature = sign_node_message_with_hex_key(
-            TEST_ACCOUNT_HEX_KEY,
+            ACCUSED_HEX_KEY,
             &commitment_statement.canonical_bytes(),
         )
         .expect("sign nested commitment statement");
@@ -443,7 +448,7 @@ mod tests {
             protocol_version: 0,
             request_id,
             signed_at: 100,
-            responder_node_key: TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+            responder_node_key: ACCUSED_PUBKEY_HEX.to_string(),
             receiver_node_key: RECEIVER_NODE_KEY.to_string(),
             origin_protocol: "pss_refresh".to_string(),
             accused_committee_scope: CommitteeScope::Current,
@@ -457,7 +462,7 @@ mod tests {
             crypto_backend: DkgImpl::name(),
         };
         let signature =
-            sign_node_message_with_hex_key(TEST_ACCOUNT_HEX_KEY, &statement.canonical_bytes())
+            sign_node_message_with_hex_key(ACCUSED_HEX_KEY, &statement.canonical_bytes())
                 .expect("sign share statement");
         SignedDkgShare {
             statement,
@@ -478,17 +483,16 @@ mod tests {
         let bulletin = Arc::new(DummyBulletin::new().await.expect("dummy bulletin"));
         bulletin
             .set_node_info(
-                TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+                ACCUSED_PUBKEY_HEX.to_string(),
                 NodeInfo {
                     peer_id: "accused-peer".to_string(),
-                    controller_key: TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+                    controller_key: ACCUSED_PUBKEY_HEX.to_string(),
                     whitelisted_policy_ids: vec![],
                     whitelisted_ring_ids: vec![],
                 },
             )
             .expect("seed accused NodeInfo");
-        let app_state =
-            Arc::new(create_test_app_state_with_bulletin(true, bulletin, db_name).await);
+        let app_state = Arc::new(create_test_app_state_with_bulletin(bulletin, db_name).await);
         let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
         let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
         let attempt = AttemptKey::test(session_id);
@@ -508,7 +512,7 @@ mod tests {
                     origin_protocol: "pss_refresh".to_string(),
                     current_node_keys: vec![
                         NODE1_PLACEHOLDER_KEY.to_string(),
-                        TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+                        ACCUSED_PUBKEY_HEX.to_string(),
                     ],
                     receiver_node_keys: vec![RECEIVER_NODE_KEY.to_string()],
                 });

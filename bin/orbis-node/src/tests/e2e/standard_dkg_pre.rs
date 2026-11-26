@@ -1,4 +1,4 @@
-//! Backend-neutral DKG, PRE, signing, refresh, and reshare contract.
+//! DKG, PRE, signing, refresh, and reshare contract.
 //!
 //! The fixture and assertions in this file are the product behavior. Backend
 //! adapters may materialize the fixture differently, but must expose the same
@@ -80,10 +80,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
                 NodeRef::Running(2),
             ],
             threshold: 2,
-            // Cosmos materializes this in genesis and lets it expire. Native
-            // clamps the live chain value to its production minimum and uses
-            // its diagnostic driver to make the refresh due. That difference
-            // belongs to the adapters, not this scenario.
+            // The adapter clamps the live chain value to its production
+            // minimum and uses its diagnostic driver to make the refresh due.
             pss_interval: Duration::from_secs(5),
             requires_pet: false,
             policy: ring_policy,

@@ -80,7 +80,7 @@ vera-acp = { workspace = true }
 vera-modules = { workspace = true }
 alloy-sol-types = "1"
 authz = { path = "../../crates/authz", default-features = false, features = ["test-helpers"] }
-bulletin = { path = "../../crates/bulletin", default-features = false, features = ["dummy-type"] }
+bulletin = { path = "../../crates/bulletin", default-features = false, features = ["dummy-type", "vera"] }
 bs58 = "0.5"
 serial_test = "3.2.0"
 ark-bls12-381 = "0.4"
@@ -106,9 +106,6 @@ bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "pre-share/bls12-381"]
 jubjub = ["crypto/jubjub", "cli-tool?/jubjub", "pre-share/jubjub"]
 redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
-cosmos = ["common/cosmos", "bulletin/cosmos-identity", "test-support/cosmos"]
-authz-vera-go = ["authz/vera-go", "authz/select-vera-go", "cosmos"]
-bulletin-vera-go = ["bulletin/vera-go", "bulletin/select-vera-go", "cosmos"]
 iroh = ["network/iroh"]
 # Shared E2E scenario machinery and deterministic fixture startup. The backend
 # is selected with the same production features (`authz-*` and `bulletin-*`)
@@ -117,7 +114,7 @@ iroh = ["network/iroh"]
 # diagnostic image, but this does not compile the service into this node.
 integration-test = ["cli-tool", "fixture-startup", "proto/unsafe-testing"]
 # Internal build capability used by Docker integration fixtures. It changes
-# identity/funding startup only; it does not expose diagnostic RPCs.
+# identity startup only; it does not expose diagnostic RPCs.
 fixture-startup = ["bulletin/fixture-startup"]
 # Dangerous diagnostic service and fault hooks. Diagnostic images opt in
 # explicitly; ordinary integration-test builds do not.
@@ -125,7 +122,7 @@ unsafe-testing = ["proto/unsafe-testing"]
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead
 # of Vera. Not used by the production binary.
-harness = ["authz/test-helpers", "network/shaping", "bulletin/dummy-type", "cosmos"]
+harness = ["authz/test-helpers", "network/shaping", "bulletin/dummy-type", "bulletin/vera"]
 fault-injection = ["network/fault-injection"]
 # Native in-process scale test (tests::scale_testing): many real orbis-node
 # instances running a full DKG ceremony in one process. Implies `harness`.

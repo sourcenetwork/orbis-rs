@@ -15,7 +15,7 @@
 //! Runs against its own ring/policy (not the one `standard_dkg_pre.rs`'s
 //! shared scenarios provision) so the `ORBIS_WEBAUTHN_RP_ID`/
 //! `ORBIS_WEBAUTHN_ORIGIN` node env vars this test sets — the opt-in
-//! pass-through in `test_support::network::{vera,cosmos}` — apply only to
+//! pass-through in `test_support::network::vera` — apply only to
 //! this test's own containers, never to a scenario that must keep rejecting
 //! WebAuthn-authorized PRE requests.
 

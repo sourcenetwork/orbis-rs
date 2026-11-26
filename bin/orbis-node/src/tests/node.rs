@@ -25,11 +25,9 @@ use crate::{
     store_secret::StoreSecretServiceImpl,
     Args, InitializedNode, NetworkIngressArgs, NodeConfig,
 };
-use authz::r#trait::Authz;
-use authz::AuthzImpl;
+use authz::{dummy::DummyAuthZ, r#trait::Authz};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::Bulletin;
-use common::blockchain::ChainConfigBuilder;
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl};
@@ -85,11 +83,8 @@ async fn make_test_node_config(
 ) -> (NodeConfig, String) {
     let db_path = test_db_path(test_name);
     let network: Arc<dyn Network> = Arc::new(make_loopback_test_network().await);
-    let authz: Arc<dyn Authz> = Arc::new(
-        AuthzImpl::new(ChainConfigBuilder::default())
-            .await
-            .expect("Failed to initialize Authz"),
-    );
+    let authz: Arc<dyn Authz> =
+        Arc::new(DummyAuthZ::new().await.expect("Failed to initialize Authz"));
     let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
         DummyBulletin::new()
             .await
@@ -151,20 +146,11 @@ async fn make_bootstrap_identity(
     let local_storage = LocalStorageImpl::new("test-password".to_string(), db_path.clone())
         .expect("Failed to create local storage");
     let runtime_base_path = project_root::get_project_root().expect("resolve project root");
-    let signer = create_and_store_node_key(
-        local_storage.clone(),
-        ChainConfigBuilder::default().build(),
-        &runtime_base_path,
-    )
-    .expect("Failed to create and store node key");
+    let identity = create_and_store_node_key(local_storage.clone(), &runtime_base_path)
+        .expect("Failed to create and store node key");
     let network: Arc<dyn Network> = Arc::new(make_loopback_test_network().await);
 
-    (
-        network,
-        local_storage,
-        db_path,
-        bulletin::startup::cosmos::identity(&signer),
-    )
+    (network, local_storage, db_path, identity)
 }
 
 fn node_info_test_args(
@@ -783,11 +769,8 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
         .expect_err("dkg should not be registered during bootstrap");
     assert_eq!(bootstrap_err.code(), Code::Unimplemented);
 
-    let authz: Arc<dyn Authz> = Arc::new(
-        AuthzImpl::new(ChainConfigBuilder::default())
-            .await
-            .expect("Failed to initialize Authz"),
-    );
+    let authz: Arc<dyn Authz> =
+        Arc::new(DummyAuthZ::new().await.expect("Failed to initialize Authz"));
     let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
         DummyBulletin::new()
             .await
@@ -1183,40 +1166,22 @@ async fn test_deterministic_peer_id_from_secret() {
 #[test]
 #[serial_test::serial]
 fn test_create_and_store_node_key() {
-    use common::blockchain::ChainConfig;
-
     let db_path = test_db_path("test_create_and_store_node_key");
     let local_storage = LocalStorageImpl::new("test-password".to_string(), db_path.clone())
         .expect("Failed to create local storage");
+    let runtime_base_path = tempfile::tempdir().expect("identity directory");
 
-    let config = ChainConfig::local();
-    let runtime_base_path = project_root::get_project_root().expect("resolve project root");
+    let first = create_and_store_node_key(local_storage.clone(), runtime_base_path.path())
+        .expect("Should create key successfully");
+    let key = hex::decode(&first.node_key).expect("node key is hex");
+    assert_eq!(key.len(), 33, "node key is a compressed secp256k1 key");
+    assert!(matches!(key[0], 0x02 | 0x03));
+    assert_eq!(first.public_address, first.node_key);
 
-    // First call should create a new key
-    let result =
-        create_and_store_node_key(local_storage.clone(), config.clone(), &runtime_base_path);
-    assert!(
-        result.is_ok(),
-        "Should create key successfully: {:?}",
-        result.err()
-    );
-
-    let signer1 = result.unwrap();
-    let address1 = signer1.address();
-    assert!(
-        address1.starts_with("vera1"),
-        "Address should be bech32 with vera1 prefix, got: {}",
-        address1
-    );
-
-    // Second call should return the same address (idempotent)
-    let result2 = create_and_store_node_key(local_storage.clone(), config, &runtime_base_path);
-    assert!(result2.is_ok(), "Second call should succeed");
-
-    let signer2 = result2.unwrap();
-    let address2 = signer2.address();
+    let second = create_and_store_node_key(local_storage, runtime_base_path.path())
+        .expect("Second call should succeed");
     assert_eq!(
-        address1, address2,
+        first.node_key, second.node_key,
         "Same key should be returned on subsequent calls"
     );
 

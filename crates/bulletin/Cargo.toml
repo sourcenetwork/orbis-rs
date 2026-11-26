@@ -31,27 +31,23 @@ getrandom = { version = "0.2", features = ["std"], optional = true }
 zeroize = { workspace = true, optional = true }
 
 [features]
-default = ["vera-go"]
-vera-go = ["cosmos-identity"]
-cosmos-identity = ["common/cosmos", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
-# Selects deterministic identity and devnet-funding startup for whichever
-# production backend is selected. This is deliberately separate from the
+default = ["vera"]
+# Selects deterministic identity startup. This is deliberately separate from the
 # node's dangerous `unsafe-testing` diagnostic surface.
-fixture-startup = ["common/funding"]
+fixture-startup = []
 vera = ["common/vera", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:alloy-sol-types", "dep:vera-modules", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
 # Compiles the in-memory mock type without selecting it as the production
 # implementation. Used by in-process tests and benchmarks.
 dummy-type = []
 # The `BulletinFactory`/`PreparedBulletin` traits, the services composer and
-# factory impls. Separate from `native`/`vera` (which just compile the
-# backend module for direct use — `cli-tool`'s admin tooling needs those
-# without ever touching a factory). Implies `authz/startup` since the composer references
+# factory impl. Separate from `vera` (which just compiles the backend module
+# for direct use — `cli-tool`'s admin tooling needs it without ever touching
+# a factory). Implies `authz/startup` since the composer references
 # `authz::startup::{AuthzFactory, PreparedAuthz}` directly.
 startup = ["common/startup", "authz/startup"]
-# Select the corresponding `BulletinFactoryImpl`. Implies `startup` since
-# selecting one *is* constructing a factory.
+# Select `BulletinFactoryImpl`. Implies `startup` since selecting it *is*
+# constructing a factory.
 select-vera = ["vera", "startup"]
-select-vera-go = ["vera-go", "startup"]
 
 [[test]]
 name = "vera_service"
@@ -68,8 +64,6 @@ commonware-math = "=2026.10.0"
 tempfile.workspace = true
 serial_test = "3.2.0"
 tokio = { workspace = true, features = ["full", "process"] }
-# Vera-backend tests use the Docker integration harness (VeraGoTestContainer).
-test-support = { path = "../test-support" }
 local-storage = { path = "../local-storage", features = ["redb"] }
 [lints]
 workspace = true

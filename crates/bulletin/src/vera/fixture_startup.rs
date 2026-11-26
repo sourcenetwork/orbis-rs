@@ -1,4 +1,4 @@
-//! Deterministic Hub/native startup used by integration fixtures.
+//! Deterministic Vera startup used by integration fixtures.
 
 use super::startup::VeraStartupPolicy;
 

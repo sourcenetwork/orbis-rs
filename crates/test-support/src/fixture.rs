@@ -1,20 +1,11 @@
-//! Backend-neutral E2E scenario vocabulary: a declarative [`ScenarioFixture`]
-//! describing the state a test wants ("3 running nodes, one ring, one
-//! document..."), resolved by a concrete [`TestEnvironment`] implementation
-//! into real backend state (a running Cosmos or native-Vera cluster) without
-//! the test ever naming a Docker service, a chain RPC call, or a backend
-//! enum.
+//! E2E scenario vocabulary: a declarative [`ScenarioFixture`] describing the
+//! state a test wants ("3 running nodes, one ring, one document..."),
+//! resolved by a concrete [`TestEnvironment`] implementation into a running
+//! Vera cluster without the test ever naming a Docker service or a chain RPC
+//! call.
 //!
-//! This module is purely additive: it defines the shared types and traits,
-//! not a selection mechanism or a concrete implementation for either
-//! backend. See the harness-unification plan for the PRs that build on top
-//! of it.
-//!
-//! Field shapes here are drawn directly from the `with_module_genesis`
-//! patches already used across `bin/orbis-node/src/tests/*` (ring config,
-//! `reporting_genesis_json`, `upgrade_info`, `node_infos`, `node_demerits`)
-//! — this type family exists to stop describing that same state as raw JSON
-//! once per test, not to invent new scenario shapes.
+//! This module defines the types and traits only; the implementation is
+//! `VeraTestEnvironment` in `bin/orbis-node/src/tests/e2e/vera_environment.rs`.
 
 use crate::admin::{DocumentId, PolicyId, RingId, RingSpec, RingStateFacts, RingView};
 use crate::network::NodeInfo;
@@ -117,8 +108,7 @@ pub struct RingFixture {
 #[derive(Clone, Debug)]
 pub struct PolicyFixture {
     pub id: FixtureId,
-    /// Raw ACP policy source — already backend-neutral (both chains
-    /// evaluate the same policy language), so no further abstraction here.
+    /// Raw ACP policy source.
     pub definition: String,
 }
 
@@ -130,7 +120,7 @@ pub struct RelationshipFixture {
     pub relation: String,
     /// A did:key string, computed by the test the same way it is today
     /// (`did_key::generate`/`vera_crypto::secp256k1::did_from_secp256k1_pubkey`)
-    /// — identity DIDs are already backend-neutral, no fixture type needed.
+    /// — no fixture type needed.
     pub subject_did: String,
 }
 
@@ -180,11 +170,9 @@ pub struct ScenarioFixture {
     pub key_derivations: Vec<KeyDerivationFixture>,
     pub node_demerits: Vec<NodeDemeritFixture>,
     /// Stand up a Defra container alongside the rest of the environment, for
-    /// a ring created with `RingSpec::pre_share_endpoints` set. Read by both
-    /// concrete environments (`CosmosTestEnvironment`/`VeraTestEnvironment`),
-    /// each exposing its own `defra_url`/`defra_container_url` escape
-    /// hatches (not part of any shared trait — see each one's own doc
-    /// comment).
+    /// a ring created with `RingSpec::pre_share_endpoints` set. Read by
+    /// `VeraTestEnvironment`, which exposes `defra_url`/`defra_container_url`
+    /// through `DefraTestDriver`.
     pub defra: bool,
 }
 
@@ -222,20 +210,15 @@ pub trait TestEnvironment: Sized {
     async fn provision(fixture: ScenarioFixture) -> Self;
     fn fixture(&self) -> &ProvisionedFixture;
 
-    /// The chain/deployment identifier scenario code needs to authenticate
-    /// backend-specific requests (e.g. a JWT's issuer-chain claim) — Cosmos's
-    /// chain id string, native's deployment label. Genuinely backend-specific
-    /// and cheap, so a plain sync getter rather than another driver trait.
+    /// The deployment label scenario code needs to authenticate requests
+    /// (e.g. a JWT's issuer-chain claim). Cheap, so a plain sync getter
+    /// rather than another driver trait.
     fn chain_id(&self) -> String;
 
-    /// Whether `BulletinTestDriver::store_document`/`read_document` are real
-    /// on this backend — Cosmos: yes (`bulletin::vera`'s generic post
-    /// primitive); native: no equivalent direct-write path exists. Default
-    /// `false` so native needs no override. A scenario must check this
-    /// before calling `store_document` rather than relying on it panicking
-    /// — "never fake success, report unsupported explicitly" without a
-    /// generic `Capability<T>` wrapper type, now that there's exactly one
-    /// concrete environment per build to ask directly.
+    /// Whether `BulletinTestDriver::store_document`/`read_document` are real.
+    /// Vera has no direct-write path, so the default is `false`. A scenario
+    /// must check this before calling `store_document` rather than relying
+    /// on it panicking.
     fn supports_direct_document_write(&self) -> bool {
         false
     }
@@ -262,8 +245,7 @@ pub struct PersistedKdfParams {
     pub version: u32,
 }
 
-/// Node lifecycle control, backend-neutral. Replaces direct
-/// `.cosmos()`/`.native()` escape hatches and Docker-service-name knowledge.
+/// Node lifecycle control, without Docker-service-name knowledge.
 #[async_trait::async_trait]
 pub trait NetworkTestDriver {
     fn nodes(&self) -> &[NodeInfo];
@@ -279,10 +261,7 @@ pub trait NetworkTestDriver {
     }
 
     /// The "peer_id@host:port" string a report should target for
-    /// `nodes()[node_index]`. Cosmos's own dialable address uses an
-    /// iroh-internal port not reachable by container name from another
-    /// container, so it must be rewritten to the Compose service's own
-    /// name/port; native's `p2p_address` is already directly usable as-is.
+    /// `nodes()[node_index]`.
     fn reporting_peer_address(&self, node_index: usize) -> String;
 }
 
@@ -316,8 +295,8 @@ pub trait AuthorizationTestDriver {
     async fn create_policy(&self, definition: &str) -> PolicyId;
 
     /// Register an ACP object under `policy` so a later `grant` can target
-    /// it. Both backends always did this as a required first step before
-    /// granting a relationship on a new object — split out as its own
+    /// it. Vera requires this as a first step before granting a
+    /// relationship on a new object — split out as its own
     /// method rather than folded into `grant`, since some callers (e.g. a
     /// ring's own governance object) register without ever granting.
     async fn register_object(&self, policy: &PolicyId, resource: &str, object_id: &str);
@@ -389,10 +368,9 @@ pub trait BulletinTestDriver {
     ) -> String;
 
     /// Compute the id a document would get from `register_document` with
-    /// these exact fields, without actually registering it. Pure/sync on
-    /// both backends — Cosmos's content-addressed id and native's
-    /// `ThresholdObject::id()` are both deterministic functions of these
-    /// fields alone, no chain round-trip needed. Used for the "inline
+    /// these exact fields, without actually registering it. Pure/sync —
+    /// `ThresholdObject::id()` is a deterministic function of these fields
+    /// alone, no chain round-trip needed. Used for the "inline
     /// document, never stored" sub-case, where a report must still carry
     /// the id the document *would* have.
     fn predict_document_id(
@@ -406,8 +384,7 @@ pub trait BulletinTestDriver {
     ) -> String;
 
     /// Register a key-derivation object and return its id. Deriving the
-    /// *public key* for it is pure curve math, identical on both backends —
-    /// that stays in scenario code (which already depends on `crypto`),
+    /// *public key* for it is pure curve math — that stays in scenario code (which already depends on `crypto`),
     /// not here.
     async fn register_key_derivation(
         &self,
@@ -425,18 +402,16 @@ pub trait BulletinTestDriver {
     async fn update_membership(&self, ring: &RingId, new_members: Vec<String>, new_threshold: u32);
 
     /// Make running node `node_index` eligible to join `ring` through
-    /// [`Self::update_membership`]. Native authorizes every running fixture
-    /// node while provisioning. Cosmos only authorizes the initial
-    /// committee, so that adapter records the candidate's reachable address
-    /// and whitelists it. The default is that preparation already happened.
+    /// [`Self::update_membership`]. The default is that preparation already
+    /// happened: `VeraTestEnvironment` authorizes every running fixture node
+    /// while provisioning.
     async fn authorize_reshare_candidate(&self, _ring: &RingId, _node_index: usize) {}
 
     /// Force a PSS/share-refresh ceremony to become due right now for
     /// `ring`, bypassing however long a real wait against its configured
     /// `pss_interval` would take — a test-only diagnostic hook, not a
-    /// production operation. Default no-op: a backend whose ring already
-    /// uses a short enough interval (Cosmos's genesis-seeded rings always
-    /// do) never needs to override this.
+    /// production operation. Default no-op: an environment whose ring
+    /// already uses a short enough interval never needs to override this.
     async fn force_refresh_due(&self, _ring: &RingId, _ring_pk: &str, _members: &[String]) {}
 
     /// Make a share refresh due the next time `members` start.
@@ -455,23 +430,18 @@ pub trait BulletinTestDriver {
     }
 
     /// Cancel an announced-but-stuck reshare, reverting `ring` to its
-    /// pre-reshare committee/threshold. Real on both backends (native's
-    /// `RingUpdate::CancelReshare`, Cosmos's `CancelRingReshareByAcp`).
+    /// pre-reshare committee/threshold (`RingUpdate::CancelReshare`).
     async fn cancel_reshare(&self, ring: &RingId);
 
     /// Schedule a protocol-version upgrade on an already-finalized
-    /// (DKG'd) ring. Real on both backends with identical constraints —
-    /// Cosmos's `ScheduleRingUpgradeByAcp` and native's `RingUpdate::
-    /// ScheduleUpgrade` both require the ring to already be active and
-    /// both enforce the same 600-second minimum lead between "now" and
-    /// `activation_time`, so there's no backend-specific timing model to
-    /// hide here.
+    /// (DKG'd) ring. `RingUpdate::ScheduleUpgrade` requires the ring to
+    /// already be active and enforces a 600-second minimum lead between
+    /// "now" and `activation_time`.
     async fn schedule_ring_upgrade(&self, ring: &RingId, next_version: u64, activation_time: u64);
 
     /// Current demerit points recorded against `node_key` on `ring`, or 0
-    /// if none. Real on both backends. Deliberately ignores reset-interval
-    /// decay (Cosmos's chain applies it server-side already; native's
-    /// `NodeDemerits::effective_points` would need the ring's own
+    /// if none. Deliberately ignores reset-interval decay
+    /// (`NodeDemerits::effective_points` would need the ring's own
     /// `reset_interval` threaded through for no practical benefit — every
     /// fixture built so far uses a `reset_interval` far longer than any
     /// test run, so points never actually decay mid-test).

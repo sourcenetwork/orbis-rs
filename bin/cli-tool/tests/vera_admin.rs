@@ -120,7 +120,7 @@ async fn change_node(
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn vera_admin_controls_nodes_with_signed_current_authority() {
     let deployment = 9078;
     let trusted = *KeySet::builder()
@@ -309,7 +309,7 @@ async fn vera_admin_controls_nodes_with_signed_current_authority() {
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn vera_admin_provisions_ring_and_recovers_exact_results() {
     let deployment = 9077;
     let trusted = *KeySet::builder()
@@ -522,4 +522,371 @@ async fn vera_admin_provisions_ring_and_recovers_exact_results() {
         true,
     )
     .await;
+}
+
+#[tokio::test]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
+async fn vera_admin_registers_signing_derivations_under_delegated_scope() {
+    use crypto::{r#trait::ThresholdSigner, CryptoSerialize, SignImpl};
+    use vera_client::{
+        rings::{
+            encode_ring_participant_request, sign_ring_participant_request, RingParticipantCommand,
+            RingParticipantRequest, RingPublicKeys,
+        },
+        threshold_objects::{KeyDerivation, ObjectRecord, ThresholdObject},
+        VERA_ADDRESS,
+    };
+    use vera_domain::NativeTx;
+
+    let deployment = 9079;
+    let trusted = *KeySet::builder()
+        .seed(deployment)
+        .build()
+        .unwrap()
+        .epoch_info()
+        .output
+        .public()
+        .public();
+    let cluster = TestCluster::builder()
+        .nodes(4)
+        .seed(deployment)
+        .chain_id(deployment)
+        .preset(ConsensusPreset::Normal)
+        .build()
+        .await
+        .unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .observe(Duration::from_millis(100))
+        .wait_for_height(3, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let client = VeraClient::new(cluster.node(0).rpc_url());
+    let root: B256 = client
+        .read_finalized_revision(1, &trusted)
+        .await
+        .unwrap()
+        .parent_hash
+        .parse()
+        .unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let base = local.path();
+    let config = json!({"endpoint": cluster.node(0).rpc_url(), "deployment_id": deployment,
+        "deployment_root": hex::encode(root), "consensus_key": hex::encode(trusted.encode())});
+    std::fs::write(base.join("vera.json"), serde_json::to_vec(&config).unwrap()).unwrap();
+    std::fs::write(base.join("password"), "test password\n").unwrap();
+    let identity = admin(base, &["worker"], true).await;
+    let worker_did = identity["worker_did"].as_str().unwrap().to_owned();
+    let authority = SigningKey::from_slice(&[31; 32]).unwrap();
+    std::fs::write(base.join("actor-key"), hex::encode([31; 32])).unwrap();
+    let node_key = hex::encode(authority.verifying_key().to_sec1_bytes());
+    let actor = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
+        authority.verifying_key().to_sec1_bytes().as_ref(),
+    )
+    .unwrap();
+
+    let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
+    let definition = "name: vera_admin_derivation\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n";
+    let nonce = vera_client::random_policy_nonce();
+    let policy = vera_client::predict_policy_id(
+        definition,
+        &vera_client::PolicyMarshalingType::ShortYaml,
+        &nonce,
+        worker.did(),
+    )
+    .unwrap();
+    let created = client
+        .native_create_policy(&worker, definition.as_bytes(), 1, nonce)
+        .await
+        .unwrap();
+    receipt(&client, created.transaction_hash, &trusted).await;
+    let policy_bytes = B256::from_slice(&hex::decode(&policy).unwrap());
+    let registered = client
+        .native_register_object(&worker, policy_bytes, &policy, "ring_policy")
+        .await
+        .unwrap();
+    receipt(&client, registered.transaction_hash, &trusted).await;
+    let granted = client
+        .native_set_relationship(
+            &worker,
+            policy_bytes,
+            "ring_policy",
+            &policy,
+            "creator",
+            &actor,
+        )
+        .await
+        .unwrap();
+    receipt(&client, granted.transaction_hash, &trusted).await;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let registration = sign_node_request(
+        NodeRequest {
+            deployment_root: root.0,
+            deployment_id: deployment,
+            node_key: node_key.clone(),
+            sequence: 0,
+            command: NodeCommand::Register(NodeInfo {
+                peer_id: "ab".repeat(32),
+                controller_key: node_key.clone(),
+                allowed_policy_ids: vec![policy.clone()],
+                allowed_ring_ids: Vec::new(),
+            }),
+            expires_at: now + 300,
+        },
+        &authority,
+    )
+    .unwrap();
+    let id = client
+        .submit_node_request(&worker, &registration)
+        .await
+        .unwrap();
+    receipt(&client, id, &trusted).await;
+
+    let expires_at = (now + 300).to_string();
+    let delegate = |scope: &'static str, output: &'static str| {
+        let worker_did = worker_did.clone();
+        let expires_at = expires_at.clone();
+        async move {
+            admin(
+                base,
+                &[
+                    "delegate",
+                    "--worker-did",
+                    &worker_did,
+                    "--scope",
+                    scope,
+                    "--expires-at",
+                    &expires_at,
+                    "--key-file",
+                    "actor-key",
+                    "--output",
+                    output,
+                ],
+                true,
+            )
+            .await
+        }
+    };
+    let ring_delegation = delegate("orbis:ring", "ring-token").await;
+    assert_eq!(ring_delegation["subject"], worker_did);
+    assert_eq!(ring_delegation["scope"], "orbis:ring");
+    let ring = RingConfig {
+        policy_id: policy.clone(),
+        peer_node_keys: vec![node_key.clone()],
+        threshold: 1,
+        pss_interval: 86400,
+        current_version: 0,
+        requires_pet: false,
+        nonce: [3; 32],
+        trusted_auth_relay_dids: None,
+        reporting: ReportingConfig::default(),
+        pre_share_endpoints: Vec::new(),
+    };
+    let ring_id = ring.id().unwrap();
+    std::fs::write(
+        base.join("create.json"),
+        serde_json::to_vec(&RingCommand::Create(ring)).unwrap(),
+    )
+    .unwrap();
+    let prepared = admin(
+        base,
+        &["prepare-ring", "create.json", "--token-file", "ring-token"],
+        true,
+    )
+    .await;
+    assert_eq!(admin(base, &["submit"], true).await["success"], true);
+    admin(
+        base,
+        &["acknowledge", prepared["submission_id"].as_str().unwrap()],
+        true,
+    )
+    .await;
+
+    let object_delegation = delegate("orbis:object:store", "object-token").await;
+    assert_eq!(object_delegation["scope"], "orbis:object:store");
+    let token = std::fs::read(base.join("object-token")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(base.join("object-token"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    admin(
+        base,
+        &[
+            "delegate",
+            "--worker-did",
+            &worker_did,
+            "--scope",
+            "orbis:object:store",
+            "--expires-at",
+            &expires_at,
+            "--key-file",
+            "actor-key",
+            "--output",
+            "object-token",
+        ],
+        false,
+    )
+    .await;
+    assert_eq!(std::fs::read(base.join("object-token")).unwrap(), token);
+
+    let derivation = KeyDerivation {
+        ring_id: ring_id.clone(),
+        derivation: "tenant/key".into(),
+        policy_id: policy.clone(),
+        resource: "ring".into(),
+        permission: "sign".into(),
+    };
+    std::fs::write(
+        base.join("derivation.json"),
+        serde_json::to_vec(&derivation).unwrap(),
+    )
+    .unwrap();
+    let derivation_id = ThresholdObject::KeyDerivation(derivation.clone())
+        .id()
+        .unwrap();
+    assert_eq!(
+        admin(base, &["derivation-id", "derivation.json"], true).await["derivation_id"],
+        derivation_id
+    );
+
+    // A pending ring refuses registration; the refusal is recovered and acknowledged.
+    let pending = admin(
+        base,
+        &[
+            "prepare-derivation",
+            "derivation.json",
+            "--token-file",
+            "object-token",
+        ],
+        true,
+    )
+    .await;
+    let refused = admin(base, &["submit"], false).await;
+    assert_eq!(refused["submission_id"], pending["submission_id"]);
+    assert_eq!(refused["success"], false);
+    admin(
+        base,
+        &["acknowledge", pending["submission_id"].as_str().unwrap()],
+        true,
+    )
+    .await;
+    assert!(admin(base, &["derivation", &derivation_id], true).await["derivation"].is_null());
+
+    let (_, ring_key) = crypto::helpers::generate_keypair().unwrap();
+    let ring_key = hex::encode(ring_key.to_bytes().unwrap());
+    let confirmation = sign_ring_participant_request(
+        RingParticipantRequest {
+            deployment_root: root.0,
+            deployment_id: deployment,
+            ring_id: ring_id.clone(),
+            node_key: node_key.clone(),
+            command: RingParticipantCommand::Confirm(RingPublicKeys {
+                public_key: ring_key.clone(),
+                pet_public_key: None,
+            }),
+            expires_at: now + 300,
+        },
+        &authority,
+    )
+    .unwrap();
+    let wire = worker
+        .sign_native_tx(
+            VERA_ADDRESS,
+            encode_ring_participant_request(&confirmation).unwrap(),
+        )
+        .unwrap();
+    let id = NativeTx::decode_wire(&wire).unwrap().tx_id().0;
+    assert_eq!(client.send_native_tx(&wire).await.unwrap(), id);
+    receipt(&client, id, &trusted).await;
+
+    // A ring-management delegation does not authorize object storage.
+    let mut other = derivation.clone();
+    other.derivation = "tenant/other".into();
+    std::fs::write(base.join("other.json"), serde_json::to_vec(&other).unwrap()).unwrap();
+    let misscoped = admin(
+        base,
+        &[
+            "prepare-derivation",
+            "other.json",
+            "--token-file",
+            "ring-token",
+        ],
+        true,
+    )
+    .await;
+    assert_eq!(admin(base, &["submit"], false).await["success"], false);
+    admin(
+        base,
+        &["acknowledge", misscoped["submission_id"].as_str().unwrap()],
+        true,
+    )
+    .await;
+    let other_id = ThresholdObject::KeyDerivation(other).id().unwrap();
+    assert!(admin(base, &["derivation", &other_id], true).await["derivation"].is_null());
+
+    let prepared = admin(
+        base,
+        &[
+            "prepare-derivation",
+            "derivation.json",
+            "--token-file",
+            "object-token",
+        ],
+        true,
+    )
+    .await;
+    assert_ne!(prepared["submission_id"], pending["submission_id"]);
+    assert_eq!(
+        admin(
+            base,
+            &[
+                "prepare-derivation",
+                "derivation.json",
+                "--token-file",
+                "object-token"
+            ],
+            true
+        )
+        .await,
+        prepared
+    );
+    let result = admin(base, &["submit"], true).await;
+    assert_eq!(result["submission_id"], prepared["submission_id"]);
+    assert_eq!(result["success"], true);
+    assert_eq!(admin(base, &["submit"], true).await, result);
+    admin(
+        base,
+        &["acknowledge", prepared["submission_id"].as_str().unwrap()],
+        true,
+    )
+    .await;
+
+    let read = admin(base, &["derivation", &derivation_id], true).await;
+    let record: ObjectRecord = serde_json::from_value(read["derivation"].clone()).unwrap();
+    assert_eq!(record.id, derivation_id);
+    assert_eq!(record.deployment_root, root.0);
+    assert_eq!(record.creator, actor);
+    assert_eq!(
+        record.object,
+        ThresholdObject::KeyDerivation(derivation.clone())
+    );
+    let metadata = SignImpl::encode_metadata(&policy, "ring", "sign");
+    let ring_point = <crypto::GroupAffine as crypto::CryptoDeserialize>::from_bytes(
+        &hex::decode(&ring_key).unwrap(),
+    )
+    .unwrap();
+    let expected =
+        SignImpl::derive_public_key(&ring_point, b"tenant/key", Some(&metadata)).unwrap();
+    assert_eq!(
+        read["derived_public_key"],
+        hex::encode(expected.to_bytes().unwrap())
+    );
 }

@@ -1,8 +1,8 @@
 # Orbis CLI Tool
 
-## Native Vera administration
+## Vera administration
 
-`vera-admin` manages native participant nodes and threshold rings.
+`vera-admin` manages participant nodes, threshold rings and signing derivations.
 
 Build the operator tool with `cargo build -p cli-tool --features vera --bin vera-admin`.
 Its trust file is the same shape as the `bulletin` section of orbis-node's
@@ -24,6 +24,18 @@ vera-admin --vera-config vera.json --directory operator --password-file password
 
 Before preparing a request, obtain a `ManageRings` delegation from the policy actor
 to the DID printed by `worker`. The actor needs the corresponding ACP permission.
+`delegate` signs one locally on the actor's machine without contacting the service
+or opening worker storage; it writes the bearer token to a new file readable only
+by its owner and refuses to overwrite an existing one:
+
+```sh
+vera-admin --vera-config vera.json delegate --worker-did "$WORKER_DID" \
+  --scope orbis:ring --expires-at "$UNIX_EXPIRY" --key-file actor-key --output ring-token
+```
+
+`--scope` is `orbis:ring` for ring requests or `orbis:object:store` for signing
+derivations. The key file holds the actor's secp256k1 key in the same forms
+`sign-node` accepts.
 Participant nodes must already be registered. `create.json` contains the SDK's
 `RingCommand` JSON, for example:
 
@@ -52,8 +64,7 @@ Participant nodes must already be registered. `create.json` contains the SDK's
 ```
 
 Choose a distinct nonce for each new ring and sort participant keys. The resulting
-ring is pending DKG; pass its ID to the existing `dkg` command against a native
-Orbis node. `prepare-ring` also accepts SDK `Update` and `Cancel` requests. Read
+ring is pending DKG; pass its ID to the `dkg` command against an Orbis node. `prepare-ring` also accepts SDK `Update` and `Cancel` requests. Read
 the certified ring sequence before constructing an update.
 
 Preparation persists the signed request before network submission. Repeating it
@@ -68,6 +79,46 @@ Ring reads include their certified revision and timestamp and enforce the trust
 file's freshness bound. `--minimum-revision` rejects older evidence. The tool
 checks the configured deployment root before opening any worker store or making
 a submission.
+
+### Signing derivations
+
+A `sign` session names a key derivation registered on Vera for an active ring.
+`derivation.json` contains the SDK's `KeyDerivation` JSON:
+
+```json
+{
+  "ring_id": "<64-character ring ID>",
+  "derivation": "tenant/key",
+  "policy_id": "<64-character policy ID>",
+  "resource": "document",
+  "permission": "sign"
+}
+```
+
+```sh
+vera-admin --vera-config vera.json derivation-id derivation.json
+vera-admin --vera-config vera.json delegate --worker-did "$WORKER_DID" \
+  --scope orbis:object:store --expires-at "$UNIX_EXPIRY" --key-file actor-key \
+  --output object-token
+vera-admin --vera-config vera.json --directory operator --password-file password \
+  prepare-derivation derivation.json --token-file object-token
+vera-admin --vera-config vera.json --directory operator --password-file password submit
+vera-admin --vera-config vera.json --directory operator --password-file password \
+  acknowledge "$SUBMISSION_ID"
+vera-admin --vera-config vera.json derivation "$DERIVATION_ID"
+```
+
+`derivation-id` runs locally and prints the ID that `sign --derivation-id` takes.
+Registration requires an `orbis:object:store` delegation from the actor, who is
+recorded as the derivation's creator, and is refused while the ring is pending
+DKG. A derivation is immutable: registering the same one again is refused. It
+uses the same journal, `submit` and acknowledgement as ring commands.
+`derivation` reads the certified record and prints `derived_public_key`, the key
+Sign signatures under it verify against, computed from the ring's certified
+public key for the curve `vera-admin` was built with (`null` until the ring is
+active).
+
+### Node and controller changes
 
 For node/controller changes, first read the current certified node record. Its
 `sequence` is the value to sign for the next command; registration uses zero.
@@ -106,20 +157,18 @@ acknowledgement as ring commands.
 The focused process fixture covers creation, certified reads, process-restart
 recovery, rejected requests and acknowledgement guards. A separate node workflow
 covers routes, policy/ring admission, controller transfer and former-controller
-rejection:
+rejection, and a derivation workflow covers local delegation, refusal for a
+pending ring and for a ring-management token, registration and the derived
+public key. CI runs them in the `Native Vera services` job:
 
 ```sh
-HUBD_BINARY=/path/to/hubd cargo test -p cli-tool --features vera \
+VERAD_BINARY=/path/to/verad cargo test -p cli-tool --features vera \
   --test vera_admin -- --ignored
 ```
 
-## Existing service commands
+## Node commands
 
-A command-line tool for interacting with an **Orbis** network. Intended primarily for **development and testing**, but can be pointed at any Vera chain and orbis node via the network flags below.
-
-## Building
-
-From the workspace root:
+`cli-tool` talks to an Orbis node over gRPC and runs local cryptography.
 
 ```bash
 cargo build -p cli-tool
@@ -130,164 +179,56 @@ Optional crypto backends (see `Cargo.toml`):
 - `default`: BLS12-381
 - `jubjub`: enable with `--no-default-features --features jubjub`
 
-## Network & signing configuration
+### Global flags
 
-Every subcommand shares one set of global flags (env var equivalents in parentheses; flag > env var > default):
+Env var equivalents in parentheses; flag > env var > default:
 
 | Flag | Env var | Default | Used by |
 |------|---------|---------|---------|
 | `-e, --endpoint <URL>` | `ORBIS_ENDPOINT` | `http://localhost:50051` | orbis node gRPC service |
-| `--chain-id <ID>` | `ORBIS_CHAIN_ID` | `vera-localnet` | Vera chain ID |
-| `--rpc-url <URL>` | `ORBIS_RPC_URL` | `http://localhost:26657` | Tendermint RPC |
-| `--rest-url <URL>` | `ORBIS_REST_URL` | `http://localhost:1317` | Cosmos REST API |
-| `--chain-grpc-url <URL>` | `ORBIS_CHAIN_GRPC_URL` | `http://localhost:9090` | Vera gRPC (distinct from `--endpoint`) |
-| `--account-prefix <PREFIX>` | `ORBIS_ACCOUNT_PREFIX` | `vera` | Bech32 address prefix |
-| `--signing-key <HEX>` | `ORBIS_SIGNING_KEY` | *(none)* | Signs any chain-writing command |
+| `--chain-id <ID>` | `ORBIS_CHAIN_ID` | `vera-localnet` | Chain ID bound into PRE requests |
+| `--signing-key <HEX>` | `ORBIS_SIGNING_KEY` | *(none)* | `derive-signer-did` |
 
-`--signing-key`/`ORBIS_SIGNING_KEY` has **no default** and is required by any command that writes to chain (policy/object/relationship, bulletin namespace/collaborator, ring lifecycle commands, `fund`, `post-key-derivation`). Commands that only talk to the orbis node over gRPC, or that are purely local, don't need it.
-
-**Pointing at a real testnet:**
-
-```bash
-cargo run -p cli-tool -- \
-  --chain-id vera-testnet-1 \
-  --rpc-url https://rpc.testnet.example \
-  --rest-url https://rest.testnet.example \
-  --chain-grpc-url https://grpc.testnet.example \
-  --signing-key $MY_PRIVATE_KEY_HEX \
-  add-policy-to-chain
-```
-
-**Zero-config local devnet** (all defaults point at `localhost`, matching the Docker Compose setup):
-
-```bash
-ORBIS_SIGNING_KEY=c4a48e2fce1481cd3294b4490f6678090ea98d3d0e5cd984558ab0968741b104 \
-  cargo run -p cli-tool -- add-policy-to-chain
-```
-
-That hex value is the well-known Vera localnet devnet key (mnemonic `abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about`), pre-funded only in local Docker Compose setups. It is public and deterministic — **never fund it, or use it, on a real network.**
-
-## Secret input
+### Secret input
 
 Passing secrets as plain CLI arguments leaves them visible in shell history and to other processes on the same machine (e.g. via `ps`). To avoid that:
 
 - `--secret` (on `encrypt-secret`, `prepare-secret`, `store-secret`) is optional. If omitted, you're prompted for it interactively with hidden input. Keep passing `--secret` directly for scripted/CI use.
-- `--reader-did-pk` (on `pre`, `set-relationship-on-chain`, `store-prepared-secret`, `store-secret`, `sign`) is **required** — pass it directly or set `ORBIS_READER_DID_PK` (same env var across all of them, so you can `export` it once per session). There is no shared default: each user needs their own value, since reusing one would collapse everyone onto the same on-chain DID identity. On `set-relationship-on-chain` only, `--actor-pubkey` is an alternative to `--reader-did-pk` (mutually exclusive) — see `derive-signer-did` below.
+- `--reader-did-pk` (on `pre`, `store-prepared-secret`, `store-secret`, `sign`) is **required** — pass it directly or set `ORBIS_READER_DID_PK`. There is no shared default: each user needs their own value, since reusing one would collapse everyone onto the same DID identity.
 
-## Commands
-
-### Node & key management
+### Commands
 
 | Command | Description |
 |---------|-------------|
 | `info` | Query node info (public address, peer ID, P2P address, status). |
-| `create-ring` | Create a blank ring on-chain, to be targeted by a subsequent `dkg` session. Requires `--signing-key`/`ORBIS_SIGNING_KEY`. Options: `--peer-node-keys` (comma-separated), `--threshold`, `--policy-id`, optional `--pss-interval` (default `86400`, the chain-enforced minimum), `--nonce`, `--current-version` (default `0`), `--trusted-auth-relay-dids` (comma-separated). Prints `RING_ID=`. |
-| `dkg` | Start a Distributed Key Generation session. Requires `--ring-id` for a pre-created blank ring entry (create one with `create-ring`). |
+| `dkg` | Start a Distributed Key Generation session for `--ring-id`, a ring pending DKG (create one with `vera-admin prepare-ring`). |
 | `ring-state` | Query the local ring state (public polynomial + last PSS refresh timestamp). Requires `--ring-pk-hex`. |
-| `derive-signer-did` | Derive the secp256k1 public key and `did:key` for `--signing-key`/`ORBIS_SIGNING_KEY`. Pure local computation, no network calls. This is the identity Vera resolves for ACP checks on signed transactions (e.g. `create-ring`'s `create_ring` permission) — use it to find out, ahead of time, which DID needs a relation granted (via `set-relationship-on-chain --actor-pubkey`) before such a transaction will be authorized. Prints `PUBLIC_KEY=` and `DID=`. |
-| `get-latest-ring` | Fetch a ring from the orbis module by `--ring-id`. Prints `RING_ID=` and `RING_PK=`. |
-
-### Secrets: encrypt, store, re-encrypt
-
-| Command | Description |
-|---------|-------------|
+| `pet-ring-state` | Query the local PET checking-key state. Requires `--ring-id`. |
+| `derive-signer-did` | Derive the compressed secp256k1 public key and `did:key` for `--signing-key`. Pure local computation. Prints `PUBLIC_KEY=` and `DID=`. |
 | `encrypt-secret` | Encrypt a secret to a ring public key locally (no node). Options: `--secret` (omit to be prompted), `--ring-pk`, `--policy-id`, `--resource`, `--permission`, optional `--derivation` (hex), `--tier`, `--timestamp`, `--salt`. |
-| `prepare-secret` | Encrypt a secret locally and print a **prepared secret** JSON. Use with `store-prepared-secret` for idempotent storage (same input → same object ID on retries). Same options as `encrypt-secret` plus `--ring-pk-hex`. |
-| `store-prepared-secret` | Send a prepared secret (from `prepare-secret`) to the node. Options: `--prepared-json`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--with-proof`, `--tier`, `--timestamp`. |
-| `store-secret` | One-shot: encrypt locally and store on the node. Options: `--secret` (omit to be prompted), `--ring-pk-hex`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--derivation`, `--with-proof`, `--tier`, `--timestamp`, `--salt`. |
-| `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret and decrypt it. Always generates a fresh ephemeral reader keypair for the request itself — there's no reader key to generate or pass in, and no way to override it. Options: `--ring-pk`, `--object-id`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--derivation`, `--salt`, `--valid-window-start`/`--valid-window-end` (must be given together). |
+| `prepare-secret` | Encrypt a secret locally and print a **prepared secret** JSON. Use with `store-prepared-secret` for idempotent storage (same input → same object ID on retries). |
+| `store-prepared-secret` | Send a prepared secret to the node. Options: `--prepared-json`, `--ring-id`, `--reader-did-pk` (required), `--with-proof`. |
+| `store-secret` | One-shot: encrypt locally and store on the node. |
+| `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret and decrypt it. Always generates a fresh ephemeral reader keypair. Options: `--ring-pk`, `--object-id`, `--reader-did-pk` (required), `--derivation`, `--salt`, `--valid-window-start`/`--valid-window-end` (together), `--save-only`. |
+| `retrieve-pre` | Decrypt a response saved by `pre --save-only`. Option: `--pending-json`. |
+| `sign` | Start a threshold Sign session. Options: `--message` (hex), `--derivation-id` (a key derivation registered with `vera-admin prepare-derivation`), `--reader-did-pk` (required), `--valid-window-start`/`--valid-window-end` (together). |
 
-### Signing (derivation + threshold sign)
-
-| Command | Description |
-|---------|-------------|
-| `post-key-derivation` | Post a `KeyDerivation` to the bulletin, registering a sign key derivation config. Options: `--ring-id`, `--derivation`, `--policy-id`, `--resource`, `--permission`. Prints `DERIVATION_ID=` and `DERIVED_PK=`. |
-| `sign` | Start a threshold Sign session. Options: `--message` (hex), `--derivation-id` (from `post-key-derivation`), `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--valid-window-start`/`--valid-window-end` (must be given together). |
-
-### Chain (policy, objects, relationships)
-
-Requires `--signing-key`/`ORBIS_SIGNING_KEY`.
-
-| Command | Description |
-|---------|-------------|
-| `add-policy-to-chain` | Create the default test policy on chain. Prints the new `POLICY_ID`. |
-| `register-object-to-chain` | Register an object under a policy. Options: `--policy-id`, `--object-id`, `--resource`. |
-| `set-relationship-on-chain` | Set a relationship on an object (e.g. reader). Options: `--policy-id`, `--object-id`, `--resource`, `--relation`, and exactly one of `--reader-did-pk` (or `ORBIS_READER_DID_PK`) for an Ed25519 DID derived from a seed, or `--actor-pubkey` for the secp256k1 `did:key` of a given public key (see `derive-signer-did`) — use the latter to grant relations checked against a transaction signer's own identity, e.g. `ring_creator` on a `ring_policy` object for `create-ring`. |
-
-### Bulletin
-
-Requires `--signing-key`/`ORBIS_SIGNING_KEY`, except `read-bulletin-post` and `list-bulletin-post` which are read-only.
-
-| Command | Description |
-|---------|-------------|
-| `register-bulletin-namespace` | Register a bulletin namespace. Option: `--namespace`. |
-| `add-bulletin-collaborator` | Add a collaborator to a namespace. Options: `--namespace`, `--collaborator`. |
-| `read-bulletin-post` | Read a post by ID. Option: `--id`. |
-| `list-bulletin-post` | List posts in a namespace. Option: `--namespace`. |
-
-### Ring lifecycle (ACP-authorized)
-
-Requires `--signing-key`/`ORBIS_SIGNING_KEY`, and requires the caller to be authorized by the ring's/node's ACP policy.
-
-| Command | Description |
-|---------|-------------|
-| `start-ring-reshare` | Initiate a committee/threshold reshare. Options: `--ring-id`, `--new-peer-node-keys` (comma-separated), optional `--new-threshold`. |
-| `cancel-ring-reshare` | Cancel a pending reshare, reverting to the ring's prior committee/threshold. Option: `--ring-id`. |
-| `set-ring-pss-interval` | Set the PSS refresh interval. Options: `--ring-id`, `--pss-interval` (seconds). |
-| `schedule-ring-upgrade` | Schedule a protocol version upgrade. Options: `--ring-id`, `--next-version`, `--activation-time` (Unix timestamp, must be at least 10 minutes in the future). |
-| `cancel-ring-upgrade` | Cancel a pending protocol version upgrade. Option: `--ring-id`. |
-| `update-node-peer-id` | Update the peer ID of a registered node. Options: `--node-key`, `--peer-id`. |
-| `transfer-node-controller` | Transfer a registered node's controller key. Options: `--node-key`, `--controller-key`. |
-| `add-node-to-whitelist` | Add a policy or ring to a node's whitelist. Options: `--node-key`, and exactly one of `--policy-id` / `--ring-id`. |
-| `remove-node-from-whitelist` | Remove a policy or ring from a node's whitelist. Same options as above. |
-
-### Dev / testing
-
-| Command | Description |
-|---------|-------------|
-| `fund` | Fund an address from the account behind `--signing-key`. Only useful when that account has funds (e.g. the local devnet test key on a Docker Compose chain). Option: `--address`. |
-
-## Examples
+### Examples
 
 ```bash
-# Node info
-cargo run -p cli-tool -- info
 cargo run -p cli-tool -- --endpoint http://localhost:50051 info
-
-# Create a blank ring, then run DKG against it
-cargo run -p cli-tool -- --signing-key $KEY create-ring --peer-node-keys <NODE_KEY_1>,<NODE_KEY_2> --threshold 2 --policy-id <POLICY_ID>
 cargo run -p cli-tool -- dkg --ring-id <RING_ID>
-
-# Encrypt secret locally (no node)
 cargo run -p cli-tool -- encrypt-secret --secret "my secret" --ring-pk <HEX> --policy-id <ID> --resource document --permission read
-
-# Prepare then store (idempotent)
-cargo run -p cli-tool -- prepare-secret --secret "data" --ring-pk-hex <HEX> --policy-id <ID> --resource document --permission read
-cargo run -p cli-tool -- store-prepared-secret --prepared-json '<JSON>' --ring-id <ID> --policy-id <ID> --resource document --permission read --reader-did-pk <YOUR_ID>
-
-# One-shot store
 cargo run -p cli-tool -- store-secret --secret "data" --ring-pk-hex <HEX> --ring-id <ID> --policy-id <ID> --resource document --permission read --reader-did-pk <YOUR_ID>
-
-# PRE (after storing a secret and setting relationship) — generates its own
-# ephemeral reader keypair, so no reader key flags are needed
 cargo run -p cli-tool -- pre --ring-pk <HEX> --object-id <ID> --reader-did-pk <YOUR_ID>
-
-# Chain / bulletin (requires a signing key)
-cargo run -p cli-tool -- --signing-key $KEY fund --address <ADDRESS>
-cargo run -p cli-tool -- --signing-key $KEY add-policy-to-chain
-cargo run -p cli-tool -- --signing-key $KEY register-bulletin-namespace --namespace my-ns
 ```
 
 ## Testing
 
-Fast, local unit tests (no Docker, no live chain) live in `src/tests.rs` — argument-validation helpers (`require_signing_key`, `require_reader_did_pk`, `require_valid_window_pair`, `resolve_whitelist_target`), clap parsing sanity checks, `did_seed`'s hashing, and `prepare_secret`'s local encryption. Run with:
+Unit tests in `src/tests.rs` cover argument validation, clap parsing, `did_seed`, `derive_signer_did` and `prepare_secret`:
 
 ```bash
 cargo test -p cli-tool
 ```
 
-The command implementations in `src/commands.rs` are also re-exported from `src/lib.rs` so they can be driven directly (bypassing the CLI binary and its arg parsing) from `orbis-node`'s Docker-Compose-based integration tests, which cover real DKG/PRE/Sign/PSS/reporting flows against a live chain and node cluster.
-
-## Scripts
-
-`scripts/remote_smoke_test.sh` drives the compiled binary through create-ring → dkg → store-secret → pre → post-key-derivation → sign against an already-deployed remote network (not one it creates itself) — see `scripts/README.md` for prerequisites and usage.
+The command implementations are re-exported from `src/lib.rs` so `orbis-node`'s E2E scenarios drive them directly.

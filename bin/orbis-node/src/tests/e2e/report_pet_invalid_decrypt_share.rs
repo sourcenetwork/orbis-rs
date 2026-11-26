@@ -1,15 +1,11 @@
-//! Shared integration test: PET decrypt-phase misbehavior. Node3 signs an
+//! Integration test: PET decrypt-phase misbehavior. Node3 signs an
 //! invalid DLEQ proof after passing normal authorization, certificate and
 //! atomic-bundle checks. Its stored key remains valid, so commit/reveal
 //! still succeed; honest decrypt shares keep PRE available while the
 //! signed bad response produces an actual on-chain report and demerit.
 //!
-//! Report detection is backend-neutral production code (same reasoning as
-//! `report_offline_pre_sign.rs`), and the fault-injection RPC
-//! (`UnsafeTestingService::set_pet_decrypt_fault`) is registered
-//! identically on both backends — so this runs as one real test on both,
-//! reusing `pet_dkg_scenario::run_dkg` (already shared since PR 5c) for
-//! the paired-DKG setup.
+//! The fault is injected through `UnsafeTestingService::set_pet_decrypt_fault`;
+//! `pet_dkg_scenario::run_dkg` provides the paired-DKG setup.
 
 use super::report_scenario::{try_wait_for_demerits, STANDARD_RING_POLICY_YAML};
 use super::{pet_dkg_scenario, TestEnvironmentImpl};
@@ -166,10 +162,9 @@ resources:
         .try_into()
         .expect("serialize tag proof");
 
-    // This is the canonical Orbis object-id encoding for both backends.
-    // Native's `ThresholdObject::Document::id()` intentionally produces the
-    // same value (covered by bulletin's cross-backend ID vectors), so the
-    // scenario never needs to branch on the selected chain.
+    // The canonical Orbis object-id encoding; Vera's
+    // `ThresholdObject::Document::id()` produces the same value (covered by
+    // bulletin's ID vectors).
     let pet_object_id = common::blockchain::orbis::generate_document_id(
         &ring_id.0,
         &document_json,

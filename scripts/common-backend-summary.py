@@ -58,14 +58,14 @@ def diagnostics(path, backend):
 def main():
     if len(sys.argv) == 4 and sys.argv[1] == "--diagnostics":
         path, backend = sys.argv[2:]
-        if backend not in ("cosmos", "shared"):
+        if backend not in ("vera", "shared"):
             return 2
         diagnostics(Path(path), backend)
         return 0
     if len(sys.argv) != 4:
         return 2
     path, backend, expected = sys.argv[1:]
-    if backend not in ("cosmos", "shared"):
+    if backend not in ("vera", "shared"):
         return 2
     results = re.findall(
         r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;",

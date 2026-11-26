@@ -1004,9 +1004,9 @@ pub struct SignResult {
 
 /// Call `SignService.StartSign` with a JWT-authenticated request.
 ///
-/// `derivation_id` must match the `KeyDerivation` posted to the bulletin via
-/// `post_key_derivation`. The JWT is bound to it so the node can verify the
-/// caller is authorised to sign under that key derivation.
+/// `derivation_id` must name a `KeyDerivation` registered on Vera (see
+/// `vera-admin derivation-id`). The JWT is bound to it so the node can verify
+/// the caller is authorised to sign under that key derivation.
 pub async fn do_sign(
     endpoint: String,
     message: Vec<u8>,

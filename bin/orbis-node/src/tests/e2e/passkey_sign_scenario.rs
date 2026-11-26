@@ -13,7 +13,7 @@
 //! Runs against its own ring/policy (not the one `standard_dkg_pre.rs`'s
 //! shared scenarios provision) so the `ORBIS_WEBAUTHN_RP_ID`/
 //! `ORBIS_WEBAUTHN_ORIGIN` node env vars this test sets — the opt-in
-//! pass-through in `test_support::network::{vera,cosmos}` — apply only to
+//! pass-through in `test_support::network::vera` — apply only to
 //! this test's own containers, never to a scenario that must keep rejecting
 //! WebAuthn-authorized Sign requests.
 
@@ -87,9 +87,7 @@ async fn test_passkey_authorized_signing() {
 
     // Two separate policy fixtures, not one shared between the ring and the
     // key derivation — same byte-identical YAML, but a ring-creation grant
-    // and a `key`-resource registration need their own on-chain policy ids
-    // (Cosmos rejects registering a resource under a policy that's already
-    // bound to ring creation). Mirrors every `pre_scenario::run` caller
+    // and a `key`-resource registration need their own policy ids. Mirrors every `pre_scenario::run` caller
     // (`standard_dkg_pre.rs`, `member_replacement.rs`, `scheduled_refresh.rs`)
     // and this scenario's own PRE sibling (`pre_passkey_scenario.rs`), none
     // of which reuse the ring's own policy for resource registration.

@@ -1539,7 +1539,7 @@ fn expected_leader_manifest_shape_rejects_unsupported_phase_for_origin_protocol(
 mod invalid_crypto_generation_history {
     use super::*;
     use crate::ring_state::RingShareBundle;
-    use ::common::blockchain::{sign_node_message_with_hex_key, ChainConfig, TxSigner};
+    use ::common::blockchain::{node_public_key_hex, sign_node_message_with_hex_key};
     use crypto::r#trait::{CryptoSerialize, DistKeyShare, PriShare, PubPoly, ThresholdSigner};
     use crypto::test_helper::DKGCoordinator;
     use crypto::{DkgImpl, ScalarField, SignImpl};
@@ -1611,9 +1611,7 @@ mod invalid_crypto_generation_history {
 
         let signing_key_hex =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
-        let responder_node_key = TxSigner::from_hex_key(&signing_key_hex, ChainConfig::local())
-            .unwrap()
-            .public_key_hex();
+        let responder_node_key = node_public_key_hex(&signing_key_hex).unwrap();
 
         // t=1_000: generation 1 becomes current. `share_bytes` content is
         // irrelevant here — report verification never reads it back, only

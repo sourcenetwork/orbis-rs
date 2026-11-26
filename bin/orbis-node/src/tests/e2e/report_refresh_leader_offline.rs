@@ -1,9 +1,9 @@
-//! Shared integration test: exercises the refresh **leader** being offline
+//! Integration test: exercises the refresh **leader** being offline
 //! before any Prepare exists, distinct from
 //! `report_refresh_offline.rs` (which stops a non-leader mid-Prepare-fanout).
 //! With the canonical leader (lexicographically smallest node key —
-//! `dkg::v0::transport::digest::canonical_leader`, confirmed backend-neutral
-//! production code operating purely on `peer_node_keys`) stopped before the
+//! `dkg::v0::transport::digest::canonical_leader`, operating purely on
+//! `peer_node_keys`) stopped before the
 //! refresh is made due, a non-leader's periodic health check forwards
 //! `StartRefresh` to the dead leader and hits `PssOfflineStage::StartForward`
 //! (`network.rs`) — a report path that fires before a Prepare is ever sent.
@@ -11,18 +11,14 @@
 //! dies after the start was accepted is only reported at the 15-minute
 //! attempt deadline.
 //!
-//! Which fixture-declared node actually becomes the canonical leader depends
-//! on each backend's own node-identity-key assignment (Cosmos's is a fixed,
-//! deterministic test constant list; native's is reported live by each
-//! node), so this resolves the real leader key dynamically (`members.iter().
-//! min()`) rather than assuming a fixed index — correct on both backends
-//! regardless of how keys are assigned under the hood.
+//! Which fixture-declared node becomes the canonical leader depends on the
+//! node identity keys each node reports, so this resolves the real leader
+//! key dynamically (`members.iter().min()`) rather than assuming a fixed
+//! index.
 //!
 //! Same day-long interval and post-stop backdate as
 //! `report_refresh_offline.rs` — see that file's doc comment. Verification
-//! is `report_scenario::wait_for_demerits`, trading
-//! the original's `ReportEventSubscription` metadata assertions for a
-//! portable dual-backend check.
+//! is `report_scenario::wait_for_demerits`.
 
 use super::report_scenario::{wait_for_demerits, STANDARD_RING_POLICY_YAML};
 use super::{pre_scenario, TestEnvironmentImpl};

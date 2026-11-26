@@ -4,11 +4,7 @@
 //! request. With threshold=2, the two remaining shares are enough to
 //! recover the plaintext, so `do_pre` should complete successfully.
 //!
-//! Harness-unification migration, PR 6: migrated off `fault_injection.rs`'s
-//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one.
-//! The original used `FaultNetworkController`-free node abort already
-//! (`net.charlie.task.abort()`) — a straight port, no fault-controller
-//! wiring needed. Fully dual-backend — no `#[ignore]` needed.
+//! Runs on [`super::live_node`]'s in-process bootstrap.
 
 use super::live_node::setup_ring;
 use tokio::time::Duration;

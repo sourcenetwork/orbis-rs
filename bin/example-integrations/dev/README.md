@@ -57,9 +57,8 @@ both with `up`'s own `--webauthn-rp-id`/`--webauthn-origin` flags if an
 example needs different values, and pass the same values to the example app.
 
 After registering a passkey in the browser, grant its `did:key` **signing**
-access — `cli-tool set-relationship-on-chain` can't be used here (its admin
-commands only talk to the Cosmos backend, not native/Vera), so this is a
-subcommand of the same binary instead, run from a second terminal against the
+access with this binary's `grant` subcommand (`cli-tool` has no ACP
+relationship commands), run from a second terminal against the
 already-running cluster. Use the **derivation id** printed above as
 `--object-id`, not the ring id — Sign's permission checks key on the named
 key-derivation object `up` already created, not the ring itself:

@@ -1,15 +1,12 @@
 //! Shared DKG-ring lifecycle test: a pending ring that never finalizes
 //! should eventually be cleaned up without any test-driver action.
 //!
-//! Not a chain-enforced timeout on either backend — it's the same
-//! node-driven mechanism on both: each node's own PSS ticker
+//! Not a chain-enforced timeout: each node's own PSS ticker
 //! (`bin/orbis-node/src/pss/v0/mod.rs`) notices a ring has been pending
 //! longer than its `pss_interval` with no local share bundle, and posts
-//! `BulletinWriteKind::CancelPendingRing` through the generic `Bulletin`
-//! trait — unconditional on backend. Cosmos maps that to its
-//! `CancelPendingRing` chain message; native maps it to
-//! `RingParticipantCommand::Cancel` (`crates/bulletin/src/native/backend.rs`).
-//! Fully backend-neutral — no `#[cfg]` split in this file.
+//! `BulletinWriteKind::CancelPendingRing` through the `Bulletin` trait,
+//! which Vera maps to `RingParticipantCommand::Cancel`
+//! (`crates/bulletin/src/vera/backend.rs`).
 //!
 //! Run with:
 //!   cargo test -p orbis-node --features integration-test \
@@ -31,12 +28,10 @@ use super::TestEnvironmentImpl;
 #[tokio::test]
 #[serial_test::serial]
 async fn test_stale_pending_dkg_is_cancelled() {
-    // Minimal placeholder policy — unused by Cosmos (its ring materializer
-    // always substitutes its own content-addressed governance policy
-    // regardless, and this ring never finalizes DKG so nothing ever checks
-    // document/key-derivation authorization), but native's ring creation
-    // needs a real backing `PolicyFixture` to register as the ring's
-    // `ring_policy` object either way.
+    // Minimal placeholder policy: this ring never finalizes DKG so nothing
+    // checks document/key-derivation authorization, but ring creation needs
+    // a real backing `PolicyFixture` to register as the ring's
+    // `ring_policy` object.
     const PLACEHOLDER_POLICY_YAML: &str = r#"
 name: pending ring cancellation placeholder policy
 resources:
@@ -105,13 +100,12 @@ resources:
         .map(|node| node.grpc_endpoint.clone())
         .collect();
 
-    // Backdated well past a day: native's ring creation always clamps
-    // `pss_interval` to a 24h floor (its validator rejects short intervals
-    // outright, unlike Cosmos's genesis-seeded rings — see
+    // Backdated well past a day: ring creation always clamps `pss_interval`
+    // to a 24h floor (the validator rejects short intervals outright — see
     // `vera_environment.rs::build_ring_config`), so the PSS ticker's
     // "pending longer than pss_interval" check needs `indexed_at_secs` far
-    // enough in the past to already be overdue on either backend,
-    // regardless of what interval the fixture itself requested.
+    // enough in the past to already be overdue, regardless of what
+    // interval the fixture itself requested.
     let indexed_at_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time")

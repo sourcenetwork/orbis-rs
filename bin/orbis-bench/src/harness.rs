@@ -1,33 +1,25 @@
-//! In-process DKG execution backend: real `orbis-node` instances running as
-//! tokio tasks in this process, talking real Iroh P2P over loopback, backed
-//! by a shared in-memory [`DummyBulletin`] instead of a Dockerized Vera.
+//! Benchmark network: real `orbis-node` instances running as tokio tasks in
+//! this process, talking real Iroh P2P over loopback, backed by a shared
+//! in-memory [`DummyBulletin`] and `DummyAuthZ`.
 //!
-//! No Docker, no blockchain, no external network dependency — this exists to
-//! measure orbis's own DKG/PRE/SIGN protocol and P2P networking behavior
-//! without infrastructure flakiness (Vera RPC hiccups, Iroh relay
-//! reachability, Docker host contention) obscuring the result. See
-//! `runner.rs`'s `run_stack_in_process` for the trial loops that drive this
-//! network; the results/report/manifest pipeline (`results.rs`/`report.rs`)
-//! is unchanged and shared with the Docker backend.
+//! No external network or service dependency — this measures orbis's own
+//! DKG/PRE/SIGN protocol and P2P networking behavior without infrastructure
+//! flakiness obscuring the result. See `runner/in_process.rs` for the trial
+//! loops that drive this network.
 //!
 //! WAN profiles (`delay_ms`/`jitter_ms`/`loss_percent`) are approximated in
-//! software via `network::ShapedNetwork` instead of the Docker backend's
-//! per-container `tc netem` — there's no network namespace here to shape.
-//! See that module's docs for exactly what's approximated (loss is a hard
-//! per-message failure, not transparent QUIC-level retransmission).
+//! software via `network::ShapedNetwork`. See that module's docs for exactly
+//! what's approximated (loss is a hard per-message failure, not transparent
+//! QUIC-level retransmission).
 //!
-//! PRE/SIGN need no chain-side ACP setup here (unlike the Docker backend's
-//! `register_object_to_chain_with_config`/`set_relationship_on_chain_with_config`):
 //! `DummyAuthZ` authorizes unconditionally, so orbis-node's `authz.check(...)`
 //! calls (`pre/v0/helpers.rs::check_policy_access`, `sign/v0/helpers.rs`)
 //! always pass regardless of what policy/resource/relationship values are
 //! used, as long as they're consistent between fixture creation and the
-//! PRE/SIGN request. The only real setup PRE/SIGN need is a finalized ring, a
-//! stored `Document` (via `StoreSecretService`, node-local — no chain), and
-//! for SIGN, a `KeyDerivation` record — the latter posted directly to the
-//! shared bulletin by [`HarnessNetwork::post_key_derivation`] below, since
-//! `cli_tool::post_key_derivation_with_config` unconditionally builds a real
-//! `VeraGoBulletin` client and can't be reused here.
+//! PRE/SIGN request. The only setup PRE/SIGN need is a finalized ring, a
+//! stored `Document` (via `StoreSecretService`, node-local), and for SIGN, a
+//! `KeyDerivation` record posted directly to the shared bulletin by
+//! [`HarnessNetwork::post_key_derivation`] below.
 
 use crate::protocol::{DirectClients, NodeEndpoint};
 use anyhow::{Context, Result};
@@ -59,25 +51,25 @@ fn init_tracing_once() {
 }
 
 /// ACP policy id every harness node whitelists on boot and every
-/// harness-seeded ring/document/key-derivation references. There's no real
-/// ACP/chain in this backend — `DummyAuthZ` always authorizes — but
+/// harness-seeded ring/document/key-derivation references. `DummyAuthZ`
+/// always authorizes, but
 /// orbis-node's DKG code independently checks that a ring's `policy_id`
 /// appears in the participant's `NodeInfo.whitelisted_policy_ids`
 /// (`dkg/v0/helpers.rs`), so this only needs to be one stable, matching
 /// value shared by every harness node, ring, document, and key derivation.
 pub(crate) const HARNESS_POLICY_ID: &str = "orbis-bench-harness-policy";
 /// Controller key every harness node accepts as authorized to update its own
-/// NodeInfo. Never exercised by this backend (no UpdateNodeInfo calls are
+/// NodeInfo. Never exercised here (no UpdateNodeInfo calls are
 /// made), but `--node-controller-key` is required to be non-empty.
 const HARNESS_CONTROLLER_KEY: &str =
     "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
-/// First gRPC port used by harness nodes. Chosen away from Docker's
-/// published-port range (50051+) and orbis-node's own in-process test
-/// harnesses (51051-51074) so nothing collides if run alongside them.
+/// First gRPC port used by harness nodes. Chosen away from orbis-node's
+/// default port (50051+) and its own in-process test harnesses
+/// (51051-51074) so nothing collides if run alongside them.
 const HARNESS_BASE_PORT: u16 = 61_000;
 
 /// A running in-process DKG network: `network_size` real orbis-node
-/// instances sharing one [`DummyBulletin`] "chain". Dropping this tears down
+/// instances sharing one [`DummyBulletin`]. Dropping this tears down
 /// every node (aborts its gRPC server task, removes its local storage file).
 pub struct HarnessNetwork {
     pub endpoints: Vec<NodeEndpoint>,
@@ -136,12 +128,7 @@ impl HarnessNetwork {
                 .with_context(|| format!("spawn harness node {index}"))?;
             endpoints.push(NodeEndpoint {
                 index,
-                service: format!("harness-node-{index:03}"),
                 grpc_url: handle.grpc_endpoint.clone(),
-                // No Prometheus endpoint in this backend (see module docs on
-                // `runner.rs::run_stack_in_process`) — resource/metric deltas
-                // are simply omitted from harness trial records.
-                metrics_url: String::new(),
             });
             node_keys.push(handle.node_key.clone());
             nodes.push(handle);
@@ -156,12 +143,12 @@ impl HarnessNetwork {
     }
 
     /// Seed a pending (unfinalized) ring directly on the shared bulletin —
-    /// the in-process equivalent of a live `MsgCreateRing`. `members` are
+    /// the in-process equivalent of creating a ring. `members` are
     /// 1-based indices into this network, matching `NodeEndpoint::index`.
     /// `pss_interval_secs` is the ring's own due-for-refresh interval
-    /// (`RingPayload.pss_interval`) — unlike Docker's Vera-backed
-    /// rings, `DummyBulletin` enforces no floor on this, so callers are free
-    /// to use a short interval for PSS refresh trials.
+    /// (`RingPayload.pss_interval`). `DummyBulletin` enforces no floor on
+    /// this, so callers are free to use a short interval for PSS refresh
+    /// trials.
     pub fn seed_pending_ring(
         &self,
         ring_id: &str,
@@ -193,13 +180,10 @@ impl HarnessNetwork {
             .map_err(|error| anyhow::anyhow!("seed pending ring {ring_id}: {error}"))
     }
 
-    /// In-process equivalent of `cli_tool::post_key_derivation_with_config`:
-    /// derives the SIGN public key locally and posts the `KeyDerivation`
+    /// Derives the SIGN public key locally and posts the `KeyDerivation`
     /// record directly to the shared bulletin via the same `Bulletin::post`
-    /// path a real node's `StoreSecretService`/key-derivation handler uses —
-    /// no chain client involved, unlike the Docker-only cli-tool function
-    /// (which unconditionally builds a `VeraGoBulletin`). Returns
-    /// `(derivation_id, derived_public_key_hex)`.
+    /// path a real node's `StoreSecretService`/key-derivation handler uses.
+    /// Returns `(derivation_id, derived_public_key_hex)`.
     pub async fn post_key_derivation(
         &self,
         ring_id: &str,
@@ -248,9 +232,8 @@ impl HarnessNetwork {
     }
 
     /// Poll the shared bulletin for `ring_id`'s finalization, then cross-check
-    /// every committee member's local `GetRingState` (via `clients`, the same
-    /// gRPC polling `protocol.rs`'s Docker-backed
-    /// `wait_ring_finalized_everywhere` performs) so this only returns once
+    /// every committee member's local `GetRingState` (via `clients`) so this
+    /// only returns once
     /// the ring is finalized *and* converged everywhere, not just on-bulletin.
     pub async fn wait_ring_finalized_everywhere(
         &self,

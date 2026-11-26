@@ -5,18 +5,12 @@
 //! from, leaving only 1 share out of the required 2. The operation should
 //! return an error quickly (not hang for `SIGN_COLLECTION_TIMEOUT`).
 //!
-//! Harness-unification migration, PR 6: migrated off `fault_injection.rs`'s
-//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one
-//! — same "abort instead of block_peer" port as
-//! `fault_pre_below_threshold.rs`. Fully dual-backend — no `#[ignore]`
-//! needed.
+//! Runs on [`super::live_node`]'s in-process bootstrap; aborts nodes as
+//! `fault_pre_below_threshold.rs` does.
 
 use super::live_node::setup_ring;
 use tokio::time::Duration;
 
-#[cfg(all(feature = "integration-test", feature = "cosmos"))]
-use crate::constants::SIGN_COLLECTION_TIMEOUT;
-#[cfg(all(feature = "integration-test", feature = "vera"))]
 use crate::constants::SIGN_COLLECTION_TIMEOUT;
 
 #[tokio::test]

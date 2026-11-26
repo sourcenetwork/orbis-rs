@@ -222,18 +222,14 @@ class Qualification(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         reader(fixture, 'defradb.rs', ('Cargo.toml',))
 
-    def test_gateway_matrix_does_not_reintroduce_cosmos_with_include(self):
+    def test_gateway_image_matrix_builds_each_curve_once(self):
         workflow = Path(__file__).resolve().parents[1].joinpath('.github/workflows/rust.yml').read_text()
         image = workflow.split('  image:\n', 1)[1].split('  # Compile every test binary', 1)[0]
         self.assertNotIn('        include:', image)
+        self.assertNotIn('        backend:', image)
         curves = [value.strip() for value in re.search(r'        crypto: \[([^\]]+)\]', image).group(1).split(',')]
-        backend_line = re.search(r'        backend: (.+)', image).group(1)
-        choices = [json.loads(value) for value in re.findall(r"fromJSON\('([^']+)'\)", backend_line)]
-        self.assertEqual({(curve, backend) for curve in curves for backend in choices[0]},
-                         {('bls12-381', 'vera'), ('jubjub', 'vera')})
-        self.assertEqual({(curve, backend) for curve in curves for backend in choices[1]},
-                         {(curve, backend) for curve in ('bls12-381', 'jubjub') for backend in ('cosmos', 'vera')})
-        self.assertIn("if: matrix.backend == 'vera' && inputs.scope != 'gateway'", image)
+        self.assertEqual(curves, ['bls12-381', 'jubjub'])
+        self.assertIn("if: inputs.scope != 'gateway'", image)
 
     def test_private_cwd_is_entered_only_after_identity_switch(self):
         parent, private = Path('/accessible/checkout'), Path('/private/owned-by-65532')

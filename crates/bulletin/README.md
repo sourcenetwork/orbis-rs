@@ -2,7 +2,7 @@
 
 A small async abstraction over typed Orbis bulletin objects: **read** rings by authoritative id, and **post** fresh ring finalizations, node info, encrypted document handles, and key-derivation records.
 
-The default backend is Vera `x/orbis`; an in-memory **dummy** implementation ships for tests and local development.
+The backend is Vera; an in-memory **dummy** implementation ships for tests and local development.
 
 ## Node startup
 
@@ -16,16 +16,12 @@ neither service decodes signing material or selects a bulletin backend.
 Authorization is constructed separately through `Authz`. The prepared bulletin
 then connects through the `Bulletin` trait before node registration and readiness.
 
-`native::startup::PreparedVeraBulletin` owns native worker initialization and the
-deployment-scoped journal. `vera_go::startup::PreparedVeraGoBulletin` owns the legacy
-signer, fee-granter and minimum-balance setup. Connection phases preserve the
-bootstrap funding status; integration account funding remains in node composition.
-The `cosmos-identity` feature exposes identity helpers without selecting that
-bulletin implementation or requiring Redb.
+`vera::startup::PreparedVeraBulletin` owns worker initialization and the
+deployment-scoped journal.
 
-## Native service client
+## Vera service client
 
-The `native` feature exposes `native::VeraClient` for signed
+The `vera` feature (default) exposes `vera::VeraClient` for signed
 node registration/controller commands, fresh-ring creation, confirmation and
 cancellation, and certified reads. Open it with an independently provisioned
 deployment root and consensus key, a worker journal
@@ -125,35 +121,13 @@ Shared **value types** (JSON serde):
 
 ## Feature flags
 
-| Feature | Default | `BulletinImpl` |
-|---------|---------|----------------|
-| `vera` | **yes** | [`VeraGoBulletin`](src/vera/mod.rs) |
-| `dummy` | no | [`DummyBulletin`](src/dummy/mod.rs) |
-
-**`vera` and `dummy` are mutually exclusive** (only one can be enabled). Default builds use Vera.
-
-The **`dummy`** module is **always compiled** (in-memory store, useful in unit tests). The **`dummy`** *feature* only switches **`BulletinImpl`** to `DummyBulletin` and must not be combined with `vera`:
-
-```bash
-cargo build -p bulletin --no-default-features --features dummy
-```
-
-## Vera implementation
-
-**`VeraGoBulletin`** wraps [`VeraGoClient`](../common) from the workspace `common` crate.
-
-- **`post`** — routes to fresh `FinalizeRing`, `StoreDocument`, `StoreKeyDerivation`, or `CreateNodeInfo`, returning the chain id for the written object.
-- **`read`** — routes to typed `x/orbis` queries by object id.
-- Ring creation is intentionally outside this abstraction; callers receive a `ring_id` from Vera `CreateRing` and pass that id through DKG.
-
-Construction:
-
-- **`VeraGoBulletin::new(ChainConfigBuilder)`** — Read-focused client.
-- **`VeraGoBulletin::with_signer(..., balance_check_amount)`** — Client with **`TxSigner`**; optionally waits (exponential backoff) until the account balance ≥ threshold, then performs a minimal **self-transfer** to register the account on-chain.
-
-Diagnostics name: **`"bulletin/vera-go"`**.
-
-Integration tests in [`src/vera/tests.rs`](src/vera/tests.rs) may require **Docker** (Vera stack), similar to other `common`-based tests.
+| Feature | Default | Purpose |
+|---------|---------|---------|
+| `vera` | **yes** | [`VeraBulletin`](src/vera/backend.rs) and the Vera service client |
+| `dummy-type` | no | Compiles [`DummyBulletin`](src/dummy/mod.rs) for in-process harnesses (always compiled in tests) |
+| `startup` | no | `BulletinFactory`/`PreparedBulletin` traits and the services composer |
+| `select-vera` | no | Defines `BulletinFactoryImpl` = `VeraBulletinFactory` for the node |
+| `fixture-startup` | no | Deterministic initial identity for integration fixtures |
 
 ## Dummy implementation
 
@@ -165,18 +139,7 @@ Diagnostics name: **`"bulletin/dummy"`**.
 
 ## Errors
 
-[`BulletinError`](src/error.rs): **`ChainError`**, **`ParseError`**, **`NotFound { id }`**.
-
-## Dependencies (high level)
-
-- **`async-trait`**, **`serde`** / **`serde_json`**
-- **`sha2`**, **`hex`** — canonical ring hash helpers
-- **`backoff`** — balance retries in `with_signer`
-- **`common`** — Vera chain client
-
-## Spec notes
-
-The repo includes a short intent doc [`bulletin_spec.md`](bulletin_spec.md): first implementation is Vera; other bulletin backends can be added if they honor the same typed-object contract expectations and deterministic ids where applicable. Filling out the spec is a TODO.
+[`BulletinError`](src/error.rs): **`NativeError`**, **`ChainError`**, **`ParseError`**, **`NotFound { id }`**.
 
 ## Tests
 

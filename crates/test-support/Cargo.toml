@@ -11,11 +11,10 @@ publish = false
 [dependencies]
 common = { path = "../common", default-features = false }
 # Plain generated gRPC types/client only (tonic/tonic-prost/prost, no crypto-
-# feature coupling) — used by `node_readiness` to poll `InfoService` for both
-# backends. Deliberately not `cli-tool` (its default features hardcode a
-# crypto implementation, which would conflict with a jubjub build's feature
-# unification — see `admin/cosmos.rs`'s doc comment for why ring creation
-# stays out of this crate for the same reason).
+# feature coupling) — used by `node_readiness` to poll `InfoService`.
+# Deliberately not `cli-tool`: its default features hardcode a crypto
+# implementation, which would conflict with a jubjub build's feature
+# unification.
 proto = { path = "../proto" }
 tonic = { workspace = true }
 async-trait = { workspace = true }
@@ -26,36 +25,17 @@ tempfile = { workspace = true }
 hex = { workspace = true }
 tokio = { workspace = true }
 
-bs58 = { version = "0.5", optional = true }
 commonware-codec = { version = "=2026.10.0", optional = true }
-bulletin = { path = "../bulletin", default-features = false, features = ["vera-go"], optional = true }
 vera-client = { workspace = true, optional = true }
 vera-harness = { workspace = true, optional = true }
 vera-node = { workspace = true, optional = true }
 
 [features]
-default = ["cosmos"]
-# Cosmos/SourceHub backend: `CosmosNetwork`/`CosmosAdmin`, driven by `common`'s
-# Cosmos chain client. Kept the default so `authz`/`bulletin`'s existing
-# `test-support = { path = "..." }` dev-dependencies (no `default-features =
-# false`) keep getting it without a Cargo.toml change on their side.
-cosmos = ["common/cosmos", "dep:bs58", "dep:bulletin"]
+default = ["vera"]
 vera = ["dep:commonware-codec", "dep:vera-client", "dep:vera-harness", "dep:vera-node"]
 
-[[test]]
-name = "blockchain_vera_go"
-required-features = ["cosmos"]
-
-[[test]]
-name = "cosmos_environment"
-required-features = ["cosmos"]
-
 [dev-dependencies]
-# `tests/blockchain_vera_go.rs` — live-chain tests for common's VeraClient/TxSigner.
 tokio = { workspace = true }
-serial_test = "3.2.0"
-cosmrs = { workspace = true }
-prost = { workspace = true }
 
 [lints]
 workspace = true

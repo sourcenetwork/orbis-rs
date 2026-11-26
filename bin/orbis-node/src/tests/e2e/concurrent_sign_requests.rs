@@ -1,11 +1,9 @@
 //! Three threshold-BLS signing requests on the same ring running
 //! simultaneously must all complete without deadlock or nonce reuse.
 //!
-//! Harness-unification migration, PR 6: migrated off `concurrent.rs`'s
-//! Cosmos-only in-process bootstrap onto [`super::live_node`]'s shared one.
-//! Exercises `SignResponseManager`/`NonceStateManager` under concurrent
-//! load — all three FROST signing sessions are in flight at the same time.
-//! Fully dual-backend — no `#[ignore]` needed on either side.
+//! Runs on [`super::live_node`]'s in-process bootstrap. Exercises
+//! `SignResponseManager`/`NonceStateManager` under concurrent load — all
+//! three FROST signing sessions are in flight at the same time.
 
 use super::live_node::setup_ring;
 

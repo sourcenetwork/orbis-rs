@@ -1,19 +1,11 @@
-#![cfg(any(feature = "orbis-node", feature = "upgrade-driver"))]
+#![cfg(feature = "orbis-node")]
 
-#[cfg(all(feature = "orbis-node", feature = "upgrade-driver"))]
-compile_error!("Features 'orbis-node' and 'upgrade-driver' select different node factories");
-
-pub mod compose;
 pub mod config;
-pub mod docker;
 pub mod harness;
-pub mod metrics;
 pub mod protocol;
 pub mod report;
 pub mod results;
 pub mod runner;
-pub mod setup;
-pub mod upgrade;
 
 pub use config::{Experiment, ExperimentPlan};
 pub use runner::BenchmarkRunner;

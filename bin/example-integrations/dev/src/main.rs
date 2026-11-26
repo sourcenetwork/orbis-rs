@@ -10,11 +10,9 @@
 //! demonstrate the grant/revoke/recovery story these example apps exist to
 //! show.
 //!
-//! `cli-tool`'s `set-relationship-on-chain` can't be used for the grant step
-//! after a passkey registers: its admin commands only talk to the Cosmos
-//! backend (`common::blockchain::cosmos::*`), not native/Vera. So `grant`/
-//! `revoke` are subcommands of this same binary instead — the ACP relation
-//! shape is otherwise identical.
+//! `cli-tool` has no ACP relationship commands, so the grant step after a
+//! passkey registers is this binary's own `grant`/`revoke` subcommands,
+//! which write the relation to Vera directly.
 
 mod native_admin;
 

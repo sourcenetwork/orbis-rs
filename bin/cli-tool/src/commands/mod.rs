@@ -8,20 +8,12 @@
 //!   StoreSecret, node/ring status queries).
 //! - [`crypto`]: local cryptography (encryption, key generation, DID derivation) —
 //!   no network calls.
-//! - [`bulletin`]: bulletin namespace/collaborator administration and posting/reading
-//!   bulletin entries.
-//! - [`admin`]: chain administration (ACP policies/objects/relationships, ring
-//!   lifecycle, node registration, funding).
-//! - [`chain`]: shared chain-client construction and transaction-result helpers used
-//!   by `admin` and `bulletin`.
+//!
+//! Vera administration (policies, rings, node registration) is the
+//! `vera-admin` binary.
 
-mod admin;
-mod bulletin;
-mod chain;
 mod crypto;
 mod node;
 
-pub use admin::*;
-pub use bulletin::*;
 pub use crypto::*;
 pub use node::*;

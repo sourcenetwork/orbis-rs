@@ -74,12 +74,7 @@ iroh-gossip = "0.101.0"
 bytes = "1.5"
 
 
-# Blockchain / Cosmos SDK
-cosmrs = { version = "0.22", features = ["bip32"] }
-tendermint = "0.40"
-tendermint-rpc = { version = "0.40" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
-bip32 = { version = "0.5", features = ["mnemonic", "bip39"] }
 k256 = { version = "0.14", features = ["ecdsa"] }
 prost = "0.14.1"
 tonic = "0.14.2"

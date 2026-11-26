@@ -8,40 +8,30 @@ license.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 authn = { path = "../../crates/authn" }
-bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera-go", "dummy-type"] }
-bs58 = "0.5"
+bulletin = { path = "../../crates/bulletin", default-features = false, features = ["dummy-type"] }
 clap = { version = "4.5", features = ["derive"] }
 cli-tool = { path = "../cli-tool", default-features = false }
-common = { path = "../../crates/common" }
-cosmrs = { workspace = true }
 crypto = { path = "../../crates/crypto", default-features = false }
 futures = { workspace = true }
 hex = { workspace = true }
 network = { path = "../../crates/network", features = ["shaping"] }
 orbis-node = { path = "../orbis-node", default-features = false, optional = true }
-prost = { workspace = true }
 proto = { path = "../../crates/proto" }
 rand = { workspace = true }
-reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { package = "yaml_serde", version = "0.10" }
 sha2 = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
-thiserror = { workspace = true }
 tracing = "0.1.16"
 tracing-subscriber = { version = "0.3", features = ["tracing-log", "fmt", "env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = ["bls12-381", "orbis-node"]
-# In-process benchmark node. Follows orbis-node's Commonware default.
-# The curve features do not enable this: a workspace `--features=bls12-381`
-# or `--features=jubjub` is also how the Go-chain CI cells select
-# `authz-vera-go`/`bulletin-vera-go`, and those factories cannot be combined.
-# Build Jubjub with `--features jubjub,orbis-node`. The Docker benchmark
-# image still passes `authz-vera-go` and `bulletin-vera-go` explicitly.
+# In-process benchmark node. The curve features do not enable this; build
+# Jubjub with `--features jubjub,orbis-node`.
 orbis-node = [
     "dep:orbis-node",
     "orbis-node/redb",
@@ -52,30 +42,10 @@ orbis-node = [
 ]
 bls12-381 = ["cli-tool/bls12-381", "crypto/bls12-381"]
 jubjub = ["cli-tool/jubjub", "crypto/jubjub"]
-# In-process node for the upgrade image. The compose stack is the Go chain
-# (`sourcehub`), so this follows `docker/Dockerfile.node` and must not enable
-# `orbis-node` (that feature selects the Commonware factories).
-upgrade-driver = [
-    "dep:orbis-node",
-    "orbis-node?/redb",
-    "orbis-node?/authz-vera-go",
-    "orbis-node?/bulletin-vera-go",
-    "orbis-node?/iroh",
-    "orbis-node?/harness",
-]
 
 [[bin]]
 name = "orbis-bench"
 path = "src/main.rs"
-required-features = ["orbis-node"]
-
-[[bin]]
-name = "orbis-upgrade-driver"
-path = "src/bin/orbis-upgrade-driver.rs"
-required-features = ["upgrade-driver"]
-
-[[test]]
-name = "docker_smoke"
 required-features = ["orbis-node"]
 
 [lints]

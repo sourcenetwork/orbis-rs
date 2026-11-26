@@ -1,7 +1,7 @@
 name: Publish Docker Image
 
-# Builds four production orbis-node images (ENABLE_INTEGRATION_TEST=false):
-# vera and vera-go, each for bls12-381 and jubjub. Each image is a multi-arch
+# Builds two production orbis-node images (ENABLE_INTEGRATION_TEST=false):
+# Vera for bls12-381 and jubjub. Each image is a multi-arch
 # manifest (linux/amd64 + linux/arm64) on GHCR. arm64 is built on a native
 # runner rather than QEMU so the Rust compile doesn't crawl.
 #
@@ -72,7 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [vera, vera-go]
+        backend: [vera]
         crypto: [bls12-381, jubjub]
         arch: [amd64, arm64]
         include:
@@ -108,7 +108,6 @@ jobs:
           build-args: |
             ENABLE_INTEGRATION_TEST=${{ env.ENABLE_INTEGRATION_TEST }}
             CRYPTO_FEATURE=${{ matrix.crypto }}
-            BACKEND=${{ matrix.backend }}
           cache-from: type=gha,scope=${{ matrix.arch }}-${{ matrix.backend }}-${{ matrix.crypto }}
           cache-to: type=gha,scope=${{ matrix.arch }}-${{ matrix.backend }}-${{ matrix.crypto }},mode=max
 
@@ -118,7 +117,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        backend: [vera, vera-go]
+        backend: [vera]
         crypto: [bls12-381, jubjub]
     steps:
       - name: Set up Docker Buildx

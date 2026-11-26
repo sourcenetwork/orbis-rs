@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compile and discover the backend-neutral E2E contract without executing it.
+# Compile and discover the E2E contract without executing it.
 
 set -Eeuo pipefail
 
@@ -10,13 +10,11 @@ trap 'rm -f "$inventory_file"' EXIT
 
 readonly filter='package(orbis-node) & test(/^tests::e2e::/)'
 
-# Every scenario below was confirmed present in all four CI compile cells
-# (cosmos/native x bls12-381/jubjub) via `cargo nextest list --run-ignored
-# all` on each cell's own `cargo_flags` (see .github/workflows/rust.yml's
-# `compile` matrix). Regenerate by re-running that command for each cell and
-# intersecting the four outputs; add any new name that shows up in all four,
-# and only there -- a name a future PR can't put in this list without
-# someone noticing it's cfg'd out of one backend/crypto build.
+# Every scenario below is present in both CI compile cells (bls12-381 and
+# jubjub) via `cargo nextest list --run-ignored all` on each cell's own
+# `cargo_flags` (see .github/workflows/rust.yml's `compile` matrix). Add a new
+# name only when it shows up in both, so a scenario cannot be cfg'd out of one
+# crypto build unnoticed.
 readonly -a required_tests=(
   'tests::e2e::cancel_ring_reshare::test_cancel_stuck_reshare_reverts_ring_and_preserves_signing'
   'tests::e2e::concurrent_delegated_dkg::test_delegated_dkg_with_vera_end_to_end'
@@ -54,6 +52,8 @@ readonly -a required_tests=(
   'tests::e2e::restart_scenario::test_restarted_member_keeps_identity_and_polynomial'
   'tests::e2e::scheduled_refresh::test_due_refresh_completes_after_restart'
   'tests::e2e::standard_dkg_pre::test_cli_calls_dkg_and_pre_endpoint'
+  'tests::e2e::unsafe_testing_gate::production_docker_nodes_do_not_expose_unsafe_testing_service'
+  'tests::e2e::unsafe_testing_gate::unsafe_testing_docker_nodes_require_runtime_opt_in'
   'tests::e2e::upgrade::test_v0_services_rejected_after_ring_upgrade'
 )
 
@@ -69,21 +69,20 @@ readonly -a one_of_crypto_variant_tests=(
   'tests::e2e::report_invalid_sign_share_frost::test_frost_invalid_sign_share_triggers_on_chain_report'
 )
 
-# Specialized qualifications: real coverage, deliberately not part of the
-# backend-neutral contract above, so their absence from a given cell's
-# inventory is expected and not checked here.
-#   - `tests::e2e::fault_injection::*` — Cosmos-only fault-injection harness
-#     (gated on the `fault-injection` feature, only wired for Cosmos cells).
+# Specialized qualifications, deliberately not part of the contract above:
+#   - `tests::e2e::fault_injection::*` — in-process fault injection against a
+#     `verad` cluster, gated on the `fault-injection` feature and `#[ignore]`d
+#     until `VERAD_BINARY` is supplied.
 #   - `tests::e2e::vera_lifecycle::*`/`tests::e2e::vera_trust_gateway::*`
-#     — Vera-only; `vera_trust_gateway_ring_dkg` itself is `#[ignore]`d
-#     (needs a real Vera Docker image + compiled Trust gateway contract
-#     artifacts not built in CI).
+#     — `vera_trust_gateway_ring_dkg` itself is `#[ignore]`d (needs a real
+#     Vera Docker image + compiled Trust gateway contract artifacts not built
+#     in CI).
 
 cd "$repository_root"
 
 # `nextest list` builds the selected test binary and asks the Rust test harness
 # for its inventory. It does not execute test bodies. Include ignored tests so
-# a backend capability gap remains visible as part of the shared contract.
+# an ignored scenario remains visible as part of the contract.
 # Color stays off: the workflow sets CARGO_TERM_COLOR=always, and nextest then
 # splits `module::test_name` with ANSI codes, which hides the required names.
 CARGO_TERM_COLOR=never cargo nextest list -p orbis-node --lib "$@" \
@@ -94,7 +93,7 @@ CARGO_TERM_COLOR=never cargo nextest list -p orbis-node --lib "$@" \
 missing=0
 for test_name in "${required_tests[@]}"; do
   if ! grep -Fq -- "$test_name" "$inventory_file"; then
-    echo "missing required shared E2E test: $test_name" >&2
+    echo "missing required E2E test: $test_name" >&2
     missing=1
   fi
 done
@@ -112,8 +111,8 @@ if ((crypto_variants_present != 1)); then
 fi
 
 if ((missing != 0)); then
-  echo "backend-neutral E2E inventory is incomplete" >&2
+  echo "E2E inventory is incomplete" >&2
   exit 1
 fi
 
-echo "verified ${#required_tests[@]} required shared E2E scenarios (+1 crypto-variant pair)"
+echo "verified ${#required_tests[@]} required E2E scenarios (+1 crypto-variant pair)"

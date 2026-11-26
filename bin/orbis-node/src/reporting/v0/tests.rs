@@ -531,7 +531,7 @@ async fn invalid_refresh_commitment_preflight_queues_report_before_rejection() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
 
     let service =
         DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
@@ -834,7 +834,7 @@ async fn undecodable_refresh_commitment_preflight_queues_report_before_rejection
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
 
     let service =
         DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
@@ -1012,7 +1012,7 @@ async fn public_origin_invalid_payload_queues_report_before_abort() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     sleep(Duration::from_millis(100)).await;
 
     let service =
@@ -1187,7 +1187,7 @@ async fn staged_refresh_result_invalid_payload_queues_report_before_abort() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     sleep(Duration::from_millis(100)).await;
 
     let service =
@@ -1395,7 +1395,7 @@ async fn public_origin_non_commitment_equivocation_queues_report_before_abort() 
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     sleep(Duration::from_millis(100)).await;
 
     let service =
@@ -1623,7 +1623,7 @@ async fn refresh_health_check_origin_equivocation_queues_report_before_abort() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     sleep(Duration::from_millis(100)).await;
 
     let service =
@@ -1836,7 +1836,7 @@ async fn public_commitment_origin_equivocation_queues_report_before_abort() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     sleep(Duration::from_millis(100)).await;
 
     let service =
@@ -2374,7 +2374,7 @@ async fn threshold_signs_offline_report_without_accused_node() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
 
     let service =
         DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
@@ -2481,7 +2481,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
 
     let service =
         DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
@@ -2711,7 +2711,7 @@ async fn threshold_signs_invalid_crypto_sign_report_without_accused_node() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
 
     let service =
         DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
@@ -2890,7 +2890,7 @@ async fn co_signers_refuse_invalid_crypto_sign_report_when_share_verifies() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
 
     let service =
         DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
@@ -3043,7 +3043,7 @@ async fn health_probe_blocks_report_when_accused_node_is_online() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
 
     let service =
         DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
@@ -3178,7 +3178,7 @@ async fn control_ack_equivocation_queues_report() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     sleep(Duration::from_millis(100)).await;
 
     let service =
@@ -3374,7 +3374,7 @@ async fn leader_prepare_fault_queues_report_for_noncanonical_leader() {
         test_db_path(&format!("{db_name}_2")),
         test_db_path(&format!("{db_name}_3")),
     ];
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let mut network = setup_three_node_network_with_sign(true, db_name).await;
     sleep(Duration::from_millis(100)).await;
 
     let service =

@@ -1,21 +1,18 @@
 //! Docker E2E: a real 3-node ring backed by a real Defra container end to end.
 //!
-//! Fully backend-neutral — one test body, no `#[cfg]` split. Ring creation
-//! with `pre_share_endpoints` now goes through the shared
-//! `BulletinTestDriver::register_ring`/`RingSpec` path (extended with a
-//! `pre_share_endpoints` field — see that struct's own doc comment) rather
-//! than a per-backend escape hatch: `CosmosAdmin::register_ring` and
-//! `VeraTestEnvironment::register_ring` each hide their own backend's
-//! ring-policy registration/node-authorization mechanics behind the same
-//! method signature. `environment.defra_url()`/`defra_container_url()`/
-//! `sidecar_network_name()` go through the shared `DefraTestDriver` trait.
+//! Ring creation with `pre_share_endpoints` goes through
+//! `BulletinTestDriver::register_ring`/`RingSpec` (see that struct's
+//! `pre_share_endpoints` doc comment); `VeraTestEnvironment::register_ring`
+//! hides ring-policy registration and node authorization.
+//! `environment.defra_url()`/`defra_container_url()`/`sidecar_network_name()`
+//! go through the `DefraTestDriver` trait.
 //!
 //! DKG uses the already-shared `pre_scenario::run_dkg` helper. The PRE
 //! retrieval step, though, needs a sidecar: a reader fetching from Defra
 //! needs `defra_container_url`, and on Docker Desktop (macOS/Windows) only
 //! a *container* on this project's own bridge network can reach that
 //! address — the host process (this test itself) cannot, confirmed
-//! empirically on both backends. Producer-side writes from sibling
+//! empirically. Producer-side writes from sibling
 //! containers succeed (Defra logs real mutation commits); a host-side
 //! fetch of the same address fails for every manifest entry. Not a bug in
 //! this feature or in Docker Desktop — its VM-isolated networking has no
@@ -56,7 +53,7 @@ const THRESHOLD: u32 = 2;
 const PLAINTEXT: &[u8] = b"defra-docker-e2e-plaintext";
 const READER_SEED: &str = "defra-pre-scenario-reader";
 
-// `register_ring`'s own implementation (both backends) registers
+// `register_ring`'s own implementation registers
 // `policy_id` as a `ring_policy` ACP object and grants itself the `creator`
 // relation on it — the policy supplied here must define that shape (see
 // `RingSpec::pre_share_endpoints`'s doc comment).
@@ -218,13 +215,10 @@ async fn test_defra_backed_pre_end_to_end() {
     let pending_json = serde_json::to_string(&pending).expect("serialize pending PRE retrieval");
 
     // Must match whatever curve *this test binary itself* was compiled
-    // with, not an env var: `ORBIS_INTEGRATION_CRYPTO` is a Docker-build-time
-    // convention that only Cosmos's own image build reads (native doesn't
-    // set it at all in CI), so reading it here picked the wrong curve for
-    // native, silently defaulting to bls12-381 even under a jubjub build —
-    // confirmed by a real cross-backend size mismatch ("PubPoly bytes too
-    // short: expected 100, got 68") when the sidecar tried to parse
-    // jubjub-sized manifest data as bls12-381.
+    // with, not an env var: CI does not set `ORBIS_INTEGRATION_CRYPTO`, so
+    // reading it here would silently default to bls12-381 under a jubjub
+    // build and the sidecar would fail to parse jubjub-sized manifest data
+    // ("PubPoly bytes too short: expected 100, got 68").
     #[cfg(feature = "bls12-381")]
     let crypto_feature = "bls12-381";
     #[cfg(feature = "jubjub")]
