@@ -129,15 +129,11 @@ signButton.addEventListener("click", async () => {
     });
 
     const result = await postJson("/api/sign", {
-      derivation_id: derivationId,
-      message_hex: messageHex,
+      request_token: challengeInfo.request_token,
       issuer_did: did,
       authenticator_data_b64: bytesToBase64(assertion.response.authenticatorData),
       client_data_json_b64: bytesToBase64(assertion.response.clientDataJSON),
       signature_b64: bytesToBase64(assertion.response.signature),
-      issued_at: challengeInfo.issued_at,
-      expiry: challengeInfo.expiry,
-      nonce_hex: challengeInfo.nonce_hex,
     });
 
     signResult.textContent = `signature = ${result.signature_hex}`;

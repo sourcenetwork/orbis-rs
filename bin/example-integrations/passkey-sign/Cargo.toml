@@ -9,17 +9,14 @@ readme = "README.md"
 
 [dependencies]
 orbis-webauthn.workspace = true
-orbis-integration-core.workspace = true
 authn = { path = "../../../crates/authn" }
-proto = { path = "../../../crates/proto" }
-cli-tool = { path = "../../cli-tool", default-features = false }
+orbis-sdk = { workspace = true, features = ["webauthn"] }
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 axum = "0.8"
 tokio = { workspace = true }
 tonic = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
@@ -27,12 +24,12 @@ clap = { version = "4.5", features = ["derive", "env"] }
 
 [features]
 default = ["bls12-381"]
-# Forwards to `cli-tool`'s matching curve backend — hardcoding one here
+# Forwards to `orbis-sdk`'s matching curve backend — hardcoding one here
 # unconditionally (instead of forwarding) would force that backend on for
 # any whole-workspace build, breaking the other backend's build via
 # `crypto`'s own "mutually exclusive" guard.
-bls12-381 = ["cli-tool/bls12-381"]
-jubjub = ["cli-tool/jubjub"]
+bls12-381 = ["orbis-sdk/bls12-381"]
+jubjub = ["orbis-sdk/jubjub"]
 
 [lints]
 workspace = true

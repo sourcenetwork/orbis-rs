@@ -11,7 +11,7 @@ authn = { path = "../../crates/authn" }
 bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera-go", "dummy-type"] }
 bs58 = "0.5"
 clap = { version = "4.5", features = ["derive"] }
-cli-tool = { path = "../cli-tool", default-features = false }
+cli-tool = { path = "../cli-tool", default-features = false, optional = true }
 common = { path = "../../crates/common" }
 cosmrs = { workspace = true }
 crypto = { path = "../../crates/crypto", default-features = false }
@@ -44,19 +44,21 @@ default = ["bls12-381", "orbis-node"]
 # image still passes `authz-vera-go` and `bulletin-vera-go` explicitly.
 orbis-node = [
     "dep:orbis-node",
+    "dep:cli-tool",
     "orbis-node/redb",
     "orbis-node/authz-vera",
     "orbis-node/bulletin-vera",
     "orbis-node/iroh",
     "orbis-node/harness",
 ]
-bls12-381 = ["cli-tool/bls12-381", "crypto/bls12-381"]
-jubjub = ["cli-tool/jubjub", "crypto/jubjub"]
+bls12-381 = ["cli-tool?/bls12-381", "crypto/bls12-381"]
+jubjub = ["cli-tool?/jubjub", "crypto/jubjub"]
 # In-process node for the upgrade image. The compose stack is the Go chain
 # (`sourcehub`), so this follows `docker/Dockerfile.node` and must not enable
 # `orbis-node` (that feature selects the Commonware factories).
 upgrade-driver = [
     "dep:orbis-node",
+    "dep:cli-tool",
     "orbis-node?/redb",
     "orbis-node?/authz-vera-go",
     "orbis-node?/bulletin-vera-go",

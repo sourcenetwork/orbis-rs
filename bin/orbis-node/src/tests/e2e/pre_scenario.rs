@@ -530,8 +530,16 @@ async fn pre_with_retry(
 }
 
 pub(super) fn assert_policy_rejection(context: &str, error: &anyhow::Error) {
+    // `cli_tool`'s Sign/PRE commands now wrap a rejected gRPC call as
+    // `orbis_sdk::SdkError::Transport(tonic::Status)` rather than letting
+    // `tonic::Status` itself be anyhow's top-level error — `downcast_ref`
+    // only matches the exact concrete type at the position it's called on
+    // (see anyhow's own docs on `Error::chain` for this), so a rejection
+    // nested one layer deeper needs the chain walked instead of a single
+    // direct downcast.
     let status = error
-        .downcast_ref::<tonic::Status>()
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<tonic::Status>())
         .unwrap_or_else(|| panic!("{context}: expected tonic::Status source, got: {error:#}"));
     assert_eq!(
         status.code(),

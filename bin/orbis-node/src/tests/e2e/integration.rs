@@ -442,10 +442,11 @@ resources:
         "PRE must be rejected for a requires_pet ring when the document has no tag"
     );
     // `{:?}` (anyhow's Debug impl), not `{}` (Display): `do_pre_with_inline_document`
-    // wraps the underlying tonic::Status in `.context("PRE request failed")`, so
-    // `.to_string()` only ever shows that top-level wrapper — the real rejection
-    // reason (e.g. "document has no pet_tag but ring requires PET") lives one
-    // level down in the error's cause chain, which only the Debug format prints.
+    // propagates the underlying `tonic::Status` wrapped in
+    // `orbis_sdk::SdkError::Transport`, so `.to_string()` only ever shows that
+    // top-level wrapper's own message — the real rejection reason (e.g. "document
+    // has no pet_tag but ring requires PET") lives one level down in the error's
+    // cause chain, which only the Debug format prints.
     let no_tag_error_message = format!("{:?}", pre_result_no_tag.unwrap_err());
     assert!(
         no_tag_error_message.contains("pet_tag") || no_tag_error_message.contains("PET"),

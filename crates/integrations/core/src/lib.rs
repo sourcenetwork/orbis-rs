@@ -24,6 +24,30 @@ pub trait CanonicalOperation {
     fn canonical_bytes(&self) -> Vec<u8>;
 }
 
+/// Produces authentication evidence for an operation `Op`, authorizing it in
+/// place of a JWT. Each mechanism's own crate (`orbis-webauthn`, and in the
+/// future an email/DKIM crate) implements this for its own evidence type;
+/// a generic caller (`orbis-sdk`'s `submit_*_with_evidence` functions) never
+/// needs to know which mechanism it's holding.
+///
+/// `Wire` is the mechanism's own evidence payload shape — e.g.
+/// `orbis_webauthn::WebAuthnEvidence` — independent of any one protocol's
+/// generated proto type, since every service's request message is a
+/// distinct Rust type even where their fields are identical. A caller maps
+/// `Wire` into the right wire format at its own boundary.
+///
+/// `produce` takes `operation` so a mechanism that must bind its evidence to
+/// the operation's own canonical encoding (anything challenge-based) can do
+/// so; a mechanism that already produced self-contained evidence elsewhere
+/// (e.g. a WebAuthn assertion a browser already signed over the exact
+/// challenge bytes) just repackages it and ignores `operation`.
+pub trait ChallengeEvidence<Op: CanonicalOperation> {
+    type Wire;
+    type Error: std::fmt::Display;
+
+    fn produce(self, operation: &Op) -> Result<Self::Wire, Self::Error>;
+}
+
 /// Domain separator for the Sign operation encoding. Bump the version
 /// suffix on any incompatible change to the encoded fields or their order.
 pub const SIGN_OPERATION_DOMAIN: &[u8] = b"orbis-integration-sign-operation-v1";

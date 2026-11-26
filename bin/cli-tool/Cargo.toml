@@ -15,13 +15,12 @@ futures = { workspace = true }
 uuid = { version = "1.0", features = ["v4"] }
 crypto = { path = "../../crates/crypto", default-features = false }
 authn = { path = "../../crates/authn" }
-orbis-integration-core.workspace = true
 orbis-webauthn.workspace = true
+orbis-sdk = { workspace = true, features = ["webauthn"] }
 p256 = { version = "0.13", features = ["ecdsa"] }
 authz = { path = "../../crates/authz" }
 common = { path = "../../crates/common", features = ["funding"] }
 bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera-go"] }
-pre-share = { path = "../../crates/pre-share", default-features = false }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -44,8 +43,8 @@ required-features = ["vera"]
 [features]
 vera = ["bulletin/vera", "common/vera", "dep:alloy-primitives", "dep:vera-client", "dep:vera-domain", "dep:local-storage", "dep:zeroize"]
 default = ["bls12-381"]
-bls12-381 = ["crypto/bls12-381", "pre-share/bls12-381"]
-jubjub = ["crypto/jubjub", "pre-share/jubjub"]
+bls12-381 = ["crypto/bls12-381", "orbis-sdk/bls12-381"]
+jubjub = ["crypto/jubjub", "orbis-sdk/jubjub"]
 
 [[test]]
 name = "vera_admin"
