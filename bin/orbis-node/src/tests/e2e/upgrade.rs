@@ -89,8 +89,14 @@ fn assert_pre_activation_response<T>(operation: &str, result: &anyhow::Result<T>
 }
 
 fn assert_server_version_rejection(operation: &str, error: &anyhow::Error) {
+    // `cli_tool`'s Sign/PRE/DKG commands now wrap a rejected gRPC call as
+    // `orbis_sdk::SdkError::Transport(tonic::Status)` rather than letting
+    // `tonic::Status` itself be anyhow's top-level error, so the chain
+    // needs walking instead of a single direct downcast — see
+    // `pre_scenario::assert_policy_rejection`'s identical fix.
     let status = error
-        .downcast_ref::<tonic::Status>()
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<tonic::Status>())
         .unwrap_or_else(|| panic!("{operation}: expected tonic::Status source, got: {error:#}"));
     assert_eq!(
         status.code(),
