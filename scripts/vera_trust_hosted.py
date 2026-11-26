@@ -15,10 +15,10 @@ import tarfile
 import tempfile
 import time
 
-VERA = 'faf4a4f094c1b4f5786bce0cbeb6567966e27999'
+VERA = 'c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27'
 VERA_VERIFIER = '9de4ac3391caf3b7ac85e317177daa9b9ced8a5a'
 VERIFIER_HEADER_SHA256 = '23a08dade8e2408d567df5bbf4c894689a51e3f24f478809cff5c3a3b9502b15'
-VERA_SDK = 'faf4a4f094c1b4f5786bce0cbeb6567966e27999'
+VERA_SDK = 'c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27'
 DEFRA = '2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606'
 SELECTOR = 'tests::e2e::vera_lifecycle::vera_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'

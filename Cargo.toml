@@ -49,13 +49,13 @@ orbis-webauthn = { path = "crates/integrations/webauthn" }
 orbis-email = { path = "crates/integrations/email" }
 
 acp = { package = "sourcenetwork-acp", version = "=0.0.1" }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "faf4a4f094c1b4f5786bce0cbeb6567966e27999" }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "faf4a4f094c1b4f5786bce0cbeb6567966e27999" }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "faf4a4f094c1b4f5786bce0cbeb6567966e27999" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "faf4a4f094c1b4f5786bce0cbeb6567966e27999" }
-vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "faf4a4f094c1b4f5786bce0cbeb6567966e27999" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "faf4a4f094c1b4f5786bce0cbeb6567966e27999" }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "faf4a4f094c1b4f5786bce0cbeb6567966e27999" }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
 # Common dependencies across workspace
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }

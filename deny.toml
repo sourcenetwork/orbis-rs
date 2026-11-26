@@ -87,7 +87,6 @@ allow-git = [
     # entry replaces a stale `iverc/commonware-upstream` fork URL that no
     # longer matches what's actually patched.
     "https://github.com/commonwarexyz/monorepo",
-    "https://github.com/sourcenetwork/backbone.git",
     "https://github.com/sourcenetwork/defradb.rs",
     "https://github.com/sourcenetwork/orbis-rs",
     "https://github.com/sourcenetwork/regolith.git",
