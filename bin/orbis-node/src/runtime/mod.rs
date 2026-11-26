@@ -290,6 +290,23 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     // resolver config, which isn't free to rebuild on every email-evidence
     // request. `None` (the flag unset) rejects every such request on this
     // node, the safe default.
+    //
+    // TODO(DNSSEC): `new_system_conf()`'s resolver never validates DNSSEC —
+    // confirmed from mail_auth::dns::DnssecStatus's own doc comment: "The
+    // built-in backends do not validate DNSSEC and always report
+    // DnssecStatus::Indeterminate." A spoofed/poisoned DNS answer for the
+    // sending domain's `<selector>._domainkey.<domain>` TXT record would be
+    // trusted as-is. Mitigated today only if the node's configured OS
+    // resolver happens to itself validate DNSSEC (common for enterprise/
+    // cloud DNS, e.g. 1.1.1.1 / 8.8.8.8) — an operational assumption, not
+    // something this code verifies. To actually close this: (1) supply a
+    // validating `mail_auth::DnsCache` (the seam already exists — see
+    // `crate::...::email_auth`/`orbis_email::verify_email_message_with_cache`
+    // — populated from a resolver that performs real chain validation and
+    // sets `RecordSet::dnssec_status` accordingly), and (2) `orbis-email`'s
+    // own `check_verified_results` needs to actually read that field and
+    // reject anything but `DnssecStatus::Secure` — it doesn't inspect it at
+    // all today, so step (1) alone wouldn't yet matter.
     let email_authenticator = config.args.email_evidence_enabled.then(|| {
         Arc::new(
             mail_auth::MessageAuthenticator::new_system_conf()

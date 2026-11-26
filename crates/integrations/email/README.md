@@ -44,11 +44,22 @@ verification logic itself.
 ## What's out of scope here
 
 The SMTP challenge/capture service that actually sends a challenge email and
-receives the reply (an example app's job, not this crate's), DNSSEC
-validation (a deliberate, flagged gap for now — plain DNS trust, matching
-how this codebase already documents other unvalidated-chain-read trust
-assumptions rather than silently assuming more rigor than exists), and the
+receives the reply (an example app's job, not this crate's), and the
 `email-decrypt` example app itself.
+
+**TODO(DNSSEC):** key lookups trust plain DNS with no chain-of-trust
+validation — confirmed from `mail_auth::dns::DnssecStatus`'s own doc
+comment: its built-in resolver backends never validate DNSSEC and always
+report `Indeterminate`. A spoofed/poisoned answer for the signing domain's
+`_domainkey` TXT record would be trusted as-is. Mitigated today only if a
+deployment's own OS resolver happens to validate DNSSEC itself (common for
+enterprise/cloud DNS) — an operational assumption, not anything this crate
+verifies. Closing this needs two things, not one: a validating
+`mail_auth::DnsCache` wired in (the seam already exists —
+`verify_email_message_with_cache`), *and* `check_verified_results` actually
+reading `RecordSet::dnssec_status` and rejecting anything but `Secure` —
+today it doesn't inspect that field at all, so the first half alone
+wouldn't be enough.
 
 The identity this crate authenticates as is always `email:sha256(address)`
 — a plain string, not a DID — but ACP's `Authz::check` already takes an
