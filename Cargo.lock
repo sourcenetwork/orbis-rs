@@ -7072,6 +7072,8 @@ dependencies = [
  "authn",
  "base64 0.22.1",
  "bs58",
+ "bulletin",
+ "common",
  "cosmrs",
  "crypto 0.0.1",
  "hex",

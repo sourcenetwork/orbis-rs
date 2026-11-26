@@ -35,6 +35,12 @@ pub enum SdkError {
     /// A `ChallengeEvidence` producer failed to produce its evidence.
     #[error("evidence error: {0}")]
     Evidence(String),
+    /// A chain/bulletin RPC call failed — connecting to the chain, signing
+    /// or broadcasting a transaction, or reading/posting a bulletin entry.
+    /// Distinct from [`SdkError::Transport`], which is specifically a
+    /// failed gRPC call to orbis-node itself.
+    #[error("chain error: {0}")]
+    Chain(String),
     /// An argument was invalid on its face (e.g. a bad combination of
     /// optional fields), independent of any network or crypto operation.
     #[error("invalid input: {0}")]

@@ -23,6 +23,7 @@
 //! Everything here talks to one orbis-node endpoint through an
 //! [`OrbisClient`].
 
+mod bulletin;
 mod client;
 mod crypto;
 mod dkg;
@@ -36,7 +37,13 @@ mod query;
 mod sign;
 mod store_secret;
 
+pub use ::bulletin::r#trait::{BulletinKind, BulletinWriteKind};
+pub use bulletin::{
+    add_bulletin_collaborator, create_bulletin_post, list_bulletin_posts, post_key_derivation,
+    read_bulletin_post, register_bulletin_namespace,
+};
 pub use client::OrbisClient;
+pub use common::blockchain::ChainConfig;
 pub use crypto::{
     encrypt_secret, generate_pet_tag, prepare_secret, prove_pet_tag_knowledge, PreparedPetTag,
     PreparedSecret,
