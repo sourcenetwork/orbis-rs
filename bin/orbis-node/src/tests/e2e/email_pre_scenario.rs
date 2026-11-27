@@ -394,10 +394,18 @@ async fn reject_reader_key_swapped_evidence(
         webauthn_assertion: None,
         email_assertion: Some(email_assertion),
     };
-    let result = client.start_pre(tonic::Request::new(request)).await;
+    let status = client
+        .start_pre(tonic::Request::new(request))
+        .await
+        .expect_err("a reply confirming one reader key must not authorize PRE for a different one");
+    assert_eq!(
+        status.code(),
+        tonic::Code::Unauthenticated,
+        "swapped reader-key evidence must be rejected as unauthenticated, got: {status:?}"
+    );
     assert!(
-        result.is_err(),
-        "a reply confirming one reader key must not authorize PRE for a different one"
+        status.message().contains("challenge text was not found"),
+        "expected a challenge-text mismatch rejection, got: {status:?}"
     );
 }
 

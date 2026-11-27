@@ -40,9 +40,18 @@ fixed, operator-curated set of keys than depend on live DNS at request time
 through `mail-auth`'s own public `DnsCache`/`ResolverCache` seam instead
 (`verify_email_message_with_cache`/`verify_and_build_token_with_cache`): a
 cache is consulted before any live lookup `MessageAuthenticator` would
-otherwise perform. A future chain-backed store would implement that same
-trait pair, built from chain state instead of a file — no change to the
-verification logic itself. `bin/orbis-node/src/tests/e2e/email_sign_scenario.rs`
+otherwise perform, and `verify_email_message_with_cache` itself rejects
+outright, before ever calling `authenticator`, if the message's primary
+signing key isn't already in that cache. Production pinned-key mode goes
+one step further than that pre-check: `orbis-node`'s own `init_node`
+builds the `authenticator` it passes in with a resolver that has *zero*
+configured nameservers, so none of `mail-auth`'s own lookups — not just
+the primary key, but also its ATPS/failure-report TXT lookups, which go
+through this same cache on a path the pre-check doesn't enumerate — can
+reach the network at all. A future chain-backed store would implement
+that same `DnsCache` trait pair, built from chain state instead of a
+file — no change to the verification logic itself.
+`bin/orbis-node/src/tests/e2e/email_sign_scenario.rs`
 exercises the pinned-file path end to end against the real node binary
 (there's no live DNS record for a synthetic test domain, so this is also how
 that Docker scenario works at all, not just a test convenience).

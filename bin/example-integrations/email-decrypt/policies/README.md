@@ -52,9 +52,14 @@ step.
 
 ## Against a real Cosmos deployment
 
-`cli-tool`'s own admin commands are the right ones here instead:
+`cli-tool`'s own admin commands are the right ones here instead. Both need a
+funded account's `--signing-key`/`ORBIS_SIGNING_KEY` set — unlike
+`orbis-dev-cluster`'s `grant`/`register-object` above, `cli-tool` has no
+default signing key of its own (see `cli-tool/README.md`'s own flag table):
 
 ```sh
+export ORBIS_SIGNING_KEY=<your funded account's hex private key>
+
 cli-tool register-object-to-chain \
   --policy-id <POLICY_ID> --resource key --object-id <DERIVATION_ID>
 

@@ -313,11 +313,37 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     // `non_empty` already does for every other flag.
     let email_evidence_enabled = config.args.email_evidence_enabled
         || std::env::var_os("ORBIS_EMAIL_EVIDENCE_ENABLED").is_some_and(|value| value == "true");
+    // Resolved before the authenticator itself, so pinned-key mode (a
+    // file is configured) can build an authenticator that can't touch the
+    // network at all, instead of merely preferring not to.
+    let email_dkim_keys_file_path = non_empty(config.args.email_dkim_keys_file.clone());
     let email_authenticator = email_evidence_enabled.then(|| {
-        Arc::new(
+        Arc::new(if email_dkim_keys_file_path.is_some() {
+            // Pinned-key mode: a resolver with zero configured
+            // nameservers, so *every* lookup it could ever attempt fails
+            // immediately rather than reaching the network — not just
+            // the primary `<selector>._domainkey.<domain>` lookup this
+            // crate's own `orbis_email::PinnedDnsCache`/
+            // `unpinned_signing_keys_present` pre-check covers, but also
+            // `mail-auth`'s own secondary TXT lookups (ATPS third-party-
+            // signing checks, DKIM failure-report addresses) confirmed in
+            // its source to go through that exact same cache on a path
+            // the pre-check doesn't enumerate — a hand-maintained list of
+            // "every lookup mail-auth might ever issue" is one mail-auth
+            // upgrade away from silently going stale, where "the
+            // resolver itself has nowhere to send a query" can't. (Spiked
+            // directly against this exact construction: it succeeds, and
+            // a lookup against it errors in under a millisecond — never
+            // a hang, never a socket.)
+            mail_auth::MessageAuthenticator::new(
+                mail_auth::hickory_resolver::config::ResolverConfig::from_name_servers(vec![]),
+                mail_auth::hickory_resolver::config::ResolverOpts::default(),
+            )
+            .expect("failed to initialize offline (pinned-key-mode) DKIM authenticator")
+        } else {
             mail_auth::MessageAuthenticator::new_system_conf()
-                .expect("failed to initialize mail-auth DKIM authenticator"),
-        )
+                .expect("failed to initialize mail-auth DKIM authenticator")
+        })
     });
     // Pinned-key mode: an operator-curated file stands in for live DNS
     // entirely (see `orbis_email::PinnedDnsCache`'s own doc comment). Only
@@ -326,7 +352,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     // this whole function already follows for `webauthn_rp_id`/`origin`)
     // is "not configured," same as the flag being omitted entirely.
     let email_dns_cache = email_evidence_enabled.then(|| {
-        non_empty(config.args.email_dkim_keys_file.clone()).map(|path| {
+        email_dkim_keys_file_path.map(|path| {
             Arc::new(
                 orbis_email::PinnedDnsCache::load_from_file(std::path::Path::new(&path))
                     .expect("failed to load pinned DKIM keys file"),

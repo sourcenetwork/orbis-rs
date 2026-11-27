@@ -146,13 +146,26 @@ pub async fn verify_email_message(
 /// `txt_lookup`: "consulted before and updated after the query" — a cache
 /// *miss* still falls through to live DNS and writes that answer straight
 /// back into whatever cache it was given), this function never lets that
-/// fallback run at all: every `(d=, s=)` pair the message's own
-/// `DKIM-Signature` header(s) name must already be present in `cache`
-/// ([`unpinned_signing_keys_present`]), or verification is rejected before
-/// `authenticator` is ever asked to resolve anything. This is what
-/// actually makes a pinned key set closed, rather than merely preferred —
-/// without it, any domain not in the pin file would still silently verify
-/// over live, unauthenticated DNS.
+/// fallback run at all for the *primary* DKIM key lookup: every `(d=, s=)`
+/// pair the message's own `DKIM-Signature` header(s) name must already be
+/// present in `cache` ([`unpinned_signing_keys_present`]), or verification
+/// is rejected before `authenticator` is ever asked to resolve anything.
+///
+/// That check alone isn't the *whole* story, though — `verify_dkim` can
+/// issue two more TXT lookups through this same `cache` that it doesn't
+/// enumerate (an ATPS third-party-signing check, and a DKIM
+/// failure-report address), neither of which this function's own
+/// pre-check covers. Closing *that* gap isn't this function's job: a
+/// caller in true pinned-key mode (`orbis-node`'s own
+/// `runtime::init_node`) is expected to pass an `authenticator` whose
+/// underlying resolver has zero configured nameservers, so literally
+/// nothing it ever attempts — this primary lookup included, belt and
+/// suspenders — can reach the network at all, rather than maintaining a
+/// hand-enumerated list of every lookup `mail-auth` might ever issue
+/// (one `mail-auth` upgrade away from silently going stale). This
+/// function's own pre-check stays for the clear, specific
+/// [`VerifyError::UnpinnedSigningKey`] rejection it gives in the common
+/// case.
 pub async fn verify_email_message_with_cache<C: mail_auth::DnsCache>(
     authenticator: &MessageAuthenticator,
     cache: &C,
