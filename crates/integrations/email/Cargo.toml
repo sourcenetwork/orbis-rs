@@ -11,6 +11,14 @@ readme = "README.md"
 orbis-integration-core.workspace = true
 authn = { path = "../../authn" }
 mail-auth.workspace = true
+# Independent decoding pass over the same raw bytes `mail-auth` DKIM-verifies
+# — never a substitute for its own body-hash check, only for locating the
+# challenge text within whatever content-transfer-encoding (quoted-printable,
+# base64) or HTML-only body a real mail client actually sent. Same version
+# and `full_encoding` feature mail-auth itself already pulls in transitively
+# (confirmed in its own Cargo.toml), so this adds no new crate to the
+# dependency tree, just makes its existing presence a direct dependency too.
+mail-parser = { version = "1.0", features = ["full_encoding"] }
 sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

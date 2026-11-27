@@ -28,6 +28,7 @@ allow = [
     "BSL-1.0",   # Boost Software License (permissive) — used by ryu via serde_json
     "MPL-2.0",   # file-level copyleft only; we don't modify these files.
                  # affects: attohttpc (via iroh→igd-next), option-ext (via dirs)
+    "0BSD",      # BSD Zero Clause (OSI-approved, public-domain-equivalent) — used by quoted_printable via lettre
 ]
 
 # Confidence threshold for license text scanning (when SPDX field is absent)

@@ -180,7 +180,7 @@ fn check_verified_results(
         return Err(VerifyError::NoAlignedPassingSignature);
     }
 
-    if !body_contains_text(parsed.raw_body(), expected_text) {
+    if !message_contains_text(parsed, expected_text) {
         return Err(VerifyError::TextNotFound);
     }
 
@@ -189,6 +189,33 @@ fn check_verified_results(
     }
 
     Ok(from_address.to_string())
+}
+
+/// Whether `expected_text` is present anywhere a human reading the message
+/// would actually see it. `parsed.raw_body()` (mail-auth's own view) is the
+/// *transport* body: for a real mail client's reply, that's routinely
+/// quoted-printable- or base64-encoded, or an HTML-only part with no
+/// matching text/plain sibling — a literal substring search against those
+/// raw bytes fails even when the text is right there, unencoded, once a
+/// mail reader decodes it. So this independently re-parses the same raw
+/// bytes with `mail-parser` (never mail-auth's own verification path,
+/// which must keep hashing the untouched transport bytes DKIM actually
+/// signed) and checks every decoded text body RFC 8621 defines as the
+/// message's `textBody` — HTML automatically converted to text when
+/// that's the only version present. The raw-bytes check stays as a cheap
+/// first attempt and safety net for the case `mail-parser` fails to parse
+/// something `mail-auth`'s own parser accepted.
+fn message_contains_text(parsed: &AuthenticatedMessage<'_>, expected_text: &str) -> bool {
+    if body_contains_text(parsed.raw_body(), expected_text) {
+        return true;
+    }
+    mail_parser::MessageParser::new()
+        .parse(parsed.raw_message())
+        .is_some_and(|message| {
+            message
+                .text_bodies()
+                .any(|text| body_contains_text(text.as_bytes(), expected_text))
+        })
 }
 
 /// Independently verifies `evidence` against `operation` and returns a

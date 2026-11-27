@@ -31,16 +31,18 @@ pub fn challenge_text(operation: &impl CanonicalDisplay) -> String {
     operation.canonical_display()
 }
 
-/// Whether `body` contains `text`, ignoring whitespace and hyphens —
-/// deliberately not a byte-exact match: mail clients re-wrap lines and
-/// mail/text editors sometimes insert soft hyphens at wrap points, both of
-/// which would otherwise break an exact substring check on a long,
-/// multi-line block of text. Case is preserved (not folded): unlike a
-/// short, meaningless derived code, this text carries real identifying
-/// data (hex-encoded hashes and keys, IDs), so case-insensitive matching
-/// would risk treating two distinct values that differ only in case as the
-/// same — a risk worth avoiding now that nothing forces every field to be
-/// case-normalized hex.
+/// Whether `body` contains `text`, ignoring whitespace, hyphens, and `>`
+/// quote markers — deliberately not a byte-exact match: mail clients
+/// re-wrap lines, mail/text editors sometimes insert soft hyphens at wrap
+/// points, and a reply that quotes the original message prefixes every
+/// quoted line with one or more `>` characters (RFC 3676's "quoted
+/// reply" convention) — any of which would otherwise break an exact
+/// substring check on a long, multi-line block of text. Case is preserved
+/// (not folded): unlike a short, meaningless derived code, this text
+/// carries real identifying data (hex-encoded hashes and keys, IDs), so
+/// case-insensitive matching would risk treating two distinct values that
+/// differ only in case as the same — a risk worth avoiding now that
+/// nothing forces every field to be case-normalized hex.
 pub fn body_contains_text(body: &[u8], text: &str) -> bool {
     let body_text = String::from_utf8_lossy(body);
     normalize(&body_text).contains(&normalize(text))
@@ -49,7 +51,7 @@ pub fn body_contains_text(body: &[u8], text: &str) -> bool {
 fn normalize(value: &str) -> String {
     value
         .chars()
-        .filter(|c| !c.is_whitespace() && *c != '-')
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != '>')
         .collect()
 }
 
@@ -89,6 +91,14 @@ mod tests {
     fn body_contains_text_survives_wrapping_and_blank_lines() {
         let text = "toy-operation: deadbeef\nexpiry: 123\n";
         let body = "Hi, replying to confirm:\n\ntoy-operation: dead-\nbeef\nexpiry: 123\n\nthanks!";
+        assert!(body_contains_text(body.as_bytes(), text));
+    }
+
+    #[test]
+    fn body_contains_text_survives_reply_quoting() {
+        let text = "toy-operation: deadbeef\nexpiry: 123\n";
+        let body =
+            "> toy-operation: deadbeef\n> expiry: 123\n>\n> On Mon, Jan 1, 2026, Ring wrote:";
         assert!(body_contains_text(body.as_bytes(), text));
     }
 

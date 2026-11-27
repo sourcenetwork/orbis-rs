@@ -13,6 +13,47 @@ struct Fixture {
     key: TestSigningKey,
 }
 
+/// A real mail client's quoted-printable encoder wraps long lines with a
+/// soft `=\r\n` line break partway through — exactly what a long
+/// hex-encoded field (PRE's `rdr_pk`, in practice) looks like once a real
+/// reply (Gmail included) gets re-encoded on the wire. No DKIM signature
+/// needed here: `message_contains_text` doesn't look at one, only at
+/// `AuthenticatedMessage`'s own parsed structure.
+#[test]
+fn message_contains_text_decodes_quoted_printable_soft_line_break() {
+    let hex_value = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+    let text = format!("rdr_pk: {hex_value}\n");
+    let (first, second) = hex_value.split_at(20);
+    let raw = format!(
+        "From: alice@example.test\r\nSubject: test\r\nTo: ring@orbis.test\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         Content-Transfer-Encoding: quoted-printable\r\n\r\nrdr_pk: {first}=\r\n{second}\r\n"
+    );
+    let parsed = AuthenticatedMessage::parse(raw.as_bytes()).expect("message parses");
+    assert!(
+        !body_contains_text(parsed.raw_body(), &text),
+        "sanity check: the raw transport bytes contain a soft line break \
+         splitting the hex value, so a literal substring search must fail \
+         — this is the bug message_contains_text exists to fix"
+    );
+    assert!(message_contains_text(&parsed, &text));
+}
+
+/// A reply with no text/plain part at all — only HTML, as some mail
+/// clients send by default. `mail_parser::Message::text_bodies` converts
+/// the HTML part to text automatically when it's the only version present
+/// (RFC 8621's `textBody`), so this still has to match.
+#[test]
+fn message_contains_text_decodes_html_only_body() {
+    let text = "confirming:\nORBIS SIGN REQUEST\nderivation: test\n";
+    let raw = b"From: alice@example.test\r\nSubject: test\r\nTo: ring@orbis.test\r\n\
+Content-Type: text/html; charset=utf-8\r\n\r\n\
+<div>confirming:<br>ORBIS SIGN REQUEST<br>derivation: test<br></div>\r\n";
+    let parsed = AuthenticatedMessage::parse(raw).expect("message parses");
+    assert!(!body_contains_text(parsed.raw_body(), text));
+    assert!(message_contains_text(&parsed, text));
+}
+
 fn fixture() -> Fixture {
     let key = TestSigningKey::generate(DOMAIN, SELECTOR);
     let cache = TestDnsCache::default();

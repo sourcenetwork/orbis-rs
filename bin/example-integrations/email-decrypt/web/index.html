@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Email-authorized Sign/PRE</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+  section { margin-bottom: 32px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 16px; }
+  label { display: block; margin-top: 10px; font-size: 14px; }
+  input, textarea { width: 100%; padding: 6px; margin-top: 4px; box-sizing: border-box; font-family: inherit; }
+  button { margin-top: 12px; padding: 8px 16px; cursor: pointer; }
+  pre { background: #f6f6f6; padding: 8px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 13px; }
+  .error { color: #b00020; }
+  .hint { color: #555; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Email-authorized threshold signing and decryption</h1>
+<p class="hint">
+  Reference app for Orbis's DKIM email-authorization integration. Your own
+  mailbox <em>is</em> the identity ACP grants or revokes — no password, no
+  passkey, no separate enrollment step. This page never verifies anything
+  itself; every ring node independently verifies the DKIM-signed reply you
+  send back before treating it as authorization. Grant your address's
+  identity permission via ACP first — see <code>policies/README.md</code>.
+</p>
+
+<section>
+  <h2>1. Look up your identity (DID)</h2>
+  <label>Your email address
+    <input id="did-address" placeholder="you@example.com">
+  </label>
+  <button id="did-lookup">Get DID</button>
+  <p class="hint">Grant <em>this</em> exact string permission via ACP (see
+    <code>policies/README.md</code>) before trying to sign or decrypt below —
+    it's a pure function of the address, so no email is sent just to look
+    it up.</p>
+  <pre id="did-result">—</pre>
+</section>
+
+<section>
+  <h2>2. Sign a message</h2>
+  <label>Your email address
+    <input id="sign-address" placeholder="you@example.com">
+  </label>
+  <label>Derivation ID
+    <input id="derivation-id" placeholder="from post-key-derivation">
+  </label>
+  <label>Message
+    <textarea id="message" rows="3" placeholder="message to sign"></textarea>
+  </label>
+  <button id="sign-challenge">Send challenge email</button>
+  <button id="sign-check">Check for reply</button>
+  <p class="hint">After sending, reply to the email from your own mail
+    client. Copy everything between (and including) the BEGIN/END lines
+    shown below into your reply exactly as-is, then click "Check for
+    reply."</p>
+  <pre id="sign-challenge-text">—</pre>
+  <pre id="sign-result">—</pre>
+</section>
+
+<section>
+  <h2>3. Decrypt via PRE</h2>
+  <label>Your email address
+    <input id="pre-address" placeholder="you@example.com">
+  </label>
+  <label>Ring public key (hex)
+    <input id="pre-ring-pk" placeholder="from DKG">
+  </label>
+  <label>Object ID
+    <input id="pre-object-id" placeholder="from store-secret / register-document">
+  </label>
+  <label>Derivation (hex, optional)
+    <input id="pre-derivation" placeholder="optional">
+  </label>
+  <label>Salt (optional)
+    <input id="pre-salt" placeholder="optional">
+  </label>
+  <button id="pre-challenge">Send challenge email</button>
+  <button id="pre-check">Check for reply</button>
+  <p class="hint">Same as above: copy everything between (and including)
+    the BEGIN/END lines shown below into your reply exactly as-is.</p>
+  <pre id="pre-challenge-text">—</pre>
+  <pre id="pre-result">—</pre>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>
