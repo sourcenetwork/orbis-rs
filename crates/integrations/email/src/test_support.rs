@@ -141,15 +141,33 @@ impl TestSigningKey {
     /// exactly as a captured mail reply would look. `from_address`'s domain
     /// does not have to equal this key's signing domain — tests that need a
     /// signature/From-domain mismatch (the DMARC-alignment failure case)
-    /// construct it that way deliberately.
+    /// construct it that way deliberately. Signs all three headers
+    /// (`h=From,Subject,To`); use [`Self::sign_message_with_headers`] for a
+    /// test that needs a signature not covering one of them.
     pub fn sign_message(&self, from_address: &str, to_address: &str, body: &str) -> Vec<u8> {
+        self.sign_message_with_headers(from_address, to_address, body, &["From", "Subject", "To"])
+    }
+
+    /// Same as [`Self::sign_message`], but with an explicit `h=` header
+    /// list — for a test that needs a signature whose `h=` doesn't cover
+    /// `From` at all, which `mail-auth`'s own header-canonicalization
+    /// faithfully honors: a header name absent from `h=` is simply never
+    /// hashed, so its content isn't protected by the signature no matter
+    /// what it says.
+    pub fn sign_message_with_headers(
+        &self,
+        from_address: &str,
+        to_address: &str,
+        body: &str,
+        headers: &[&str],
+    ) -> Vec<u8> {
         let message = format!(
             "From: {from_address}\r\nSubject: orbis-email test\r\nTo: {to_address}\r\n\r\n{body}\r\n"
         );
         let signature = DkimSigner::from_key(self.mail_auth_signing_key())
             .domain(self.domain.clone())
             .selector(self.selector.clone())
-            .headers(["From", "Subject", "To"])
+            .headers(headers.iter().copied())
             .sign(message.as_bytes())
             .expect("sign test message");
 

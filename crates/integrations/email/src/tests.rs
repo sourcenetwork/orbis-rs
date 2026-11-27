@@ -79,6 +79,59 @@ async fn verifies_a_well_formed_signed_reply() {
     assert_eq!(address, FROM);
 }
 
+/// DKIM's own header-counting rule (RFC 6376 §5.4.2) binds a signed header
+/// name to the header block's *last* instance of it, counted from the
+/// bottom — so a `From:` header prepended *above* the one the signature
+/// actually covers leaves the signature passing while naively reading
+/// "the first `From:` header" would return the attacker's unsigned one.
+/// Must be rejected outright, not attributed to either address.
+#[tokio::test]
+async fn rejects_message_with_multiple_from_headers() {
+    let f = fixture();
+    let text = "ORBIS SIGN REQUEST\nderivation: test\n";
+    let message = f
+        .key
+        .sign_message(FROM, TO, &format!("confirming:\n{text}"));
+    let message = String::from_utf8(message).expect("test message is ASCII");
+
+    // Prepend an extra, unsigned `From:` header above the one DKIM's
+    // bottom-counting rule actually covers.
+    let spoofed = message.replacen(
+        "From: alice@example.test\r\n",
+        "From: other@example.test\r\nFrom: alice@example.test\r\n",
+        1,
+    );
+    assert_ne!(spoofed, message, "sanity check: the replacement must apply");
+
+    let result =
+        verify_email_message_with_cache(&f.authenticator, &f.cache, spoofed.as_bytes(), FROM, text)
+            .await;
+    assert!(matches!(result, Err(VerifyError::MalformedMessage)));
+}
+
+/// A signature whose `h=` doesn't list `From` at all never canonicalizes
+/// or hashes that header — DKIM passing says nothing about its content,
+/// so alignment against it must not be trusted either, even with only one
+/// `From:` header present (no header-duplication trick needed at all).
+#[tokio::test]
+async fn rejects_signature_that_does_not_cover_from_header() {
+    let f = fixture();
+    let text = "ORBIS SIGN REQUEST\nderivation: test\n";
+    let message = f.key.sign_message_with_headers(
+        FROM,
+        TO,
+        &format!("confirming:\n{text}"),
+        &["Subject", "To"],
+    );
+
+    let result =
+        verify_email_message_with_cache(&f.authenticator, &f.cache, &message, FROM, text).await;
+    assert!(matches!(
+        result,
+        Err(VerifyError::NoAlignedPassingSignature)
+    ));
+}
+
 #[tokio::test]
 async fn rejects_missing_text() {
     let f = fixture();

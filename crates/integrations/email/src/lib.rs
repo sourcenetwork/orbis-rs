@@ -164,6 +164,20 @@ fn check_verified_results(
         return Err(VerifyError::NoSignature);
     }
 
+    // RFC 5322 §3.6 requires exactly one `From:` field. A second one is
+    // either a malformed message or an attempt to exploit DKIM's own
+    // header-counting rule (RFC 6376 §5.4.2: a header name listed once in
+    // `h=` covers only the header block's *last* instance of it, counted
+    // from the bottom): an extra `From:` prepended above the genuinely
+    // signed one leaves the signature passing while `first_from_address()`
+    // below would return the unsigned, attacker-chosen header instead of
+    // the one DKIM actually covered. Rejecting outright — rather than
+    // trying to bind to "whichever instance the signature covered" — is
+    // simpler and matches RFC 5322's own cardinality rule directly.
+    if parsed.from_addresses().len() != 1 {
+        return Err(VerifyError::MalformedMessage);
+    }
+
     let from_address = parsed.first_from_address();
     let from_domain = from_address
         .rsplit_once('@')
@@ -172,9 +186,18 @@ fn check_verified_results(
 
     let aligned_pass = results.iter().any(|output| {
         output.result() == &DkimResult::Pass
-            && output
-                .signature()
-                .is_some_and(|signature| signature.domain().eq_ignore_ascii_case(from_domain))
+            && output.signature().is_some_and(|signature| {
+                // Alignment alone isn't enough: a signature whose `h=`
+                // never lists `from` doesn't cover the `From:` header at
+                // all, so nothing here stops it from reading anything —
+                // DKIM only canonicalizes/hashes the header names `h=`
+                // actually lists.
+                signature.domain().eq_ignore_ascii_case(from_domain)
+                    && signature
+                        .h
+                        .iter()
+                        .any(|header| header.eq_ignore_ascii_case("from"))
+            })
     });
     if !aligned_pass {
         return Err(VerifyError::NoAlignedPassingSignature);
