@@ -203,6 +203,62 @@ async fn unsigned_message_is_rejected_cleanly() {
     assert!(matches!(result, Err(VerifyError::NoSignature)));
 }
 
+/// The whole point of pinned-key mode: a domain/selector the cache was
+/// never told about must be rejected outright, never silently resolved
+/// over live DNS. Deliberately signs with a key whose domain
+/// (`unpinned.test`) was never registered anywhere, against a *real*
+/// live-DNS-capable authenticator — if this fell through to the network
+/// the way `mail-auth`'s own `txt_lookup` does on a cache miss, this
+/// would either hang/timeout or return a live (NXDOMAIN) answer instead
+/// of the deterministic rejection asserted here.
+#[tokio::test]
+async fn rejects_unpinned_signing_key_without_touching_live_dns() {
+    let key = TestSigningKey::generate("unpinned.test", SELECTOR);
+    let cache = TestDnsCache::default(); // deliberately never registered
+    let authenticator = MessageAuthenticator::new_system_conf().expect("authenticator");
+    let text = "ORBIS SIGN REQUEST\nderivation: test\n";
+    let message = key.sign_message("alice@unpinned.test", TO, &format!("confirming:\n{text}"));
+
+    let result = verify_email_message_with_cache(
+        &authenticator,
+        &cache,
+        &message,
+        "alice@unpinned.test",
+        text,
+    )
+    .await;
+    assert!(matches!(result, Err(VerifyError::UnpinnedSigningKey)));
+}
+
+/// `mail-auth`'s own `txt_lookup` calls `ResolverCache::insert` with a
+/// real expiry after a live-DNS fallback. An earlier version of
+/// `MapCache::insert` ignored that expiry entirely, caching whatever came
+/// back (correct or spoofed) for the life of the process — this proves
+/// an already-past expiry is honored and treated as a miss, not a hit.
+#[test]
+fn map_cache_respects_ttl_and_expires_entries() {
+    use crate::dns_map_cache::MapCache;
+    use mail_auth::dkim::DomainKey;
+    use mail_auth::dns::{ResolverCache, TxtRecordParser};
+    use mail_auth::TxtRecord;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let signing_key = TestSigningKey::generate(DOMAIN, SELECTOR);
+    let domain_key =
+        DomainKey::parse(signing_key.txt_record()).expect("valid test DKIM key record");
+    let record = TxtRecord::DomainKey(Arc::new(domain_key));
+
+    let cache = MapCache::default();
+    let key: Box<str> = "orbistest._domainkey.example.test.".into();
+    cache.insert(key.clone(), record, Instant::now() - Duration::from_secs(1));
+
+    assert!(
+        cache.get::<str>(&key).is_none(),
+        "an expired entry must not be served as a cache hit"
+    );
+}
+
 struct ToyOperation(&'static str);
 
 impl CanonicalOperation for ToyOperation {

@@ -14,6 +14,11 @@ pub enum VerifyError {
     TextNotFound,
     #[error("claimed_address did not match the DKIM-verified From address")]
     ClaimedAddressMismatch,
+    #[error(
+        "message is signed by a domain/selector not present in the pinned key set; \
+         pinned-key mode never falls back to live DNS"
+    )]
+    UnpinnedSigningKey,
 }
 
 #[derive(Debug, thiserror::Error)]

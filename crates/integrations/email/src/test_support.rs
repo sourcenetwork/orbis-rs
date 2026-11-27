@@ -64,14 +64,10 @@ impl TestDnsCache {
     /// is test setup, not something that should fail softly.
     pub fn insert_dkim_key(&self, domain: &str, selector: &str, raw_txt_record: &[u8]) {
         let key = DomainKey::parse(raw_txt_record).expect("valid test DKIM key record");
-        // Mirrors `VerifySignature::domain_key`/`ToFqdn::to_fqdn` exactly
-        // (confirmed against mail-auth 0.16's own source): the fully
-        // qualified, lowercased name with a trailing dot.
-        let fqdn: Box<str> = format!("{selector}._domainkey.{domain}.")
-            .to_lowercase()
-            .into();
-        self.txt
-            .insert_record(fqdn, TxtRecord::DomainKey(Arc::new(key)));
+        self.txt.insert_record(
+            crate::dns_map_cache::domain_key_fqdn(domain, selector),
+            TxtRecord::DomainKey(Arc::new(key)),
+        );
     }
 }
 

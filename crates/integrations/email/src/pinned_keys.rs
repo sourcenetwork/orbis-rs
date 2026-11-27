@@ -109,14 +109,10 @@ impl PinnedDnsCache {
                 selector: selector.to_string(),
                 source,
             })?;
-        // Mirrors `VerifySignature::domain_key`/`ToFqdn::to_fqdn` exactly —
-        // the fully qualified, lowercased name with a trailing dot (see
-        // `test_support::TestDnsCache::insert_dkim_key`'s identical note).
-        let fqdn: Box<str> = format!("{selector}._domainkey.{domain}.")
-            .to_lowercase()
-            .into();
-        self.txt
-            .insert_record(fqdn, TxtRecord::DomainKey(Arc::new(key)));
+        self.txt.insert_record(
+            crate::dns_map_cache::domain_key_fqdn(domain, selector),
+            TxtRecord::DomainKey(Arc::new(key)),
+        );
         Ok(())
     }
 

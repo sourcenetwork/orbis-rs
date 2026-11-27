@@ -36,6 +36,7 @@
 
 use authn::BearerToken;
 use mail_auth::dkim::VerifySignature;
+use mail_auth::dns::ResolverCache;
 use mail_auth::{AuthenticatedMessage, DkimOutput, DkimResult, MessageAuthenticator, Parameters};
 use orbis_integration_core::{CanonicalDisplay, CanonicalOperation, ChallengeEvidence};
 use sha2::{Digest, Sha256};
@@ -137,9 +138,21 @@ pub async fn verify_email_message(
 
 /// Same as [`verify_email_message`], but resolves DKIM keys through
 /// `cache` instead of live DNS — the seam a fully offline test (see
-/// [`test_support`]) or, later, a chain-backed pinned-key store attaches
-/// through. `cache` is consulted before any live lookup `authenticator`
-/// would otherwise perform (see `mail_auth::dns::cache`'s own doc comment).
+/// [`test_support`]), the production pinned-key path
+/// ([`PinnedDnsCache`]), or, later, a chain-backed pinned-key store
+/// attaches through.
+///
+/// Unlike `mail-auth`'s own cache-then-network pattern (confirmed in its
+/// `txt_lookup`: "consulted before and updated after the query" — a cache
+/// *miss* still falls through to live DNS and writes that answer straight
+/// back into whatever cache it was given), this function never lets that
+/// fallback run at all: every `(d=, s=)` pair the message's own
+/// `DKIM-Signature` header(s) name must already be present in `cache`
+/// ([`unpinned_signing_keys_present`]), or verification is rejected before
+/// `authenticator` is ever asked to resolve anything. This is what
+/// actually makes a pinned key set closed, rather than merely preferred —
+/// without it, any domain not in the pin file would still silently verify
+/// over live, unauthenticated DNS.
 pub async fn verify_email_message_with_cache<C: mail_auth::DnsCache>(
     authenticator: &MessageAuthenticator,
     cache: &C,
@@ -148,10 +161,33 @@ pub async fn verify_email_message_with_cache<C: mail_auth::DnsCache>(
     expected_text: &str,
 ) -> Result<String, VerifyError> {
     let parsed = AuthenticatedMessage::parse(raw_message).ok_or(VerifyError::MalformedMessage)?;
+    if unpinned_signing_keys_present(cache, &parsed) {
+        return Err(VerifyError::UnpinnedSigningKey);
+    }
     let results = authenticator
         .verify_dkim(Parameters::new(&parsed).with_cache(cache))
         .await;
     check_verified_results(&results, &parsed, claimed_address, expected_text)
+}
+
+/// Whether any `DKIM-Signature` header the message carries names a
+/// `(d=, s=)` pair `cache` doesn't already hold a key for. A message with
+/// no signature at all (`dkim_signatures()` empty) is not flagged here —
+/// that's [`VerifyError::NoSignature`]'s job, raised downstream once
+/// `verify_dkim` runs and finds nothing to verify; this check exists
+/// purely to keep that run from ever touching the network for a domain
+/// nobody pinned.
+fn unpinned_signing_keys_present<C: mail_auth::DnsCache>(
+    cache: &C,
+    parsed: &AuthenticatedMessage<'_>,
+) -> bool {
+    let Some(txt_cache) = cache.txt() else {
+        return !parsed.dkim_signatures().is_empty();
+    };
+    parsed.dkim_signatures().iter().any(|header| {
+        let fqdn = crate::dns_map_cache::domain_key_fqdn(&header.header.d, &header.header.s);
+        txt_cache.get::<str>(&fqdn).is_none()
+    })
 }
 
 fn check_verified_results(
