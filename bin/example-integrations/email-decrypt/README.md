@@ -17,8 +17,8 @@ send/reply/check loop.
 - `web/`: the browser UI — collects inputs, triggers the send/check calls,
   shows results. No in-browser ceremony (see `web/README.md`).
 - `policies/`: how to grant (and recover) an ACP relation for the resulting
-  `did:key:sha256(address)` identity, and how to enable email evidence on
-  the node(s).
+  `did:emailhash:sha256(address)` identity, and how to enable email
+  evidence on the node(s).
 - [`../dev/`](../dev/README.md): shared local Orbis and ACP environment —
   already sets `--email-evidence-enabled` on every node it starts.
 
@@ -49,7 +49,7 @@ Then open <http://localhost:8788>, grant your email identity permission per
 ## Implementation boundary
 
 The actual DKIM verification (`orbis_email::verify_email_message`), the
-`did:key:sha256(address)` identity format, and the entire PRE
+`did:emailhash:sha256(address)` identity format, and the entire PRE
 reader-keypair/signature/decrypt dance
 (`orbis_sdk::{build_pre_challenge, OrbisClient::submit_pre_with_evidence}`)
 are reused directly from the same code orbis-node and the Docker e2e

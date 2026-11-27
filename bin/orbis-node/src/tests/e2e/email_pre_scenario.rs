@@ -4,11 +4,10 @@
 //! — storing the encrypted document still goes through the ordinary JWT
 //! `StoreSecret` path, since that step's authentication method is
 //! irrelevant to what this scenario proves. The identity ACP grants/revokes
-//! is `did:key:sha256(normalized address)`, the address a node
+//! is `did:emailhash:sha256(normalized address)`, the address a node
 //! independently extracts from the DKIM-verified message, never a
-//! client-asserted field (see `orbis-email`'s own README for the format,
-//! and why it reuses the `did:key:` prefix rather than a dedicated one —
-//! the chain's ACP module rejects any other prefix for a grant). Mirrors
+//! client-asserted field (see `orbis-email`'s own README for the format
+//! and the dedicated `did:emailhash:` method). Mirrors
 //! `pre_passkey_scenario.rs`'s deny-before-grant / decrypt / revoke /
 //! deny-again / re-grant / decrypt cycle, and `email_sign_scenario.rs`'s
 //! use of the pinned-DKIM-keys production path (there's no real DNS
@@ -48,12 +47,12 @@ const TO_ADDRESS: &str = "ring@orbis-email-pre.test";
 const PLAINTEXT: &[u8] = b"email-authorized PRE decryption";
 const CONTAINER_KEYS_PATH: &str = "/etc/orbis/email-dkim-keys.json";
 
-/// `did:key:sha256(normalized address)` — see `email_sign_scenario.rs`'s
-/// identical helper for why.
+/// `did:emailhash:sha256(normalized address)` — see
+/// `email_sign_scenario.rs`'s identical helper for why.
 fn email_issuer_id(address: &str) -> String {
     let normalized = address.trim().to_lowercase();
     format!(
-        "did:key:{}",
+        "did:emailhash:{}",
         hex::encode(Sha256::digest(normalized.as_bytes()))
     )
 }

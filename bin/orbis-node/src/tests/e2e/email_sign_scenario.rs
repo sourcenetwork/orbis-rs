@@ -1,11 +1,10 @@
 //! Docker e2e scenario: DKIM-email-authorized threshold signing.
 //!
 //! A DKIM-signed reply replaces the JWT entirely — the identity ACP
-//! grants/revokes is `did:key:sha256(normalized address)`, the address a
-//! node independently extracts from the DKIM-verified message, never a
-//! client-asserted field (see `orbis-email`'s own README for the format,
-//! and why it reuses the `did:key:` prefix rather than a dedicated one —
-//! the chain's ACP module rejects any other prefix for a grant). Mirrors
+//! grants/revokes is `did:emailhash:sha256(normalized address)`, the
+//! address a node independently extracts from the DKIM-verified message,
+//! never a client-asserted field (see `orbis-email`'s own README for the
+//! format and the dedicated `did:emailhash:` method). Mirrors
 //! `passkey_sign_scenario.rs`'s deny-before-grant / sign / revoke /
 //! deny-again / re-grant / sign cycle — same recovery story, same
 //! isolation from `sign_scenario.rs`'s Defra-specific checks.
@@ -60,18 +59,15 @@ const TO_ADDRESS: &str = "ring@orbis-email-sign.test";
 const MESSAGE: &[u8] = b"email-authorized threshold signing";
 const CONTAINER_KEYS_PATH: &str = "/etc/orbis/email-dkim-keys.json";
 
-/// `did:key:sha256(normalized address)` — the exact ACP subject
+/// `did:emailhash:sha256(normalized address)` — the exact ACP subject
 /// `orbis_email::verify_and_build_token`'s own `build_token` derives,
 /// replicated here (not imported: that function is a private
 /// implementation detail of `orbis-email`) so this scenario can grant and
-/// revoke it like any other actor id. Wears the `did:key:` prefix (not a
-/// real decoded key) because that's the one actor-id scheme the chain's
-/// ACP module accepts for a grant without decoding the suffix — see
-/// `orbis_email`'s own `build_token` for the full reasoning.
+/// revoke it like any other actor id.
 fn email_issuer_id(address: &str) -> String {
     let normalized = address.trim().to_lowercase();
     format!(
-        "did:key:{}",
+        "did:emailhash:{}",
         hex::encode(Sha256::digest(normalized.as_bytes()))
     )
 }

@@ -58,7 +58,7 @@ hyper-util = { workspace = true }
 [dev-dependencies]
 wiremock = "0.6"
 defra-edge = { package = "edge", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606" }
-acp-light-client = { package = "vera-light-client", git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+acp-light-client = { package = "vera-light-client", git = "https://github.com/sourcenetwork/vera.rs", rev = "8c903c6c20f031bbd0843d5657a3172923a33293" }
 defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606", default-features = false, features = ["p2p"] }
 defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606", default-features = false, features = ["iroh-transport"] }
 defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606" }

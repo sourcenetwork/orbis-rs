@@ -1,16 +1,14 @@
 # ACP setup
 
 A mailbox's own address *is* the identity — there is no separate enrollment
-step. The ACP subject is `did:key:sha256(normalized address)` (lowercased,
-trimmed, then SHA-256'd) — not a real decoded key; it wears the `did:key:`
-prefix because that's the one actor-id shape the chain's ACP module accepts
-for a grant without decoding the suffix as an actual key (see
-`orbis_email`'s own `build_token` doc comment for the full reasoning). Grant
-that computed string permission before trying to sign or decrypt with it —
-e.g. for `alice@example.com`:
+step. The ACP subject is `did:emailhash:sha256(normalized address)`
+(lowercased, trimmed, then SHA-256'd) — its own dedicated DID method, not a
+real decoded key (see `orbis_email`'s own `build_token` doc comment for the
+full reasoning). Grant that computed string permission before trying to
+sign or decrypt with it — e.g. for `alice@example.com`:
 
 ```sh
-python3 -c "import hashlib; print('did:key:' + hashlib.sha256('alice@example.com'.strip().lower().encode()).hexdigest())"
+python3 -c "import hashlib; print('did:emailhash:' + hashlib.sha256('alice@example.com'.strip().lower().encode()).hexdigest())"
 ```
 
 ## Against a local `orbis-dev-cluster` (native/Vera)
@@ -26,7 +24,7 @@ summary), so there's no separate `register-object` step:
 cargo run -p orbis-dev-cluster -- grant \
   --rpc-url <chain RPC URL printed by `up`> --policy-id <printed> \
   --resource key --object-id <derivation id printed by `up`> \
-  --relation signer --subject-did did:key:<SHA256_OF_YOUR_ADDRESS>
+  --relation signer --subject-did did:emailhash:<SHA256_OF_YOUR_ADDRESS>
 ```
 
 For the PRE decrypt flow instead, grant against the document's own
@@ -41,7 +39,7 @@ cargo run -p orbis-dev-cluster -- register-object \
 cargo run -p orbis-dev-cluster -- grant \
   --rpc-url <chain RPC URL> --policy-id <printed> \
   --resource document --object-id <OBJECT_ID> \
-  --relation reader --subject-did did:key:<SHA256_OF_YOUR_ADDRESS>
+  --relation reader --subject-did did:emailhash:<SHA256_OF_YOUR_ADDRESS>
 ```
 
 Revoking the old identity (so a compromised mailbox stops working, not just
@@ -65,7 +63,7 @@ cli-tool register-object-to-chain \
 
 cli-tool set-relationship-on-chain \
   --policy-id <POLICY_ID> --resource key --object-id <DERIVATION_ID> \
-  --relation signer --subject-did did:key:<SHA256_OF_YOUR_ADDRESS>
+  --relation signer --subject-did did:emailhash:<SHA256_OF_YOUR_ADDRESS>
 ```
 
 `--subject-did` grants the relation to that exact string verbatim, rather

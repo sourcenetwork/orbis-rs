@@ -1206,10 +1206,10 @@ async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_email_evide
     assert_eq!(
         actor_id,
         format!(
-            "did:key:{}",
+            "did:emailhash:{}",
             hex::encode(sha2::Sha256::digest(FROM.as_bytes()))
         ),
-        "the derived actor_id must be did:key:sha256(the confirmed address)"
+        "the derived actor_id must be did:emailhash:sha256(the confirmed address)"
     );
 }
 

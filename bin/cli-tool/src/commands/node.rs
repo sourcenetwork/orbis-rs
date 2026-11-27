@@ -287,19 +287,17 @@ fn passkey_issuer_did(signing_key: &p256::ecdsa::SigningKey) -> String {
     authn::did_from_p256_public_key(&compressed_pubkey)
 }
 
-/// `did:key:sha256(normalized address)` — the identity an email-authorized
-/// request authenticates as, replicated here (not imported: it's a
-/// private implementation detail of `orbis_email::build_token`) so a
-/// caller can compute, in advance, the exact actor id the node will
-/// independently derive once it verifies the DKIM reply. See
-/// `orbis_email`'s own `build_token` for why this wears the `did:key:`
-/// prefix rather than a dedicated scheme: that's the one actor-id shape
-/// the chain's ACP module accepts for a grant without decoding the
-/// suffix as a real key.
+/// `did:emailhash:sha256(normalized address)` — the identity an
+/// email-authorized request authenticates as, replicated here (not
+/// imported: it's a private implementation detail of
+/// `orbis_email::build_token`) so a caller can compute, in advance, the
+/// exact actor id the node will independently derive once it verifies the
+/// DKIM reply. See `orbis_email`'s own `build_token` for why this uses its
+/// own dedicated `did:emailhash:` method.
 fn email_issuer_did(address: &str) -> String {
     let normalized = address.trim().to_lowercase();
     format!(
-        "did:key:{}",
+        "did:emailhash:{}",
         hex::encode(Sha256::digest(normalized.as_bytes()))
     )
 }
@@ -488,9 +486,9 @@ pub async fn do_sign_with_passkey(
 
 /// Call `SignService.StartSign` with an email-authorized request — a
 /// DKIM-signed reply in place of a JWT. `derivation_id` must have been
-/// granted (via ACP) to the identity `did:key:sha256(normalized
-/// claimed_address)` decodes to (see `orbis_email::verify_and_build_token`'s
-/// own doc comment); there is no separate enrollment step.
+/// granted (via ACP) to the identity `did:emailhash:sha256(normalized
+/// claimed_address)` (see `orbis_email::verify_and_build_token`'s own doc
+/// comment); there is no separate enrollment step.
 ///
 /// `signing_key` stands in for a real mail server signing a real reply:
 /// there is no mailbox, SMTP capture service, or human to drive here, so

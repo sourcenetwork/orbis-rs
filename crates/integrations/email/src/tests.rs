@@ -306,7 +306,7 @@ async fn verify_and_build_token_succeeds_and_binds_issuer_to_the_verified_addres
     .expect("verification must succeed");
 
     let expected_issuer = format!(
-        "did:key:{}",
+        "did:emailhash:{}",
         hex::encode(Sha256::digest(FROM.to_lowercase().as_bytes()))
     );
     assert_eq!(token.issuer_id, expected_issuer);

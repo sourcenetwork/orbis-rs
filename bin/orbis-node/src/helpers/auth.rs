@@ -374,7 +374,7 @@ mod tests {
         assert_eq!(
             token.issuer_id,
             format!(
-                "did:key:{}",
+                "did:emailhash:{}",
                 hex::encode(sha2::Sha256::digest(FROM.as_bytes()))
             )
         );
@@ -410,7 +410,7 @@ mod tests {
         assert_eq!(
             token.issuer_id,
             format!(
-                "did:key:{}",
+                "did:emailhash:{}",
                 hex::encode(sha2::Sha256::digest(FROM.as_bytes()))
             )
         );

@@ -4,8 +4,8 @@
 //! to authorize a threshold Sign request, or a PRE decrypt — no WebAuthn
 //! ceremony, no JWT, no password, no separate enrollment step: a person's
 //! own mailbox *is* the identity ACP grants or revokes (as
-//! `did:key:sha256(normalized address)` — see `orbis_email`'s own doc
-//! comment for why it wears that prefix).
+//! `did:emailhash:sha256(normalized address)` — see `orbis_email`'s own
+//! doc comment for why it wears that method).
 //!
 //! Unlike `passkey-sign`, there's no in-browser ceremony here: this
 //! process actually sends the challenge email (SMTP, via `lettre`) and,
@@ -130,18 +130,19 @@ async fn app_js() -> Response {
         .into_response()
 }
 
-/// `did:key:sha256(normalized address)` — the identity an email-authorized
-/// request authenticates as, replicated here (not imported: it's a
-/// private implementation detail of `orbis_email::build_token`) exactly
-/// as `cli_tool::email_issuer_did` and the Docker e2e scenarios' own
-/// `email_issuer_id` already do. Needed up front for PRE only, to pass as
-/// `issuer_did` into `orbis_sdk::build_pre_challenge` before the challenge
-/// exists; Sign resolves its own issuer from the verified reply alone and
-/// never needs this app to compute it.
+/// `did:emailhash:sha256(normalized address)` — the identity an
+/// email-authorized request authenticates as, replicated here (not
+/// imported: it's a private implementation detail of
+/// `orbis_email::build_token`) exactly as `cli_tool::email_issuer_did` and
+/// the Docker e2e scenarios' own `email_issuer_id` already do. Needed up
+/// front for PRE only, to pass as `issuer_did` into
+/// `orbis_sdk::build_pre_challenge` before the challenge exists; Sign
+/// resolves its own issuer from the verified reply alone and never needs
+/// this app to compute it.
 fn email_issuer_did(address: &str) -> String {
     let normalized = address.trim().to_lowercase();
     format!(
-        "did:key:{}",
+        "did:emailhash:{}",
         hex::encode(Sha256::digest(normalized.as_bytes()))
     )
 }

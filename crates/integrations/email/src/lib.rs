@@ -56,10 +56,11 @@ pub mod endpoints;
 /// Authentication evidence authorizing a request in place of a JWT: a
 /// DKIM-signed email reply, plus the fields needed to resolve an identity
 /// from it and bind it to an exact operation. The ACP subject is
-/// `did:key:sha256(normalized address)` — the address a node independently
-/// extracts from the DKIM-verified message, never `claimed_address` alone
-/// (see [`verify_email_message`]). See this crate's own `build_token` for
-/// why this reuses the `did:key:` scheme rather than a dedicated one.
+/// `did:emailhash:sha256(normalized address)` — the address a node
+/// independently extracts from the DKIM-verified message, never
+/// `claimed_address` alone (see [`verify_email_message`]). See this crate's
+/// own `build_token` for why this uses its own dedicated `did:emailhash:`
+/// method, rather than borrowing `did:key:`'s.
 ///
 /// Plain fields, not a generated proto type — see
 /// `orbis_webauthn::WebAuthnEvidence`'s own doc comment for why.
@@ -297,13 +298,11 @@ fn message_contains_text(parsed: &AuthenticatedMessage<'_>, expected_text: &str)
 /// authentication method was used. See `orbis_webauthn::verify_and_build_token`
 /// for the shared shape this mirrors.
 ///
-/// `issuer_id` is `did:key:sha256(normalized address)` (lowercased,
-/// trimmed) — not a real decoded key, see this crate's own `build_token`
-/// for why it still wears the `did:key:` prefix: that's the one actor-id
-/// scheme the chain's ACP module accepts for a `set_relationship` grant
-/// without decoding the suffix as an actual key. `authn::resolve_actor_id`
-/// and `Authz::check` both already accept an arbitrary subject string, so
-/// neither needed to change for this.
+/// `issuer_id` is `did:emailhash:sha256(normalized address)` (lowercased,
+/// trimmed) — see this crate's own `build_token` for why it wears its own
+/// `did:emailhash:` method rather than decoding as an actual key.
+/// `authn::resolve_actor_id` and `Authz::check` both already accept an
+/// arbitrary subject string, so neither needed to change for this.
 ///
 /// `max_lifetime_secs` bounds how far past `current_time` a caller-chosen
 /// `evidence.expiry` may sit — see `orbis_webauthn::verify_and_build_token`'s
@@ -385,17 +384,17 @@ fn build_token<Claims>(
     claims: Claims,
 ) -> BearerToken<Claims> {
     let normalized = verified_address.trim().to_lowercase();
-    // `did:key:` — not a real decoded key, just a stable hash wearing the
-    // one actor-id scheme the chain's ACP module accepts without any
-    // further structural validation (confirmed empirically: both backends
-    // reject any other prefix, including a plain `email:` one, with "is
-    // not a valid did" — see `vera-identity::Did::new`, which checks only
-    // `starts_with("did:key:")` for this scheme, never decodes the
-    // suffix). A real did:key value always starts with `z` (multibase
-    // base58btc); a hex digest never does, so this can't collide with an
-    // actual passkey-derived DID.
+    // `did:emailhash:` — its own dedicated method, not a real decoded key.
+    // Native `vera.rs` accepts it explicitly (`vera_identity::Did::new`,
+    // alongside `did:key:`/`did:opk:`); the Cosmos/SourceHub chain's own
+    // `acp_core`-backed check only requires a syntactically valid
+    // `did:<method>:<id>` shape and never restricts by method name, so it
+    // accepts any well-formed method here with no chain-side change needed
+    // (confirmed: a plain `email:` prefix was rejected only because it's
+    // missing the `did:` scheme entirely — a 2-part string, not because
+    // "email" itself was disallowed).
     let issuer_id = format!(
-        "did:key:{}",
+        "did:emailhash:{}",
         hex::encode(Sha256::digest(normalized.as_bytes()))
     );
     BearerToken {

@@ -77,15 +77,19 @@ today it doesn't inspect that field at all, so the first half alone
 wouldn't be enough.
 
 The identity this crate authenticates as is always
-`did:key:sha256(address)` — not a real decoded key. An earlier version
-used a plain `email:sha256(address)` string instead; ACP's `Authz::check`
+`did:emailhash:sha256(address)` — its own dedicated DID method, not a real
+decoded key. An earlier version used a plain `email:sha256(address)`
+string instead (missing the `did:` scheme entirely); ACP's `Authz::check`
 (the read path) happily accepts an arbitrary subject string, so that
 worked right up until the Docker e2e scenario tried to actually *grant* a
-relationship to one — the chain's ACP module (`vera.rs`'s `Did::new` and
-its Go-chain counterpart) rejects any actor string whose prefix isn't
-`did:key:` or `did:opk:<64-hex-digest>` for a `set_relationship` write,
-regardless of what `Authz::check` itself would accept. `did:key:` is a
-pure string-format reuse, not a real key: the chain never decodes the
-suffix for that scheme (only `did:opk:` gets structural validation), and a
-hex digest can't collide with a real did:key value, which always starts
-with `z` (multibase base58btc).
+relationship to one — native `vera.rs`'s ACP module (`vera_identity::Did::new`)
+only accepts a short, explicit allowlist of actor-id schemes for a
+`set_relationship` write (`did:key:`, `did:opk:<64-hex-digest>`, and now
+`did:emailhash:<64-hex-digest>`), regardless of what `Authz::check` itself
+would accept. The Cosmos/SourceHub chain's own ACP module only requires a
+syntactically valid `did:<method>:<id>` shape and never restricts by
+method name, so it accepts this (or any other well-formed method) with no
+chain-side change — `email:sha256(address)` failed there only because it
+isn't shaped like a DID at all (no `did:` scheme, so it splits into 2
+parts instead of the required 3), not because "email" itself was
+disallowed.
