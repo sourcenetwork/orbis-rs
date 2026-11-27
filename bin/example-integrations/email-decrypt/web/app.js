@@ -87,6 +87,7 @@ signCheckButton.addEventListener("click", async () => {
   }
   signResult.textContent = "Checking…";
   signResult.classList.remove("error");
+  signCheckButton.disabled = true;
   try {
     const response = await postJson("/api/sign/check-reply", {
       request_token: signRequestToken,
@@ -97,6 +98,8 @@ signCheckButton.addEventListener("click", async () => {
   } catch (error) {
     signResult.classList.add("error");
     signResult.textContent = String(error);
+  } finally {
+    signCheckButton.disabled = false;
   }
 });
 
@@ -137,6 +140,7 @@ preCheckButton.addEventListener("click", async () => {
   }
   preResult.textContent = "Checking…";
   preResult.classList.remove("error");
+  preCheckButton.disabled = true;
   try {
     const response = await postJson("/api/pre/check-reply", {
       request_token: preRequestToken,
@@ -151,5 +155,7 @@ preCheckButton.addEventListener("click", async () => {
   } catch (error) {
     preResult.classList.add("error");
     preResult.textContent = String(error);
+  } finally {
+    preCheckButton.disabled = false;
   }
 });

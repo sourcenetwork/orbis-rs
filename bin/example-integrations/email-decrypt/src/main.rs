@@ -237,6 +237,16 @@ async fn send_challenge_email(
 /// the "check for reply" button's entire job, not a background poll. A
 /// miss returns `Ok(None)`, not an error: "not here yet" is an expected,
 /// retryable outcome, and the button itself is the retry mechanism.
+///
+/// Callers must confirm `request_token` is a real, still-pending entry
+/// *before* calling this — it's embedded verbatim into the raw IMAP
+/// `SEARCH` command line below, and this app's own `request_token`s are
+/// always exactly the 32 lowercase hex characters `hex::encode` produces,
+/// never anything an IMAP query could misparse. Checking pending-map
+/// membership first both rejects a request for a token that was never
+/// issued (or already consumed) before any IMAP round trip, and, as a
+/// side effect, guarantees the string reaching the query below is one of
+/// ours — see the call sites.
 async fn check_imap_for_reply(
     state: &AppState,
     request_token: &str,
@@ -276,7 +286,11 @@ async fn check_imap_for_reply(
         }
     };
 
-    let Some(&sequence_number) = sequence_numbers.iter().next() else {
+    // `.max()`, not an arbitrary `HashSet` entry: if more than one message
+    // matches (e.g. the person replied twice — once with a typo, then a
+    // corrected follow-up), the highest sequence number is the most
+    // recently arrived one, the one actually worth trying.
+    let Some(&sequence_number) = sequence_numbers.iter().max() else {
         let _ = session.logout().await;
         return Ok(None);
     };
@@ -368,11 +382,32 @@ struct SignCheckReplyResponse {
 }
 
 /// Checks for, and if present finishes, the Sign request `/api/sign/challenge`
-/// started.
+/// started. Order matters here: the pending entry is only ever removed
+/// once a reply has actually been found *and* the node connection is
+/// already up, so a request for an unknown token, a "not replied yet"
+/// miss, or a transient connection failure all leave it untouched for a
+/// later retry — only an attempted, rejected submission consumes it (see
+/// `check_imap_for_reply`'s own doc comment for why checking it exists
+/// here first matters beyond that).
 async fn sign_check_reply(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CheckReplyRequest>,
 ) -> Result<Json<SignCheckReplyResponse>, ApiError> {
+    if !state
+        .pending_sign
+        .lock()
+        .expect("pending_sign mutex poisoned")
+        .contains_key(&req.request_token)
+    {
+        return Err(ApiError::bad_request(
+            "unknown or already-used request_token",
+        ));
+    }
+
+    let client = OrbisClient::connect(state.orbis_endpoint.clone())
+        .await
+        .map_err(ApiError::from_sdk_error)?;
+
     let raw_message = check_imap_for_reply(&state, &req.request_token).await?;
     let Some(raw_message) = raw_message else {
         return Ok(Json(SignCheckReplyResponse {
@@ -395,9 +430,6 @@ async fn sign_check_reply(
         .email_evidence(claimed_address, raw_message)
         .map_err(ApiError::from_sdk_error)?;
 
-    let client = OrbisClient::connect(state.orbis_endpoint.clone())
-        .await
-        .map_err(ApiError::from_sdk_error)?;
     let result = client
         .submit_sign_with_evidence(pending, evidence)
         .await
@@ -495,11 +527,29 @@ struct PreCheckReplyResponse {
 /// the request, and decrypts the result via
 /// `orbis_sdk::OrbisClient::submit_pre_with_evidence`. The ephemeral
 /// reader keypair and the decryption itself both stay server-side here,
-/// exactly as `passkey-sign`'s own PRE flow already does.
+/// exactly as `passkey-sign`'s own PRE flow already does. Same ordering
+/// guarantee as `sign_check_reply`: the pending entry is only removed
+/// once a reply has actually been found and the node connection is
+/// already up.
 async fn pre_check_reply(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CheckReplyRequest>,
 ) -> Result<Json<PreCheckReplyResponse>, ApiError> {
+    if !state
+        .pending_pre
+        .lock()
+        .expect("pending_pre mutex poisoned")
+        .contains_key(&req.request_token)
+    {
+        return Err(ApiError::bad_request(
+            "unknown or already-used request_token",
+        ));
+    }
+
+    let client = OrbisClient::connect(state.orbis_endpoint.clone())
+        .await
+        .map_err(ApiError::from_sdk_error)?;
+
     let raw_message = check_imap_for_reply(&state, &req.request_token).await?;
     let Some(raw_message) = raw_message else {
         return Ok(Json(PreCheckReplyResponse {
@@ -521,9 +571,6 @@ async fn pre_check_reply(
 
     let evidence = pending.email_evidence(claimed_address, raw_message);
 
-    let client = OrbisClient::connect(state.orbis_endpoint.clone())
-        .await
-        .map_err(ApiError::from_sdk_error)?;
     let plaintext = client
         .submit_pre_with_evidence(pending, evidence)
         .await

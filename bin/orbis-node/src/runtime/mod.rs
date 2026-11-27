@@ -307,7 +307,13 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     // own `check_verified_results` needs to actually read that field and
     // reject anything but `DnssecStatus::Secure` — it doesn't inspect it at
     // all today, so step (1) alone wouldn't yet matter.
-    let email_authenticator = config.args.email_evidence_enabled.then(|| {
+    // `--email-evidence-enabled` deliberately has no `env` attribute of
+    // its own (see that field's own doc comment) — resolved here instead,
+    // tolerating an empty `ORBIS_EMAIL_EVIDENCE_ENABLED` the same way
+    // `non_empty` already does for every other flag.
+    let email_evidence_enabled = config.args.email_evidence_enabled
+        || std::env::var_os("ORBIS_EMAIL_EVIDENCE_ENABLED").is_some_and(|value| value == "true");
+    let email_authenticator = email_evidence_enabled.then(|| {
         Arc::new(
             mail_auth::MessageAuthenticator::new_system_conf()
                 .expect("failed to initialize mail-auth DKIM authenticator"),
@@ -319,7 +325,7 @@ pub async fn init_node(config: NodeConfig) -> Result<InitializedNode, Box<dyn st
     // same way; a present-but-empty path (the `${VAR:-}` Compose pattern
     // this whole function already follows for `webauthn_rp_id`/`origin`)
     // is "not configured," same as the flag being omitted entirely.
-    let email_dns_cache = config.args.email_evidence_enabled.then(|| {
+    let email_dns_cache = email_evidence_enabled.then(|| {
         non_empty(config.args.email_dkim_keys_file.clone()).map(|path| {
             Arc::new(
                 orbis_email::PinnedDnsCache::load_from_file(std::path::Path::new(&path))
