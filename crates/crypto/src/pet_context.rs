@@ -16,10 +16,14 @@
 
 use crate::context::{self, CiphertextContext};
 use crate::r#trait::{EncryptionProof, Secret};
+#[cfg(not(feature = "jubjub"))]
 use sha2::{Digest, Sha256};
 
 /// Domain separator for [`tag_proof_digest`].
+#[cfg(not(feature = "jubjub"))]
 pub const TAG_PROOF_DIGEST_DOMAIN: &[u8] = b"orbis-pet-tag-proof-v1";
+#[cfg(feature = "jubjub")]
+pub const TAG_PROOF_DIGEST_DOMAIN: &[u8] = b"orbis-pet-tag-proof-poseidon-v2";
 
 /// Append `bytes` with a 4-byte big-endian length prefix.
 fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -62,10 +66,19 @@ pub fn tag_proof_digest(
     put_bytes(&mut out, &payload_proof.challenge);
     put_bytes(&mut out, &payload_proof.response);
 
-    let mut hasher = Sha256::new();
-    hasher.update(TAG_PROOF_DIGEST_DOMAIN);
-    hasher.update(&out);
-    hasher.finalize().into()
+    #[cfg(feature = "jubjub")]
+    {
+        let mut bytes = TAG_PROOF_DIGEST_DOMAIN.to_vec();
+        bytes.extend(out);
+        crate::jubjub::poseidon::digest(&bytes)
+    }
+    #[cfg(not(feature = "jubjub"))]
+    {
+        let mut hasher = Sha256::new();
+        hasher.update(TAG_PROOF_DIGEST_DOMAIN);
+        hasher.update(&out);
+        hasher.finalize().into()
+    }
 }
 
 #[cfg(test)]

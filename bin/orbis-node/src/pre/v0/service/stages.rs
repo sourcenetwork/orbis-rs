@@ -428,6 +428,11 @@ where
             &secret,
             bulletin_state.document_payload.proof.clone(),
         )?;
+        crate::pre::v0::helpers::verify_tag_binding(
+            &ciphertext_context,
+            &secret,
+            &bulletin_state.document_payload,
+        )?;
 
         tracing::info!(
             ring_id = %bulletin_state.document_payload.ring_id,
@@ -482,7 +487,17 @@ where
         &self,
         authorized: &AuthorizedPreRequest,
     ) -> Result<Option<crate::pet::v0::attestation::PetBlindEvidence>, PreError> {
-        if !authorized.ring_payload.requires_pet {
+        if !crate::pre::v0::helpers::requires_pet(
+            &*self.state.authz,
+            &authorized.ring_payload,
+            &authorized.document_payload,
+            &authorized.object_id,
+            &authorized.actor_id,
+            authorized.valid_window.clone(),
+            authorized.audit_target_object_id.as_deref(),
+        )
+        .await?
+        {
             return Ok(None);
         }
         let audit_target_object_id =

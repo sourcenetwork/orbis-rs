@@ -379,3 +379,17 @@ The PET scenario checks paired DKG, stored and inline PRE, document/audit denial
 and revoke/regrant, committee shrink with both share polynomials rotated, and
 recovery after abrupt restart. These bounded container scenarios do not cover
 the 24-hour scheduled refresh, production capacity or power-loss recovery.
+
+### Jubjub proof transcripts and PET access
+
+The Jubjub build uses Poseidon for encryption-opening and tag-knowledge proof
+transcripts. All participants must run the same fresh proof suite; native document
+fields and IDs are unchanged. Native AES-GCM AAD, reader authentication, signatures
+and distributed PET proof hashes retain their existing hashes. BLS12-381 is unchanged.
+
+PRE always verifies the document's opening proof and, when present, tag proof.
+For a PET ring, a request without an audit target may omit PET only when the actor
+has `read_all` on the same exact document, in addition to its ordinary document
+permission. Each responder queries authorization independently and rechecks before
+releasing a share. Target-bearing requests always require target permission and PET.
+A `read_all` grant never changes the document or its proof transcript.

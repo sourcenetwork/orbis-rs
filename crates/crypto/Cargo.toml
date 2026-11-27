@@ -7,6 +7,7 @@ license.workspace = true
 
 
 [dependencies]
+hex = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
 ark-bls12-381 = { version = "0.4", optional = true }
