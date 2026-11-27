@@ -674,3 +674,22 @@ fn trusted_relay_cannot_delegate_invalid_actor() {
         ));
     }
 }
+
+#[test]
+fn did_from_email_address_is_deterministic_and_normalizes_case_and_whitespace() {
+    let did = did_from_email_address("Alice@Example.com");
+    assert!(did.starts_with("did:emailhash:"));
+    assert_eq!(did, did_from_email_address("  alice@example.com  "));
+    assert_ne!(did, did_from_email_address("bob@example.com"));
+}
+
+#[test]
+fn did_from_email_address_suffix_is_a_sha256_hex_digest() {
+    let did = did_from_email_address("alice@example.com");
+    let suffix = did.strip_prefix("did:emailhash:").unwrap();
+    assert_eq!(suffix.len(), 64);
+    assert!(suffix
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    assert_eq!(suffix, hex::encode(Sha256::digest(b"alice@example.com")));
+}

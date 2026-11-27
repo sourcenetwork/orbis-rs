@@ -59,19 +59,6 @@ const TO_ADDRESS: &str = "ring@orbis-email-sign.test";
 const MESSAGE: &[u8] = b"email-authorized threshold signing";
 const CONTAINER_KEYS_PATH: &str = "/etc/orbis/email-dkim-keys.json";
 
-/// `did:emailhash:sha256(normalized address)` — the exact ACP subject
-/// `orbis_email::verify_and_build_token`'s own `build_token` derives,
-/// replicated here (not imported: that function is a private
-/// implementation detail of `orbis-email`) so this scenario can grant and
-/// revoke it like any other actor id.
-fn email_issuer_id(address: &str) -> String {
-    let normalized = address.trim().to_lowercase();
-    format!(
-        "did:emailhash:{}",
-        hex::encode(Sha256::digest(normalized.as_bytes()))
-    )
-}
-
 /// Writes a pinned-DKIM-keys file in the format
 /// `orbis_email::PinnedDnsCache::load_from_file` expects, world-readable so
 /// Docker's bind mount can read it regardless of which user the daemon
@@ -200,7 +187,7 @@ async fn test_email_authorized_signing() {
     let derived_pk = SignImpl::derive_public_key(&ring_pk, DERIVATION.as_bytes(), Some(&metadata))
         .expect("derive email Sign public key");
 
-    let signer_id = email_issuer_id(FROM_ADDRESS);
+    let signer_id = authn::did_from_email_address(FROM_ADDRESS);
 
     let denied = cli_tool::do_sign_with_email(
         endpoint.clone(),
@@ -254,7 +241,7 @@ async fn test_email_authorized_signing() {
     // address from the policy, add a new one. No separate
     // enrollment/binding registry involved — same shape as
     // `passkey_sign_scenario.rs`'s key-replacement cycle.
-    let replacement_id = email_issuer_id(REPLACEMENT_ADDRESS);
+    let replacement_id = authn::did_from_email_address(REPLACEMENT_ADDRESS);
     environment
         .grant(
             &policy_id,

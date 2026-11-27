@@ -135,7 +135,6 @@ mod tests {
     use super::*;
     use orbis_integration_core::CanonicalOperation;
     use p256::ecdsa::SigningKey;
-    use sha2::Digest;
 
     const RP_ID: &str = "example.test";
     const ORIGIN: &str = "https://example.test";
@@ -371,13 +370,7 @@ mod tests {
         )
         .await
         .expect("well-formed email evidence must resolve directly through orbis-email");
-        assert_eq!(
-            token.issuer_id,
-            format!(
-                "did:emailhash:{}",
-                hex::encode(sha2::Sha256::digest(FROM.as_bytes()))
-            )
-        );
+        assert_eq!(token.issuer_id, authn::did_from_email_address(FROM));
 
         // `resolve_request_auth` resolves this synthetic key's TXT record
         // through the pinned `PinnedDnsCache`, never live DNS — the same
@@ -407,13 +400,7 @@ mod tests {
         )
         .await
         .expect("well-formed email evidence must resolve via the pinned DNS cache");
-        assert_eq!(
-            token.issuer_id,
-            format!(
-                "did:emailhash:{}",
-                hex::encode(sha2::Sha256::digest(FROM.as_bytes()))
-            )
-        );
+        assert_eq!(token.issuer_id, authn::did_from_email_address(FROM));
     }
 
     /// Same dispatch, but through the no-cache (live-DNS) branch — the

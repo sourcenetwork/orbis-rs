@@ -25,7 +25,6 @@ use orbis_email::{EmailEvidence, PinnedDnsCache};
 use orbis_integration_core::{CanonicalOperation, PreOperation};
 use orbis_webauthn::WebAuthnEvidence;
 use p256::ecdsa::SigningKey;
-use sha2::Digest;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
@@ -1205,10 +1204,7 @@ async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_email_evide
         result.expect("a genuinely matching, pinned-key-verified email reply must be accepted");
     assert_eq!(
         actor_id,
-        format!(
-            "did:emailhash:{}",
-            hex::encode(sha2::Sha256::digest(FROM.as_bytes()))
-        ),
+        authn::did_from_email_address(FROM),
         "the derived actor_id must be did:emailhash:sha256(the confirmed address)"
     );
 }

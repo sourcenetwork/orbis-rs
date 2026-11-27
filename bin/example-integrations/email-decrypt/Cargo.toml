@@ -16,7 +16,6 @@ tonic = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
-sha2 = { workspace = true }
 rand = { workspace = true }
 clap = { version = "4.5", features = ["derive", "env"] }
 # SMTP send (the nodemailer-equivalent half of the challenge/reply loop).

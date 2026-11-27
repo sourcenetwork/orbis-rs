@@ -9,7 +9,6 @@
 
 use anyhow::{anyhow, Context, Result};
 use orbis_sdk::{InMemoryEd25519Signer, OrbisClient};
-use sha2::{Digest, Sha256};
 
 pub use orbis_sdk::{
     DkgResult, NodeInfoResult, PendingPreRetrieval, SignResult, StoreSecretResult,
@@ -287,26 +286,11 @@ fn passkey_issuer_did(signing_key: &p256::ecdsa::SigningKey) -> String {
     authn::did_from_p256_public_key(&compressed_pubkey)
 }
 
-/// `did:emailhash:sha256(normalized address)` — the identity an
-/// email-authorized request authenticates as, replicated here (not
-/// imported: it's a private implementation detail of
-/// `orbis_email::build_token`) so a caller can compute, in advance, the
-/// exact actor id the node will independently derive once it verifies the
-/// DKIM reply. See `orbis_email`'s own `build_token` for why this uses its
-/// own dedicated `did:emailhash:` method.
-fn email_issuer_did(address: &str) -> String {
-    let normalized = address.trim().to_lowercase();
-    format!(
-        "did:emailhash:{}",
-        hex::encode(Sha256::digest(normalized.as_bytes()))
-    )
-}
-
 /// Call `PreService.StartPre` with an email-authorized request — a
 /// DKIM-signed reply in place of a JWT. `object_id`'s document's policy
 /// must have granted `read` (or whichever permission it names) to
-/// `email_issuer_did(claimed_address)`; there is no separate enrollment
-/// step.
+/// `orbis_sdk::email_issuer_did(claimed_address)`; there is no separate
+/// enrollment step.
 ///
 /// `signing_key` stands in for a real mail server signing a real reply:
 /// there is no mailbox, SMTP capture service, or human to drive here, so
@@ -331,7 +315,7 @@ pub async fn do_pre_with_email(
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
 ) -> Result<Vec<u8>> {
-    let issuer_did = email_issuer_did(&claimed_address);
+    let issuer_did = orbis_sdk::email_issuer_did(&claimed_address);
 
     let pending = orbis_sdk::build_pre_challenge(
         chain_id,

@@ -26,7 +26,6 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use orbis_sdk::{OrbisClient, PendingPre, PendingSign, SdkError};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 #[derive(Parser, Debug, Clone)]
@@ -130,23 +129,6 @@ async fn app_js() -> Response {
         .into_response()
 }
 
-/// `did:emailhash:sha256(normalized address)` — the identity an
-/// email-authorized request authenticates as, replicated here (not
-/// imported: it's a private implementation detail of
-/// `orbis_email::build_token`) exactly as `cli_tool::email_issuer_did` and
-/// the Docker e2e scenarios' own `email_issuer_id` already do. Needed up
-/// front for PRE only, to pass as `issuer_did` into
-/// `orbis_sdk::build_pre_challenge` before the challenge exists; Sign
-/// resolves its own issuer from the verified reply alone and never needs
-/// this app to compute it.
-fn email_issuer_did(address: &str) -> String {
-    let normalized = address.trim().to_lowercase();
-    format!(
-        "did:emailhash:{}",
-        hex::encode(Sha256::digest(normalized.as_bytes()))
-    )
-}
-
 #[derive(Deserialize)]
 struct EmailDidRequest {
     address: String,
@@ -159,11 +141,11 @@ struct EmailDidResponse {
 
 /// Pure lookup, no email sent: the identity a given address would
 /// authenticate as, so it can be granted ACP permission ahead of time —
-/// `email_issuer_did` is a pure function of the address alone, so this
-/// needs no state and never touches orbis-node or Gmail.
+/// `orbis_sdk::email_issuer_did` is a pure function of the address alone,
+/// so this needs no state and never touches orbis-node or Gmail.
 async fn email_did(Json(req): Json<EmailDidRequest>) -> Json<EmailDidResponse> {
     Json(EmailDidResponse {
-        did: email_issuer_did(&req.address),
+        did: orbis_sdk::email_issuer_did(&req.address),
     })
 }
 
@@ -472,7 +454,7 @@ async fn pre_challenge(
         .map(hex::decode)
         .transpose()
         .map_err(|e| ApiError::bad_request(format!("invalid derivation hex: {e}")))?;
-    let issuer_did = email_issuer_did(&req.claimed_address);
+    let issuer_did = orbis_sdk::email_issuer_did(&req.claimed_address);
 
     let pending = orbis_sdk::build_pre_challenge(
         state.chain_id.clone(),

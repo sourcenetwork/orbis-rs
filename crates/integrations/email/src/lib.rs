@@ -39,7 +39,6 @@ use mail_auth::dkim::VerifySignature;
 use mail_auth::dns::ResolverCache;
 use mail_auth::{AuthenticatedMessage, DkimOutput, DkimResult, MessageAuthenticator, Parameters};
 use orbis_integration_core::{CanonicalDisplay, CanonicalOperation, ChallengeEvidence};
-use sha2::{Digest, Sha256};
 
 mod challenge_text;
 mod dns_map_cache;
@@ -383,7 +382,6 @@ fn build_token<Claims>(
     evidence: &EmailEvidence,
     claims: Claims,
 ) -> BearerToken<Claims> {
-    let normalized = verified_address.trim().to_lowercase();
     // `did:emailhash:` — its own dedicated method, not a real decoded key.
     // Native `vera.rs` accepts it explicitly (`vera_identity::Did::new`,
     // alongside `did:key:`/`did:opk:`); the Cosmos/SourceHub chain's own
@@ -392,11 +390,11 @@ fn build_token<Claims>(
     // accepts any well-formed method here with no chain-side change needed
     // (confirmed: a plain `email:` prefix was rejected only because it's
     // missing the `did:` scheme entirely — a 2-part string, not because
-    // "email" itself was disallowed).
-    let issuer_id = format!(
-        "did:emailhash:{}",
-        hex::encode(Sha256::digest(normalized.as_bytes()))
-    );
+    // "email" itself was disallowed). `authn::did_from_email_address` is
+    // the single source of truth for this formula — every other caller
+    // that needs to compute or preview it goes through that, not a
+    // re-derived copy.
+    let issuer_id = authn::did_from_email_address(verified_address);
     BearerToken {
         issuer_id,
         subject_id: None,

@@ -52,6 +52,8 @@ pub use dkg::DkgResult;
 pub use error::{Result, SdkError};
 #[cfg(any(feature = "webauthn", feature = "email"))]
 pub use evidence::{ChallengeEvidence, WireEvidence};
+#[cfg(feature = "email")]
+pub use identity::email_issuer_did;
 pub use identity::{
     derive_signer_did, reader_did_from_seed, secp256k1_pubkey_to_did, ChainIdentity,
     InMemoryChainIdentity, InMemoryEd25519Signer, JwtIdentitySigner,

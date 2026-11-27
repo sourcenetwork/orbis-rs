@@ -19,6 +19,7 @@ tonic = { workspace = true }
 zeroize = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }
+hex = { workspace = true }
 
 [lints]
 workspace = true

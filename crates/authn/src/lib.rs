@@ -8,6 +8,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use error::{AuthNError, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt::Debug;
 
 // Re-export commonly used items from jwt_builder
@@ -106,6 +107,28 @@ pub fn p256_public_key_from_did(did: &str) -> Result<[u8; 33]> {
 /// stands for. The inverse of [`p256_public_key_from_did`].
 pub fn did_from_p256_public_key(compressed_pubkey: &[u8; 33]) -> String {
     did_key::encode_p256_did(compressed_pubkey)
+}
+
+/// Encodes a verified email address as the `did:emailhash:` identity ACP
+/// grants/revokes for it — a lowercase SHA-256 hex digest of the address,
+/// trimmed and lowercased first so the identity is stable regardless of
+/// case or surrounding whitespace. Not a real decoded key, unlike
+/// [`did_from_p256_public_key`]: this is its own dedicated DID method (see
+/// the `orbis-email` crate's own `verify_email_message`/`build_token` for
+/// why — the single place that independently derives the address this
+/// hashes, and the only thing that should ever call this with a value it
+/// hasn't itself verified via DKIM).
+///
+/// The single source of truth for this identity scheme — every other
+/// place that needs to compute or preview it (the SDK, `cli-tool`,
+/// `orbis-node`'s own Docker e2e test fixtures) calls this instead of
+/// re-deriving the formula.
+pub fn did_from_email_address(address: &str) -> String {
+    let normalized = address.trim().to_lowercase();
+    format!(
+        "did:emailhash:{}",
+        hex::encode(Sha256::digest(normalized.as_bytes()))
+    )
 }
 
 /// Resolves and verifies a JWT token, returning the decoded BearerToken with custom claims.

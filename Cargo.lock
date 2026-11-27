@@ -1093,6 +1093,7 @@ dependencies = [
  "base64 0.22.1",
  "bs58",
  "ed25519-dalek 2.2.0",
+ "hex",
  "jsonwebtoken",
  "p256 0.13.2",
  "pkcs8 0.10.2",
@@ -1940,7 +1941,6 @@ dependencies = [
  "rpassword",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tonic",
@@ -3744,7 +3744,6 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tokio",
  "tonic",
 ]

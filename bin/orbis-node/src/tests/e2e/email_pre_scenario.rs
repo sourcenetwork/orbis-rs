@@ -28,7 +28,6 @@ use orbis_email::test_support::TestSigningKey;
 use orbis_integration_core::{CanonicalDisplay, PreOperation};
 use proto::v0::pre::pre_service_client::PreServiceClient;
 use proto::v0::pre::{EmailAssertion, StartPreRequest};
-use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::time::Duration;
 use test_support::fixture::{
@@ -46,16 +45,6 @@ const REPLACEMENT_ADDRESS: &str = "bob@orbis-email-pre.test";
 const TO_ADDRESS: &str = "ring@orbis-email-pre.test";
 const PLAINTEXT: &[u8] = b"email-authorized PRE decryption";
 const CONTAINER_KEYS_PATH: &str = "/etc/orbis/email-dkim-keys.json";
-
-/// `did:emailhash:sha256(normalized address)` — see
-/// `email_sign_scenario.rs`'s identical helper for why.
-fn email_issuer_id(address: &str) -> String {
-    let normalized = address.trim().to_lowercase();
-    format!(
-        "did:emailhash:{}",
-        hex::encode(Sha256::digest(normalized.as_bytes()))
-    )
-}
 
 /// Writes a pinned-DKIM-keys file in the format
 /// `orbis_email::PinnedDnsCache::load_from_file` expects — see
@@ -182,7 +171,7 @@ async fn test_email_authorized_pre_decryption() {
         .register_object(&policy_id, RESOURCE, &stored.object_id)
         .await;
 
-    let signer_id = email_issuer_id(FROM_ADDRESS);
+    let signer_id = authn::did_from_email_address(FROM_ADDRESS);
 
     let denied = cli_tool::do_pre_with_email(
         endpoint.clone(),
@@ -255,7 +244,7 @@ async fn test_email_authorized_pre_decryption() {
     // address from the policy, add a new one. No separate
     // enrollment/binding registry involved — same shape as
     // `pre_passkey_scenario.rs`'s key-replacement cycle.
-    let replacement_id = email_issuer_id(REPLACEMENT_ADDRESS);
+    let replacement_id = authn::did_from_email_address(REPLACEMENT_ADDRESS);
     environment
         .grant(
             &policy_id,

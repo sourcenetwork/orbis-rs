@@ -305,10 +305,7 @@ async fn verify_and_build_token_succeeds_and_binds_issuer_to_the_verified_addres
     .await
     .expect("verification must succeed");
 
-    let expected_issuer = format!(
-        "did:emailhash:{}",
-        hex::encode(Sha256::digest(FROM.to_lowercase().as_bytes()))
-    );
+    let expected_issuer = authn::did_from_email_address(FROM);
     assert_eq!(token.issuer_id, expected_issuer);
     assert_eq!(token.jwt_id, hex::encode([1u8; 16]));
 }
