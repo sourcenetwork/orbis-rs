@@ -36,6 +36,8 @@ mod concurrent_simultaneous_dkg;
 mod defra_documents;
 #[cfg(all(feature = "vera", feature = "bls12-381"))]
 mod defra_peers;
+mod email_pre_scenario;
+mod email_sign_scenario;
 mod fault_dkg_unreachable;
 mod fault_pre_below_threshold;
 mod fault_pre_one_node_down;

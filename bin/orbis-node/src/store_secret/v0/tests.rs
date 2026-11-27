@@ -113,6 +113,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         timestamp: None,
         pet_tag: None,
         webauthn_assertion: None,
+        email_assertion: None,
     }
 }
 
@@ -334,6 +335,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         timestamp: None,
         pet_tag: None,
         webauthn_assertion: None,
+        email_assertion: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -522,6 +524,7 @@ async fn test_store_secret_idempotent() {
         timestamp: None,
         pet_tag: None,
         webauthn_assertion: None,
+        email_assertion: None,
     };
 
     // Snapshot post count before any store_secret call. The bulletin already holds
@@ -565,6 +568,7 @@ async fn test_store_secret_idempotent() {
         timestamp: None,
         pet_tag: None,
         webauthn_assertion: None,
+        email_assertion: None,
     };
 
     let tonic_request2 = create_authenticated_request(request2, &token).unwrap();
@@ -783,6 +787,7 @@ async fn test_store_secret_succeeds_with_webauthn() {
             expiry,
             nonce: nonce.to_vec(),
         }),
+        email_assertion: None,
     };
 
     let posts_before = bulletin.get_posts().len();

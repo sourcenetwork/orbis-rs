@@ -403,6 +403,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 object_id: object_id.clone(),
                 token_string: Some(pre_token.clone()),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -545,6 +546,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 object_id: second_object_id,
                 token_string: Some(second_pre_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -797,6 +799,7 @@ async fn test_pre_with_inline_document_end_to_end() {
                 object_id,
                 token_string: Some(pre_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -957,6 +960,7 @@ async fn test_pre_with_large_secret() {
                 object_id,
                 token_string: Some(pre_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1124,6 +1128,7 @@ async fn test_pre_fails_with_wrong_key() {
                 object_id,
                 token_string: Some(pre_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1275,6 +1280,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 object_id,
                 token_string: Some(invalid_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1496,6 +1502,7 @@ async fn test_pre_fails_with_forged_webauthn_assertion() {
                 object_id,
                 token_string: None,
                 webauthn_assertion: Some(forged_evidence),
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1670,6 +1677,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 object_id,
                 token_string: Some(mismatched_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -1746,6 +1754,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         rdr_pk_signature: None,
         audit_target_object_id: None,
         webauthn_assertion: None,
+        email_assertion: None,
     };
 
     // Create request WITHOUT authentication header
@@ -1791,6 +1800,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         rdr_pk_signature: None,
         audit_target_object_id: None,
         webauthn_assertion: None,
+        email_assertion: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -1852,6 +1862,7 @@ async fn test_start_pre_fails_wrong_signature() {
         rdr_pk_signature: None,
         audit_target_object_id: None,
         webauthn_assertion: None,
+        email_assertion: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -1904,6 +1915,7 @@ async fn test_start_pre_does_not_record_jti_before_authorization() {
         rdr_pk_signature: None,
         audit_target_object_id: None,
         webauthn_assertion: None,
+        email_assertion: None,
     };
 
     // First call: JWT and claims are valid, but the flow fails before
@@ -2059,6 +2071,7 @@ async fn test_pre_fails_with_wrong_derivation() {
                 object_id: object_id.clone(),
                 token_string: Some(pre_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: Some(correct_derivation.clone()),
                 salt: None,
                 valid_window: None,
@@ -2266,6 +2279,7 @@ async fn test_pre_fails_with_bad_proof() {
                 object_id,
                 token_string: Some(pre_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -2431,6 +2445,7 @@ async fn test_pre_rejects_peers_with_mismatched_pinned_generation() {
                 object_id,
                 token_string: Some(pre_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -2609,6 +2624,7 @@ async fn test_pre_with_defra_stored_delivery_end_to_end() {
                 object_id,
                 token_string: Some(pre_token),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -2847,6 +2863,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 object_id: "local-verify-failure-object".to_string(),
                 token_string: Some("unused".to_string()),
                 webauthn_assertion: None,
+                email_assertion: None,
                 derivation: None,
                 salt: None,
                 valid_window: None,

@@ -64,7 +64,7 @@ jobs:
         run: |
           scripts/test-upgrade-unit.sh
           scripts/test-upgrade.sh \
-            --from d7b74e3d5d8ad2651dd00c12a9fe6e9e553514fb \
+            --from 995382a3b1be3e9c123290399b3162e8a9a9c70c \
             --to HEAD \
             --crypto "${{ matrix.crypto }}" \
             --output "upgrade-results/${{ matrix.crypto }}"

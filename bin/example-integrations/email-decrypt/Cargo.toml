@@ -1,6 +1,6 @@
 [package]
 name = "email-decrypt"
-description = "Email document decryption reference application scaffold"
+description = "Email document decryption reference application"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,42 @@ readme = "README.md"
 
 [dependencies]
 orbis-email.workspace = true
+orbis-sdk = { workspace = true, features = ["email"] }
+axum = "0.8"
+tokio = { workspace = true }
+tonic = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+clap = { version = "4.5", features = ["derive", "env"] }
+# SMTP send (the nodemailer-equivalent half of the challenge/reply loop).
+# `tokio1-native-tls` pairs with async-imap's own `async-native-tls` below
+# so only one TLS stack (native-tls/OpenSSL) ends up in the dependency
+# tree, not two.
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "tokio1",
+    "tokio1-native-tls",
+] }
+# IMAP fetch for the "check for reply" button — a one-shot lookup per
+# click, not a background poll.
+async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }
+async-native-tls = { version = "0.5", default-features = false, features = ["runtime-tokio"] }
+futures = { workspace = true }
+# Loads `.env` (gitignored; `.env.example` ships committed) so a Gmail
+# address/app password never needs to be a literal CLI argument.
+dotenvy = "0.15"
+
+[features]
+default = ["bls12-381"]
+# Forwards to `orbis-sdk`'s matching curve backend — hardcoding one here
+# unconditionally (instead of forwarding) would force that backend on for
+# any whole-workspace build, breaking the other backend's build via
+# `crypto`'s own "mutually exclusive" guard.
+bls12-381 = ["orbis-sdk/bls12-381"]
+jubjub = ["orbis-sdk/jubjub"]
 
 [lints]
 workspace = true

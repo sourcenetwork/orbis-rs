@@ -117,6 +117,8 @@ async fn make_test_node_config(
             network_ingress: NetworkIngressArgs::default(),
             webauthn_rp_id: None,
             webauthn_origin: None,
+            email_evidence_enabled: false,
+            email_dkim_keys_file: None,
         },
         cors_policy: CorsPolicy::Disabled,
         identity: bulletin::startup::NodeIdentity {
@@ -194,6 +196,8 @@ fn node_info_test_args(
         network_ingress: NetworkIngressArgs::default(),
         webauthn_rp_id: None,
         webauthn_origin: None,
+        email_evidence_enabled: false,
+        email_dkim_keys_file: None,
     }
 }
 
@@ -582,6 +586,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             rdr_pk_signature: None,
             audit_target_object_id: None,
             webauthn_assertion: None,
+            email_assertion: None,
         })
         .await
         .expect_err("oversized pre request should fail during decode");
@@ -596,6 +601,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             derivation_id: "derivation-id".to_string(),
             valid_window: None,
             webauthn_assertion: None,
+            email_assertion: None,
         })
         .await
         .expect_err("sign request at message limit should reach auth");
@@ -611,6 +617,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             derivation_id: "derivation-id".to_string(),
             valid_window: None,
             webauthn_assertion: None,
+            email_assertion: None,
         })
         .await
         .expect_err("oversized sign request should fail during decode");
@@ -634,6 +641,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             timestamp: None,
             pet_tag: None,
             webauthn_assertion: None,
+            email_assertion: None,
         })
         .await
         .expect_err("oversized store-secret request should fail during decode");
@@ -815,6 +823,8 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             network_ingress: NetworkIngressArgs::default(),
             webauthn_rp_id: None,
             webauthn_origin: None,
+            email_evidence_enabled: false,
+            email_dkim_keys_file: None,
         },
         cors_policy,
         identity: identity.clone(),

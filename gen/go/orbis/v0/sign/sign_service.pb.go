@@ -182,6 +182,90 @@ func (x *WebAuthnAssertion) GetNonce() []byte {
 	return nil
 }
 
+// DKIM-verified email evidence authorizing a Sign request in place of a
+// JWT. Unlike `WebAuthnAssertion`, the identity is not declared up front —
+// the node independently extracts and DMARC-aligns the `From:` address
+// from `raw_message` itself; `claimed_address` is only a sanity check
+// against that. `issued_at`/`expiry`/`nonce` complete the exact operation
+// the DKIM-verified body's reply code must commit to, the same role they
+// play in `WebAuthnAssertion`. See `orbis_email::EmailEvidence`/
+// `orbis_integration_core::SignOperation`.
+type EmailAssertion struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ClaimedAddress string                 `protobuf:"bytes,1,opt,name=claimed_address,json=claimedAddress,proto3" json:"claimed_address,omitempty"`
+	RawMessage     []byte                 `protobuf:"bytes,2,opt,name=raw_message,json=rawMessage,proto3" json:"raw_message,omitempty"`
+	IssuedAt       uint64                 `protobuf:"varint,3,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	Expiry         uint64                 `protobuf:"varint,4,opt,name=expiry,proto3" json:"expiry,omitempty"`
+	Nonce          []byte                 `protobuf:"bytes,5,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *EmailAssertion) Reset() {
+	*x = EmailAssertion{}
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmailAssertion) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmailAssertion) ProtoMessage() {}
+
+func (x *EmailAssertion) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmailAssertion.ProtoReflect.Descriptor instead.
+func (*EmailAssertion) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *EmailAssertion) GetClaimedAddress() string {
+	if x != nil {
+		return x.ClaimedAddress
+	}
+	return ""
+}
+
+func (x *EmailAssertion) GetRawMessage() []byte {
+	if x != nil {
+		return x.RawMessage
+	}
+	return nil
+}
+
+func (x *EmailAssertion) GetIssuedAt() uint64 {
+	if x != nil {
+		return x.IssuedAt
+	}
+	return 0
+}
+
+func (x *EmailAssertion) GetExpiry() uint64 {
+	if x != nil {
+		return x.Expiry
+	}
+	return 0
+}
+
+func (x *EmailAssertion) GetNonce() []byte {
+	if x != nil {
+		return x.Nonce
+	}
+	return nil
+}
+
 type StartSignRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Raw bytes to sign
@@ -195,13 +279,16 @@ type StartSignRequest struct {
 	// way carries no Authorization header), not enforced by the message
 	// shape itself.
 	WebauthnAssertion *WebAuthnAssertion `protobuf:"bytes,4,opt,name=webauthn_assertion,json=webauthnAssertion,proto3,oneof" json:"webauthn_assertion,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Email-authorized signing: same mutual-exclusivity note as
+	// `webauthn_assertion` applies, also with respect to that field.
+	EmailAssertion *EmailAssertion `protobuf:"bytes,5,opt,name=email_assertion,json=emailAssertion,proto3,oneof" json:"email_assertion,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *StartSignRequest) Reset() {
 	*x = StartSignRequest{}
-	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -213,7 +300,7 @@ func (x *StartSignRequest) String() string {
 func (*StartSignRequest) ProtoMessage() {}
 
 func (x *StartSignRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -226,7 +313,7 @@ func (x *StartSignRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartSignRequest.ProtoReflect.Descriptor instead.
 func (*StartSignRequest) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{2}
+	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StartSignRequest) GetMessage() []byte {
@@ -257,6 +344,13 @@ func (x *StartSignRequest) GetWebauthnAssertion() *WebAuthnAssertion {
 	return nil
 }
 
+func (x *StartSignRequest) GetEmailAssertion() *EmailAssertion {
+	if x != nil {
+		return x.EmailAssertion
+	}
+	return nil
+}
+
 type StartSignResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Status    string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -270,7 +364,7 @@ type StartSignResponse struct {
 
 func (x *StartSignResponse) Reset() {
 	*x = StartSignResponse{}
-	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[3]
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -282,7 +376,7 @@ func (x *StartSignResponse) String() string {
 func (*StartSignResponse) ProtoMessage() {}
 
 func (x *StartSignResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[3]
+	mi := &file_orbis_v0_sign_sign_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -295,7 +389,7 @@ func (x *StartSignResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartSignResponse.ProtoReflect.Descriptor instead.
 func (*StartSignResponse) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{3}
+	return file_orbis_v0_sign_sign_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *StartSignResponse) GetStatus() string {
@@ -342,14 +436,23 @@ const file_orbis_v0_sign_sign_service_proto_rawDesc = "" +
 	"\tsignature\x18\x04 \x01(\fR\tsignature\x12\x1b\n" +
 	"\tissued_at\x18\a \x01(\x04R\bissuedAt\x12\x16\n" +
 	"\x06expiry\x18\x05 \x01(\x04R\x06expiry\x12\x14\n" +
-	"\x05nonce\x18\x06 \x01(\fR\x05nonce\"\x96\x02\n" +
+	"\x05nonce\x18\x06 \x01(\fR\x05nonce\"\xa5\x01\n" +
+	"\x0eEmailAssertion\x12'\n" +
+	"\x0fclaimed_address\x18\x01 \x01(\tR\x0eclaimedAddress\x12\x1f\n" +
+	"\vraw_message\x18\x02 \x01(\fR\n" +
+	"rawMessage\x12\x1b\n" +
+	"\tissued_at\x18\x03 \x01(\x04R\bissuedAt\x12\x16\n" +
+	"\x06expiry\x18\x04 \x01(\x04R\x06expiry\x12\x14\n" +
+	"\x05nonce\x18\x05 \x01(\fR\x05nonce\"\xf7\x02\n" +
 	"\x10StartSignRequest\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\fR\amessage\x12#\n" +
 	"\rderivation_id\x18\x02 \x01(\tR\fderivationId\x12E\n" +
 	"\fvalid_window\x18\x03 \x01(\v2\x1d.orbis.v0.sign.TimestampRangeH\x00R\vvalidWindow\x88\x01\x01\x12T\n" +
-	"\x12webauthn_assertion\x18\x04 \x01(\v2 .orbis.v0.sign.WebAuthnAssertionH\x01R\x11webauthnAssertion\x88\x01\x01B\x0f\n" +
+	"\x12webauthn_assertion\x18\x04 \x01(\v2 .orbis.v0.sign.WebAuthnAssertionH\x01R\x11webauthnAssertion\x88\x01\x01\x12K\n" +
+	"\x0femail_assertion\x18\x05 \x01(\v2\x1d.orbis.v0.sign.EmailAssertionH\x02R\x0eemailAssertion\x88\x01\x01B\x0f\n" +
 	"\r_valid_windowB\x15\n" +
-	"\x13_webauthn_assertion\"\x82\x01\n" +
+	"\x13_webauthn_assertionB\x12\n" +
+	"\x10_email_assertion\"\x82\x01\n" +
 	"\x11StartSignResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1d\n" +
@@ -372,23 +475,25 @@ func file_orbis_v0_sign_sign_service_proto_rawDescGZIP() []byte {
 	return file_orbis_v0_sign_sign_service_proto_rawDescData
 }
 
-var file_orbis_v0_sign_sign_service_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_orbis_v0_sign_sign_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_orbis_v0_sign_sign_service_proto_goTypes = []any{
 	(*TimestampRange)(nil),    // 0: orbis.v0.sign.TimestampRange
 	(*WebAuthnAssertion)(nil), // 1: orbis.v0.sign.WebAuthnAssertion
-	(*StartSignRequest)(nil),  // 2: orbis.v0.sign.StartSignRequest
-	(*StartSignResponse)(nil), // 3: orbis.v0.sign.StartSignResponse
+	(*EmailAssertion)(nil),    // 2: orbis.v0.sign.EmailAssertion
+	(*StartSignRequest)(nil),  // 3: orbis.v0.sign.StartSignRequest
+	(*StartSignResponse)(nil), // 4: orbis.v0.sign.StartSignResponse
 }
 var file_orbis_v0_sign_sign_service_proto_depIdxs = []int32{
 	0, // 0: orbis.v0.sign.StartSignRequest.valid_window:type_name -> orbis.v0.sign.TimestampRange
 	1, // 1: orbis.v0.sign.StartSignRequest.webauthn_assertion:type_name -> orbis.v0.sign.WebAuthnAssertion
-	2, // 2: orbis.v0.sign.SignService.StartSign:input_type -> orbis.v0.sign.StartSignRequest
-	3, // 3: orbis.v0.sign.SignService.StartSign:output_type -> orbis.v0.sign.StartSignResponse
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	2, // 2: orbis.v0.sign.StartSignRequest.email_assertion:type_name -> orbis.v0.sign.EmailAssertion
+	3, // 3: orbis.v0.sign.SignService.StartSign:input_type -> orbis.v0.sign.StartSignRequest
+	4, // 4: orbis.v0.sign.SignService.StartSign:output_type -> orbis.v0.sign.StartSignResponse
+	4, // [4:5] is the sub-list for method output_type
+	3, // [3:4] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_orbis_v0_sign_sign_service_proto_init() }
@@ -396,14 +501,14 @@ func file_orbis_v0_sign_sign_service_proto_init() {
 	if File_orbis_v0_sign_sign_service_proto != nil {
 		return
 	}
-	file_orbis_v0_sign_sign_service_proto_msgTypes[2].OneofWrappers = []any{}
+	file_orbis_v0_sign_sign_service_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_v0_sign_sign_service_proto_rawDesc), len(file_orbis_v0_sign_sign_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

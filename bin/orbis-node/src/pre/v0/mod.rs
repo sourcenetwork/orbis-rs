@@ -1,4 +1,5 @@
 pub mod coordinator;
+pub(crate) mod email_auth;
 pub mod error;
 pub mod helpers;
 pub mod messages;

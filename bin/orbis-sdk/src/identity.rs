@@ -87,6 +87,19 @@ pub fn derive_signer_did(identity: &impl ChainIdentity) -> (String, String) {
     (pubkey_hex, did)
 }
 
+/// Derives the `did:emailhash:` identity an email-authorized request
+/// authenticates as, from the address alone — pure local computation, no
+/// network calls. Use this to find out, ahead of time, which DID needs an
+/// ACP relation granted before a reply from that mailbox will be
+/// authorized; there is no separate enrollment step. A thin, `email`
+/// feature re-export of `authn::did_from_email_address` — the single
+/// source of truth for this formula, shared by `orbis_email::build_token`
+/// itself.
+#[cfg(feature = "email")]
+pub fn email_issuer_did(address: &str) -> String {
+    authn::did_from_email_address(address)
+}
+
 /// Derive a 32-byte seed from an arbitrary string via SHA-256. Hashing to 32
 /// bytes ensures a consistent, reproducible identity for any input length —
 /// the lower-security convenience this ecosystem's tooling has long used

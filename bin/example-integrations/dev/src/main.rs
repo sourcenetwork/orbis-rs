@@ -322,6 +322,14 @@ async fn up(
     // the same pattern. Must be set before `start_configured` reads it.
     std::env::set_var("ORBIS_WEBAUTHN_RP_ID", &webauthn_rp_id);
     std::env::set_var("ORBIS_WEBAUTHN_ORIGIN", &webauthn_origin);
+    // Unconditional, no corresponding CLI flag: purely additive (a node
+    // that also accepts email evidence doesn't change what passkey-sign/
+    // yubikey-sign already do against this same shared cluster), and no
+    // `ORBIS_EMAIL_DKIM_KEYS_FILE` is set, so nodes resolve DKIM keys over
+    // live DNS — correct here since `email-decrypt` talks to real mail
+    // providers (Gmail included), unlike the Docker e2e tests' synthetic
+    // domains, which need the pinned-key file instead.
+    std::env::set_var("ORBIS_EMAIL_EVIDENCE_ENABLED", "true");
     let network = VeraNetworkAdapter::start_configured(
         DEPLOYMENT,
         node_count,
@@ -448,6 +456,10 @@ fn print_summary(
     println!("Point an example app at this cluster, e.g.:");
     println!(
         "  cargo run -p passkey-sign -- --orbis-endpoint {} --chain-id {chain_id}",
+        nodes[0].grpc_endpoint
+    );
+    println!(
+        "  cargo run -p email-decrypt -- --orbis-endpoint {} --chain-id {chain_id}",
         nodes[0].grpc_endpoint
     );
     println!();

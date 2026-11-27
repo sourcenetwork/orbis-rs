@@ -253,6 +253,10 @@ where
         actor_id: String,
         valid_window: Option<ValidWindow>,
         token_string: String,
+        rdr_pk: Vec<u8>,
+        derivation: Option<Vec<u8>>,
+        webauthn_assertion: Option<orbis_webauthn::WebAuthnEvidence>,
+        email_assertion: Option<orbis_email::EmailEvidence>,
     ) -> Result<PetBlindEvidence> {
         let document_inline = document_evidence.is_some();
         let ring_payload = read_ring_for_route(
@@ -297,6 +301,10 @@ where
             object_id: object_id.clone(),
             document_inline,
             token_string,
+            rdr_pk,
+            derivation,
+            webauthn_assertion,
+            email_assertion,
             audit_target_object_id: audit_target_object_id.clone(),
             valid_window,
         };

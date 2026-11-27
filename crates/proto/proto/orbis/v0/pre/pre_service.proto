@@ -99,6 +99,24 @@ message WebAuthnAssertion {
   bytes nonce = 7;
 }
 
+// DKIM-verified email evidence authorizing a PRE decrypt request in place
+// of a JWT. Unlike `WebAuthnAssertion`, the identity is not declared up
+// front — the node independently extracts and DMARC-aligns the `From:`
+// address from `raw_message` itself; `claimed_address` is only a sanity
+// check against that. `issued_at`/`expiry`/`nonce` complete the exact
+// operation the DKIM-verified body's reply code must commit to (alongside
+// this request's own `object_id`/`rdr_pk`/`derivation`/`salt`); `issued_at`
+// matters here specifically for the same reason it does for
+// `WebAuthnAssertion` — see that message's own doc comment. See
+// `orbis_email::EmailEvidence`/`orbis_integration_core::PreOperation`.
+message EmailAssertion {
+  string claimed_address = 1;
+  bytes raw_message = 2;
+  uint64 issued_at = 3;
+  uint64 expiry = 4;
+  bytes nonce = 5;
+}
+
 message StartPreRequest {
   // Ephemeral recipient public key for this PRE operation, on either backend.
   // Clients MUST generate a fresh, independent keypair for each new operation;
@@ -133,6 +151,9 @@ message StartPreRequest {
   // authenticated this way carries no Authorization header), not enforced
   // by the message shape itself.
   optional WebAuthnAssertion webauthn_assertion = 9;
+  // Email-authorized decryption: same mutual-exclusivity note as
+  // `webauthn_assertion` applies, also with respect to that field.
+  optional EmailAssertion email_assertion = 10;
 }
 
 message StartPreResponse {

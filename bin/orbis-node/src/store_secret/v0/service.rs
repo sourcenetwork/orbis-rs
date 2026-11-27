@@ -83,11 +83,13 @@ where
             .map_err(|e| StoreSecretError::SystemTime(format!("Failed to get timestamp: {}", e)))?
             .as_secs();
 
-        // 1. Authenticate: JWT or WebAuthn evidence (mutually exclusive — see
-        // `WebAuthnAssertion`'s proto doc comment). WebAuthn, when present,
-        // takes priority and the bearer header, if any, is never even read.
-        let has_webauthn = request.get_ref().webauthn_assertion.is_some();
-        let token_str = if has_webauthn {
+        // 1. Authenticate: JWT, WebAuthn, or email evidence (mutually
+        // exclusive — see `WebAuthnAssertion`'s/`EmailAssertion`'s proto doc
+        // comments). WebAuthn, then email, takes priority and the bearer
+        // header, if either is present, is never even read.
+        let has_evidence = request.get_ref().webauthn_assertion.is_some()
+            || request.get_ref().email_assertion.is_some();
+        let token_str = if has_evidence {
             None
         } else {
             Some(
@@ -102,6 +104,10 @@ where
             .webauthn_assertion
             .take()
             .map(super::webauthn_auth::evidence_from_proto);
+        let email_assertion = req
+            .email_assertion
+            .take()
+            .map(super::email_auth::evidence_from_proto);
 
         let encrypted_document_sha256 = Sha256::digest(&req.encrypted_document).to_vec();
         let fields = authn::endpoints::store_secret::StoreSecretFields {
@@ -129,11 +135,15 @@ where
             webauthn_assertion.as_ref(),
             self.state.webauthn_rp_id.as_deref(),
             self.state.webauthn_origin.as_deref(),
+            email_assertion.as_ref(),
+            self.state.email_authenticator.as_deref(),
+            self.state.email_dns_cache.as_deref(),
             current_time,
             MAX_TOKEN_LIFETIME_SECS,
             MAX_JWT_BYTES,
             JWT_CLOCK_SKEW_LEEWAY_SECS,
         )
+        .await
         .map_err(|e| StoreSecretError::Unauthorized(e.to_string()))?;
         if token.subject_id.is_some() {
             return Err(StoreSecretError::Unauthorized(

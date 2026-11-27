@@ -574,6 +574,7 @@ pub async fn pre_call(
             }),
             audit_target_object_id: fixture.audit_target_object_id.clone(),
             webauthn_assertion: None,
+            email_assertion: None,
         },
         &token,
     )?;
@@ -646,6 +647,7 @@ pub async fn sign_call(
             derivation_id: fixture.derivation_id.clone(),
             valid_window: None,
             webauthn_assertion: None,
+            email_assertion: None,
         },
         &token,
     )?;

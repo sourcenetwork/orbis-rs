@@ -840,6 +840,7 @@ async fn forward_unauthorized_pre(
             object_id: statement.object_id.clone(),
             token_string: Some(token_string),
             webauthn_assertion: None,
+            email_assertion: None,
             derivation: None,
             salt: None,
             valid_window: None,
@@ -914,6 +915,7 @@ async fn forward_unauthorized_sign(
         context: SignContext::Policy(Box::new(PolicyContext {
             token_string: Some(token_string),
             webauthn_assertion: None,
+            email_assertion: None,
             message_sha256,
             derivation_id: statement.object_id.clone(),
             valid_window: None,

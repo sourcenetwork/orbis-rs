@@ -28,6 +28,7 @@ allow = [
     "BSL-1.0",   # Boost Software License (permissive) — used by ryu via serde_json
     "MPL-2.0",   # file-level copyleft only; we don't modify these files.
                  # affects: attohttpc (via iroh→igd-next), option-ext (via dirs)
+    "0BSD",      # BSD Zero Clause (OSI-approved, public-domain-equivalent) — used by quoted_printable via lettre
 ]
 
 # Confidence threshold for license text scanning (when SPDX field is absent)
@@ -58,6 +59,19 @@ ignore = [
     # narrow, but not nothing. Revisit when cosmrs publishes a version
     # pulling crypto-bigint >=0.7.6.
     "RUSTSEC-2026-0387",
+    # Marvin Attack: timing side-channel that can leak an RSA *private* key
+    # during signing/decryption. Reached via mail-auth 0.16.0 (DKIM) ->
+    # rsa 0.9.10, and directly by orbis-email's own `rsa` dependency (test
+    # key generation). Not exploitable here: `orbis-node`/`orbis-email`
+    # only ever *verify* DKIM signatures in production (mail-auth's
+    # `RsaPublicKey::verify_digest`, a public-key operation — confirmed by
+    # reading `mail-auth`'s `rust_crypto.rs`); nothing in this codebase
+    # signs with RSA outside `orbis_email::test_support`, which only ever
+    # operates on freshly-generated, throwaway test keys with no secrecy
+    # value to leak. No fix needed unless mail-auth itself starts signing
+    # with a real key in a path we call, or bumps to `rsa` 0.10+ (which
+    # would make this moot anyway).
+    "RUSTSEC-2023-0071",
 ]
 
 # ---------------------------------------------------------------------------

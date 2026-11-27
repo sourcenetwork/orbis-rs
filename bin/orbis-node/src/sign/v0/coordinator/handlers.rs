@@ -278,11 +278,15 @@ where
                     ctx.webauthn_assertion.as_ref(),
                     self.app_state.webauthn_rp_id.as_deref(),
                     self.app_state.webauthn_origin.as_deref(),
+                    ctx.email_assertion.as_ref(),
+                    self.app_state.email_authenticator.as_deref(),
+                    self.app_state.email_dns_cache.as_deref(),
                     current_time,
                     MAX_TOKEN_LIFETIME_SECS,
                     MAX_JWT_BYTES,
                     JWT_CLOCK_SKEW_LEEWAY_SECS,
                 )
+                .await
                 .map_err(|e| SignError::Unauthorized(e.to_string()))?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
@@ -612,11 +616,15 @@ where
                 ctx.webauthn_assertion.as_ref(),
                 self.app_state.webauthn_rp_id.as_deref(),
                 self.app_state.webauthn_origin.as_deref(),
+                ctx.email_assertion.as_ref(),
+                self.app_state.email_authenticator.as_deref(),
+                self.app_state.email_dns_cache.as_deref(),
                 current_time,
                 MAX_TOKEN_LIFETIME_SECS,
                 MAX_JWT_BYTES,
                 JWT_CLOCK_SKEW_LEEWAY_SECS,
             )
+            .await
             .map_err(|e| SignError::Unauthorized(e.to_string()))?;
 
         // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata

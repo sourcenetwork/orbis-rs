@@ -468,6 +468,23 @@ impl CosmosNetworkBuilder {
             if let Some(origin) = std::env::var_os("ORBIS_WEBAUTHN_ORIGIN") {
                 command.env("ORBIS_WEBAUTHN_ORIGIN", origin);
             }
+            // Same opt-in pass-through, for an email-sign scenario: unset
+            // by default (every other scenario's nodes reject
+            // email-authorized Sign requests), forwarded only when a test
+            // sets these on its own process before calling `provision`.
+            // `ORBIS_EMAIL_DKIM_KEYS_FILE_SOURCE` is a host path (the
+            // Compose volume source); `ORBIS_EMAIL_DKIM_KEYS_FILE` is the
+            // fixed in-container path the node's own flag reads, mirroring
+            // `GENESIS_PATCH_FILE`'s own host-path/container-path split.
+            for var in [
+                "ORBIS_EMAIL_EVIDENCE_ENABLED",
+                "ORBIS_EMAIL_DKIM_KEYS_FILE",
+                "ORBIS_EMAIL_DKIM_KEYS_FILE_SOURCE",
+            ] {
+                if let Some(value) = std::env::var_os(var) {
+                    command.env(var, value);
+                }
+            }
 
             command.status()
         };

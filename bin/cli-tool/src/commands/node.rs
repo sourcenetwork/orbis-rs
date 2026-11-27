@@ -286,6 +286,61 @@ fn passkey_issuer_did(signing_key: &p256::ecdsa::SigningKey) -> String {
     authn::did_from_p256_public_key(&compressed_pubkey)
 }
 
+/// Call `PreService.StartPre` with an email-authorized request — a
+/// DKIM-signed reply in place of a JWT. `object_id`'s document's policy
+/// must have granted `read` (or whichever permission it names) to
+/// `orbis_sdk::email_issuer_did(claimed_address)`; there is no separate
+/// enrollment step.
+///
+/// `signing_key` stands in for a real mail server signing a real reply:
+/// there is no mailbox, SMTP capture service, or human to drive here, so
+/// this process signs a synthetic RFC 5322 message directly with a key it
+/// already controls, via `orbis_email::test_support::TestSigningKey`. Fine
+/// for CLI tooling and tests; never represents a real end-user flow — the
+/// same tradeoff `do_pre_with_passkey` makes with
+/// `orbis_webauthn::build_test_assertion`.
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub async fn do_pre_with_email(
+    endpoint: String,
+    chain_id: String,
+    ring_pk: String,
+    object_id: String,
+    claimed_address: String,
+    signing_key: &orbis_email::test_support::TestSigningKey,
+    to_address: &str,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<Vec<u8>> {
+    let issuer_did = orbis_sdk::email_issuer_did(&claimed_address);
+
+    let pending = orbis_sdk::build_pre_challenge(
+        chain_id,
+        ring_pk,
+        object_id,
+        &issuer_did,
+        derivation,
+        salt,
+        valid_window_start,
+        valid_window_end,
+    )?;
+    let challenge_text = pending.email_challenge_text();
+    let raw_message = signing_key.sign_message(
+        &claimed_address,
+        to_address,
+        &format!("confirming:\n{challenge_text}"),
+    );
+    let evidence = pending.email_evidence(claimed_address, raw_message);
+
+    let client = OrbisClient::connect(endpoint).await?;
+    let decrypted = client.submit_pre_with_evidence(pending, evidence).await?;
+    print_decrypted_secret(&decrypted);
+    Ok(decrypted)
+}
+
 /// Call `PreService.StartPre` with a passkey-authorized request — a
 /// WebAuthn assertion in place of a JWT. `object_id`'s document's policy
 /// must have granted `read` (or whichever permission it names) to the
@@ -406,6 +461,57 @@ pub async fn do_sign_with_passkey(
     let assertion =
         orbis_webauthn::build_test_assertion(signing_key, rp_id, origin, &pending.challenge());
     let evidence = pending.passkey_evidence(issuer_did, assertion)?;
+
+    let client = OrbisClient::connect(endpoint).await?;
+    let result = client.submit_sign_with_evidence(pending, evidence).await?;
+    print_sign_result(&result);
+    Ok(result)
+}
+
+/// Call `SignService.StartSign` with an email-authorized request — a
+/// DKIM-signed reply in place of a JWT. `derivation_id` must have been
+/// granted (via ACP) to the identity `did:emailhash:sha256(normalized
+/// claimed_address)` (see `orbis_email::verify_and_build_token`'s own doc
+/// comment); there is no separate enrollment step.
+///
+/// `signing_key` stands in for a real mail server signing a real reply:
+/// there is no mailbox, SMTP capture service, or human to drive here, so
+/// this process signs a synthetic RFC 5322 message directly with a key it
+/// already controls, via `orbis_email::test_support::TestSigningKey`. Fine
+/// for CLI tooling and tests; never represents a real end-user flow — the
+/// same tradeoff `do_sign_with_passkey` makes with
+/// `orbis_webauthn::build_test_assertion`.
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn do_sign_with_email(
+    endpoint: String,
+    message: Vec<u8>,
+    derivation_id: String,
+    claimed_address: String,
+    signing_key: &orbis_email::test_support::TestSigningKey,
+    to_address: &str,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+) -> Result<SignResult> {
+    println!("Starting email-authorized Sign session:");
+    println!("  Endpoint: {endpoint}");
+    println!("  Derivation ID: {derivation_id}");
+    println!("  Message length: {} bytes", message.len());
+    println!();
+
+    let pending = orbis_sdk::build_sign_challenge(
+        derivation_id,
+        message,
+        valid_window_start,
+        valid_window_end,
+    )?;
+    let challenge_text = pending.email_challenge_text();
+    let raw_message = signing_key.sign_message(
+        &claimed_address,
+        to_address,
+        &format!("confirming:\n{challenge_text}"),
+    );
+    let evidence = pending.email_evidence(claimed_address, raw_message)?;
 
     let client = OrbisClient::connect(endpoint).await?;
     let result = client.submit_sign_with_evidence(pending, evidence).await?;

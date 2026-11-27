@@ -1,5 +1,6 @@
 use authn::{resolve_actor_id, BearerToken};
 use authz::request::ValidWindow;
+use orbis_email::EmailEvidence;
 use orbis_webauthn::WebAuthnEvidence;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,37 +34,60 @@ pub fn client_valid_window(range: Option<(u64, u64)>) -> Option<ValidWindow> {
 /// The one place in this codebase that decides which authentication
 /// mechanism applies to a request: the normal JWT path
 /// (`authn::endpoints::resolve_jwt_auth`), or — if the request carries
-/// WebAuthn evidence instead — that mechanism's own verifier
-/// (`orbis_webauthn::verify_endpoint_auth`). The two are mutually
-/// exclusive; WebAuthn, when present, takes priority and the bearer
-/// token, if any, is never even inspected.
+/// WebAuthn or email evidence instead — that mechanism's own verifier
+/// (`orbis_webauthn::verify_endpoint_auth` / `orbis_email::verify_endpoint_auth`).
+/// All three are mutually exclusive; WebAuthn takes priority over email,
+/// which takes priority over the bearer token, and neither evidence kind
+/// ever falls through to inspect it. That exclusivity is a convention
+/// enforced only here, never on the wire — `StartPreRequest`/
+/// `StartSignRequest`/`StoreSecretRequest` carry `webauthn_assertion` and
+/// `email_assertion` as two independent `optional` proto fields, not a
+/// `oneof`, so nothing stops a caller from setting both (or all three,
+/// alongside an Authorization header) at once. If it does: whichever
+/// lower-priority evidence loses isn't just deprioritized, it's never
+/// validated at all — a malformed or garbage email/JWT value sent
+/// alongside valid WebAuthn evidence has no effect, good or bad. And
+/// there's no fallback between mechanisms: if the winning evidence fails
+/// verification, the request fails outright, even if a lower-priority one
+/// would have succeeded on its own. A JWT is additionally never even
+/// extracted from the request once either evidence type is present at
+/// all — see each service's own `stages.rs` (`has_evidence`), upstream of
+/// this function.
 ///
-/// This lives in `orbis-node`, not in `authn` or `orbis-webauthn`,
-/// deliberately: neither of those crates can know about the other (see
-/// `authn::endpoints`'s own doc comment for the dependency direction),
-/// so the only place that can decide "try JWT, then try WebAuthn" is a
-/// caller that depends on both. A future authentication mechanism (e.g.
-/// a DKIM-verified email flow) is added here the same way — one more
-/// optional evidence parameter and branch — never by reaching into
-/// `orbis-webauthn` to extend its dispatch, since it has none to extend.
+/// This lives in `orbis-node`, not in `authn`, `orbis-webauthn`, or
+/// `orbis-email`, deliberately: none of those crates can know about each
+/// other (see `authn::endpoints`'s own doc comment for the dependency
+/// direction), so the only place that can decide "try JWT, then try
+/// WebAuthn, then try email" is a caller that depends on all three. A
+/// future authentication mechanism is added here the same way — one more
+/// optional evidence parameter and branch — never by reaching into an
+/// existing mechanism's crate to extend its dispatch, since none has any
+/// to extend.
 #[allow(clippy::too_many_arguments)]
-pub fn resolve_request_auth<E: orbis_webauthn::WebAuthnEndpoint>(
+pub async fn resolve_request_auth<E>(
     fields: &E::Fields,
     token_string: Option<&str>,
     webauthn_evidence: Option<&WebAuthnEvidence>,
     rp_id: Option<&str>,
     origin: Option<&str>,
+    email_evidence: Option<&EmailEvidence>,
+    email_authenticator: Option<&mail_auth::MessageAuthenticator>,
+    email_dns_cache: Option<&orbis_email::PinnedDnsCache>,
     current_time: u64,
     max_token_lifetime_secs: u64,
     max_jwt_bytes: usize,
     clock_skew_leeway_secs: u64,
-) -> Result<BearerToken<E::Claims>, String> {
+) -> Result<BearerToken<E::Claims>, String>
+where
+    E: orbis_webauthn::WebAuthnEndpoint + orbis_email::EmailEndpoint,
+{
+    // Matches `JtiReplayGuard::retention`'s own cap exactly: evidence whose
+    // validity period either mechanism accepts must not outlive what the
+    // replay cache can still remember it for, or single-use protection
+    // silently stops applying once the cache forgets it.
+    let max_lifetime_secs = max_token_lifetime_secs.saturating_add(clock_skew_leeway_secs);
+
     if let Some(evidence) = webauthn_evidence {
-        // Matches `JtiReplayGuard::retention`'s own cap exactly: evidence whose
-        // validity period this function accepts must not outlive what the
-        // replay cache can still remember it for, or single-use protection
-        // silently stops applying once the cache forgets it.
-        let max_lifetime_secs = max_token_lifetime_secs.saturating_add(clock_skew_leeway_secs);
         return orbis_webauthn::verify_endpoint_auth::<E>(
             fields,
             evidence,
@@ -75,8 +99,40 @@ pub fn resolve_request_auth<E: orbis_webauthn::WebAuthnEndpoint>(
         .map_err(|e| e.to_string());
     }
 
-    let token_string = token_string
-        .ok_or_else(|| "request carries neither a JWT nor WebAuthn evidence".to_string())?;
+    if let Some(evidence) = email_evidence {
+        let authenticator = email_authenticator
+            .ok_or_else(|| "email evidence not configured on this node".to_string())?;
+        return match email_dns_cache {
+            // Pinned-key mode: DKIM key lookups never touch live DNS — see
+            // `orbis_email::PinnedDnsCache`'s own doc comment for when an
+            // operator would choose this over the live-DNS default below.
+            Some(cache) => {
+                orbis_email::verify_endpoint_auth_with_cache::<E, orbis_email::PinnedDnsCache>(
+                    authenticator,
+                    cache,
+                    fields,
+                    evidence,
+                    current_time,
+                    max_lifetime_secs,
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            None => orbis_email::verify_endpoint_auth::<E>(
+                authenticator,
+                fields,
+                evidence,
+                current_time,
+                max_lifetime_secs,
+            )
+            .await
+            .map_err(|e| e.to_string()),
+        };
+    }
+
+    let token_string = token_string.ok_or_else(|| {
+        "request carries neither a JWT, WebAuthn evidence, nor email evidence".to_string()
+    })?;
     authn::endpoints::resolve_jwt_auth::<E>(
         token_string,
         fields,
@@ -109,6 +165,12 @@ mod tests {
     impl CanonicalOperation for ToyOperation {
         fn canonical_bytes(&self) -> Vec<u8> {
             self.value.as_bytes().to_vec()
+        }
+    }
+
+    impl orbis_integration_core::CanonicalDisplay for ToyOperation {
+        fn canonical_display(&self) -> String {
+            format!("TOY OPERATION\nvalue: {}\n", self.value)
         }
     }
 
@@ -150,6 +212,25 @@ mod tests {
         }
     }
 
+    impl orbis_email::EmailEndpoint for ToyEndpoint {
+        type Operation = ToyOperation;
+
+        fn claims(fields: &&'static str) -> ToyClaims {
+            ToyClaims {
+                value: fields.to_string(),
+            }
+        }
+
+        fn operation(
+            fields: &&'static str,
+            _issued_at: u64,
+            _expiry: u64,
+            _nonce: [u8; 16],
+        ) -> ToyOperation {
+            ToyOperation { value: fields }
+        }
+    }
+
     fn webauthn_evidence_for(key: &SigningKey, did: &str, value: &'static str) -> WebAuthnEvidence {
         let assertion = orbis_webauthn::build_test_assertion(
             key,
@@ -168,8 +249,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dispatches_to_webauthn_when_evidence_present() {
+    #[tokio::test]
+    async fn dispatches_to_webauthn_when_evidence_present() {
         let mut scalar = [0u8; 32];
         scalar[31] = 7;
         let key = SigningKey::from_bytes((&scalar).into()).expect("small nonzero scalar is valid");
@@ -188,19 +269,23 @@ mod tests {
             Some(&evidence),
             Some(RP_ID),
             Some(ORIGIN),
+            None,
+            None,
+            None,
             1_700_000_100,
             3600,
             16 * 1024,
             30,
         )
+        .await
         .expect("well-formed WebAuthn evidence must resolve");
 
         assert_eq!(token.issuer_id, did);
         assert_eq!(token.claims.value, "op-1");
     }
 
-    #[test]
-    fn dispatches_to_jwt_when_no_webauthn_evidence_present() {
+    #[tokio::test]
+    async fn dispatches_to_jwt_when_no_other_evidence_present() {
         let signer = authn::JwtSigner::new();
         let jwt = signer
             .sign(
@@ -217,29 +302,174 @@ mod tests {
             None,
             Some(RP_ID),
             Some(ORIGIN),
+            None,
+            None,
+            None,
             current_unix_time().unwrap(),
             3600,
             16 * 1024,
             30,
         )
+        .await
         .expect("well-formed JWT must resolve");
 
         assert_eq!(token.claims.value, "op-1");
     }
 
-    #[test]
-    fn rejects_when_neither_auth_method_present() {
+    #[tokio::test]
+    async fn rejects_when_no_auth_method_present() {
         let result = resolve_request_auth::<ToyEndpoint>(
             &"op-1",
             None,
             None,
             Some(RP_ID),
             Some(ORIGIN),
+            None,
+            None,
+            None,
             1_700_000_100,
             3600,
             16 * 1024,
             30,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    fn email_evidence_for(
+        key: &orbis_email::test_support::TestSigningKey,
+        from_address: &str,
+        value: &'static str,
+    ) -> EmailEvidence {
+        let text = orbis_email::challenge_text(&ToyOperation { value });
+        let raw_message = key.sign_message(
+            from_address,
+            "ring@orbis.test",
+            &format!("confirming:\n{text}"),
         );
+        EmailEvidence {
+            claimed_address: from_address.to_string(),
+            raw_message,
+            issued_at: 1_700_000_000,
+            expiry: 1_700_000_200,
+            nonce: vec![1; 16],
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatches_to_email_when_evidence_present() {
+        const FROM: &str = "alice@example.test";
+        let signing_key =
+            orbis_email::test_support::TestSigningKey::generate("example.test", "orbistest");
+        let cache = orbis_email::test_support::TestDnsCache::default();
+        signing_key.register(&cache);
+        let evidence = email_evidence_for(&signing_key, FROM, "op-1");
+        let authenticator =
+            mail_auth::MessageAuthenticator::new_system_conf().expect("authenticator");
+
+        let (operation, claims) = (
+            ToyOperation { value: "op-1" },
+            ToyClaims {
+                value: "op-1".to_string(),
+            },
+        );
+        let token = orbis_email::verify_and_build_token_with_cache(
+            &authenticator,
+            &cache,
+            &evidence,
+            operation,
+            claims,
+            1_700_000_100,
+            3600,
+        )
+        .await
+        .expect("well-formed email evidence must resolve directly through orbis-email");
+        assert_eq!(token.issuer_id, authn::did_from_email_address(FROM));
+
+        // `resolve_request_auth` resolves this synthetic key's TXT record
+        // through the pinned `PinnedDnsCache`, never live DNS — the same
+        // seam a node started with `--email-dkim-keys-file` uses in
+        // production (`TestDnsCache` above is `orbis-email`'s own offline
+        // test seam; this crate's node-side wiring only ever builds the
+        // production `PinnedDnsCache` type). See
+        // `rejects_email_evidence_over_live_dns_when_key_is_only_pinned`
+        // below for the no-cache branch.
+        let pinned_cache = orbis_email::PinnedDnsCache::default();
+        pinned_cache
+            .insert_dkim_key("example.test", "orbistest", signing_key.txt_record())
+            .expect("valid test DKIM key record");
+        let token = resolve_request_auth::<ToyEndpoint>(
+            &"op-1",
+            None,
+            None,
+            Some(RP_ID),
+            Some(ORIGIN),
+            Some(&evidence),
+            Some(&authenticator),
+            Some(&pinned_cache),
+            1_700_000_100,
+            3600,
+            16 * 1024,
+            30,
+        )
+        .await
+        .expect("well-formed email evidence must resolve via the pinned DNS cache");
+        assert_eq!(token.issuer_id, authn::did_from_email_address(FROM));
+    }
+
+    /// Same dispatch, but through the no-cache (live-DNS) branch — the
+    /// synthetic key was never published anywhere live DNS can see, so this
+    /// must fail inside the email branch rather than silently falling
+    /// through to the JWT path.
+    #[tokio::test]
+    async fn rejects_email_evidence_over_live_dns_when_key_is_only_pinned() {
+        const FROM: &str = "alice@example.test";
+        let signing_key =
+            orbis_email::test_support::TestSigningKey::generate("example.test", "orbistest");
+        let evidence = email_evidence_for(&signing_key, FROM, "op-1");
+        let authenticator =
+            mail_auth::MessageAuthenticator::new_system_conf().expect("authenticator");
+
+        let result = resolve_request_auth::<ToyEndpoint>(
+            &"op-1",
+            None,
+            None,
+            Some(RP_ID),
+            Some(ORIGIN),
+            Some(&evidence),
+            Some(&authenticator),
+            None, // no pinned cache configured — falls to live DNS
+            1_700_000_100,
+            3600,
+            16 * 1024,
+            30,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_email_evidence_when_not_configured_on_this_node() {
+        const FROM: &str = "alice@example.test";
+        let signing_key =
+            orbis_email::test_support::TestSigningKey::generate("example.test", "orbistest");
+        let evidence = email_evidence_for(&signing_key, FROM, "op-1");
+
+        let result = resolve_request_auth::<ToyEndpoint>(
+            &"op-1",
+            None,
+            None,
+            Some(RP_ID),
+            Some(ORIGIN),
+            Some(&evidence),
+            None, // no authenticator configured on this node
+            None,
+            1_700_000_100,
+            3600,
+            16 * 1024,
+            30,
+        )
+        .await;
         assert!(result.is_err());
     }
 }

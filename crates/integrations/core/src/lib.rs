@@ -24,6 +24,146 @@ pub trait CanonicalOperation {
     fn canonical_bytes(&self) -> Vec<u8>;
 }
 
+/// Human-legible, deterministic rendering of an operation — for mechanisms
+/// where a person, not a dedicated signing key, is the one approving a
+/// request (today, `orbis-email`'s DKIM-signed-reply binding). A verifier
+/// reconstructs this exact text from the live request the same way it
+/// reconstructs [`CanonicalOperation::canonical_bytes`], and checks that
+/// authenticated evidence's content contains it. Unlike `canonical_bytes`,
+/// this is designed to be *read*, not just compared byte-for-byte: a
+/// person approving a request can see exactly what they're approving
+/// (what-you-sign-is-what-you-see), which an opaque hash or binary blob
+/// doesn't give them.
+///
+/// Deliberately a separate trait from [`CanonicalOperation`], not an
+/// additional required method on it: a mechanism like WebAuthn signs
+/// opaque bytes directly with no person reading a textual commitment, so
+/// it has no need to implement this, and no existing `CanonicalOperation`
+/// implementor (including test-only toy types elsewhere in this
+/// workspace) is forced to grow a method it never uses.
+pub trait CanonicalDisplay: CanonicalOperation {
+    fn canonical_display(&self) -> String;
+}
+
+/// Minimally escapes `value`'s special characters, without yet adding the
+/// surrounding quotes [`label_and_long_value`] puts around it — kept
+/// separate from quoting so chunking (see [`chunk_long_value`]) operates
+/// on the escaped content alone and the quote marks land exactly at the
+/// start and end of the whole value, never shifted by one character the
+/// way chunking an already-quoted string would (a real failure mode this
+/// was built to avoid, not a hypothetical one — see
+/// [`label_and_long_value`]'s own doc comment).
+fn escape_display_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// The widest a chunk of a long value (see [`chunk_long_value`]) is
+/// allowed to render as, in characters. Chosen with a comfortable margin
+/// below the ~76-78 character width most mail clients wrap plain text
+/// at — not just enough for one `> ` reply-quote prefix (2 characters),
+/// but several, in case a reply is itself quoted again, and the one or
+/// two bytes [`label_and_long_quoted_value`] adds for its surrounding
+/// quote marks.
+const CHUNK_WIDTH: usize = 64;
+
+/// Splits `value` into fixed-width (at most [`CHUNK_WIDTH`] characters,
+/// never bytes — a caller-controlled string can contain multi-byte UTF-8)
+/// lines, each followed by `\n`. An empty value still renders as one
+/// (empty) line, never zero lines, so a caller formatting it between two
+/// labeled fields never loses the line break between them. A value
+/// already at or under `CHUNK_WIDTH` renders as a single such line, so
+/// this is always safe to call unconditionally.
+fn chunk_long_value(value: &str) -> String {
+    if value.is_empty() {
+        return "\n".to_string();
+    }
+    let mut out = String::with_capacity(value.len() + value.len() / CHUNK_WIDTH + 1);
+    let mut chars = value.chars().peekable();
+    while chars.peek().is_some() {
+        let chunk: String = chars.by_ref().take(CHUNK_WIDTH).collect();
+        out.push_str(&chunk);
+        out.push('\n');
+    }
+    out
+}
+
+/// Renders `label` and `value` on their own line(s) (`"{label}:\n{value}\n"`,
+/// `value` itself chunked via [`chunk_long_value`] if it's long) instead
+/// of sharing one line with the label — for any [`CanonicalDisplay`]
+/// field whose rendered value is bare (never quoted: hex, or the
+/// unquoted `(none)` sentinel) but variable-length or always long, where
+/// label-plus-value, or even the value alone, risks crossing the width
+/// most mail clients wrap plain text at. [`label_and_long_quoted_value`]
+/// is the equivalent for a value that needs surrounding quotes.
+///
+/// Confirmed against a real-world failure, not a theoretical one: a
+/// single-line `derivation: "<64 hex chars>"` (78 characters — right at
+/// that width) got split by Gmail's reply-quoting between the label and
+/// the value, with no RFC 3676 `format=flowed` marker to signal it had
+/// been wrapped, so [`crate::CanonicalDisplay`]'s own matching side (see
+/// `orbis_email::challenge_text`'s doc comment on tolerating a mail
+/// client's line-wrapping) had nothing to reconstruct from — quoting adds
+/// its own `> ` prefix on top of whatever margin the original line had,
+/// so even a line that looked safely short when first sent can still get
+/// wrapped once quoted back in a reply. A long value alone can cross that
+/// width too (a compressed BLS12-381 G1 point is 96 hex characters) —
+/// chunking isn't just for the label/value split. Rendering everything
+/// comfortably short up front means a mail client never needs to touch
+/// any of these lines at all — closing the gap rather than trying to
+/// detect and undo whatever a specific client's wrapping happened to do.
+fn label_and_long_value(label: &str, value: &str) -> String {
+    format!("{label}:\n{}", chunk_long_value(value))
+}
+
+/// Same as [`label_and_long_value`], but for a value that needs
+/// [`escape_display_value`]'s quoting (any legitimately-present string
+/// field, to stay visibly distinct from the unquoted `(none)` sentinel
+/// an absent optional field renders as). Escapes and chunks `raw_value`
+/// first, *then* adds the opening and closing quote to the very start
+/// and very end of the (possibly multi-line) result — never quotes
+/// first and chunks second, which would shift chunk boundaries by the
+/// width of the leading quote mark and could split the value one
+/// character later than a clean rendering would, right before the
+/// closing quote.
+fn label_and_long_quoted_value(label: &str, raw_value: &str) -> String {
+    let mut chunked = chunk_long_value(&escape_display_value(raw_value));
+    chunked.insert(0, '"');
+    let before_final_newline = chunked.len() - 1;
+    chunked.insert(before_final_newline, '"');
+    format!("{label}:\n{chunked}")
+}
+
+/// Same as [`label_and_long_quoted_value`], but for an optional string
+/// field ([`display_optional_string`]'s own shape): quoted when present,
+/// the bare `(none)` sentinel — never quoted, never chunked, always
+/// short — when absent.
+fn label_and_long_optional_string(label: &str, value: Option<&str>) -> String {
+    match value {
+        Some(value) => label_and_long_quoted_value(label, value),
+        None => format!("{label}:\n(none)\n"),
+    }
+}
+
+/// Same as [`label_and_long_value`], but for an optional bytes field
+/// ([`display_optional_bytes`]'s own shape): hex-encoded and chunked
+/// when present, the bare `(none)` sentinel when absent.
+fn label_and_long_optional_bytes(label: &str, value: Option<&[u8]>) -> String {
+    match value {
+        Some(bytes) => label_and_long_value(label, &hex::encode(bytes)),
+        None => format!("{label}:\n(none)\n"),
+    }
+}
+
 /// Produces authentication evidence for an operation `Op`, authorizing it in
 /// place of a JWT. Each mechanism's own crate (`orbis-webauthn`, and in the
 /// future an email/DKIM crate) implements this for its own evidence type;
@@ -99,6 +239,24 @@ impl CanonicalOperation for SignOperation {
     }
 }
 
+impl CanonicalDisplay for SignOperation {
+    /// Each field labeled, in the same order as
+    /// [`SignOperation::canonical_bytes`] — see that method and
+    /// [`CanonicalDisplay`]'s own doc comments. A variable-length or
+    /// always-long value gets its own line, label above it — see
+    /// [`label_and_long_value`]'s own doc comment for why.
+    fn canonical_display(&self) -> String {
+        format!(
+            "{}\n{}{}expiry_unix: {}\nnonce: {}\n",
+            std::str::from_utf8(SIGN_OPERATION_DOMAIN).expect("domain separator is ASCII"),
+            label_and_long_quoted_value("derivation", &self.derivation_id),
+            label_and_long_value("message_sha256", &hex::encode(&self.message_sha256)),
+            self.expiry,
+            hex::encode(self.nonce),
+        )
+    }
+}
+
 fn write_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
     out.extend_from_slice(bytes);
@@ -170,6 +328,27 @@ impl CanonicalOperation for PreOperation {
     }
 }
 
+impl CanonicalDisplay for PreOperation {
+    /// Each field labeled, in the same order as
+    /// [`PreOperation::canonical_bytes`] — see that method and
+    /// [`CanonicalDisplay`]'s own doc comment. A variable-length or
+    /// always-long value gets its own line, label above it — see
+    /// [`label_and_long_value`]'s own doc comment for why.
+    fn canonical_display(&self) -> String {
+        format!(
+            "{}\n{}{}{}{}issued_at_unix: {}\nexpiry_unix: {}\nnonce: {}\n",
+            std::str::from_utf8(PRE_OPERATION_DOMAIN).expect("domain separator is ASCII"),
+            label_and_long_quoted_value("object_id", &self.object_id),
+            label_and_long_value("rdr_pk", &hex::encode(&self.rdr_pk)),
+            label_and_long_optional_bytes("derivation", self.derivation.as_deref()),
+            label_and_long_optional_string("salt", self.salt.as_deref()),
+            self.issued_at,
+            self.expiry,
+            hex::encode(self.nonce),
+        )
+    }
+}
+
 /// Domain separator for the StoreSecret operation encoding. Bump the
 /// version suffix on any incompatible change to the encoded fields or
 /// their order.
@@ -233,6 +412,39 @@ impl CanonicalOperation for StoreSecretOperation {
     }
 }
 
+impl CanonicalDisplay for StoreSecretOperation {
+    /// Each field labeled, in the same order as
+    /// [`StoreSecretOperation::canonical_bytes`] — see that method and
+    /// [`CanonicalDisplay`]'s own doc comment. A variable-length or
+    /// always-long value gets its own line, label above it — see
+    /// [`label_and_long_value`]'s own doc comment for why.
+    fn canonical_display(&self) -> String {
+        format!(
+            "{}\n{}{}{}{}{}{}{}{}with_proof: {}\n{}timestamp_unix: {}\nexpiry_unix: {}\nnonce: {}\n",
+            std::str::from_utf8(STORE_SECRET_OPERATION_DOMAIN).expect("domain separator is ASCII"),
+            label_and_long_value(
+                "encrypted_document_sha256",
+                &hex::encode(&self.encrypted_document_sha256)
+            ),
+            label_and_long_value("enc_cmt", &hex::encode(&self.enc_cmt)),
+            label_and_long_quoted_value("ring_id", &self.ring_id),
+            label_and_long_quoted_value("policy_id", &self.policy_id),
+            label_and_long_quoted_value("resource", &self.resource),
+            label_and_long_quoted_value("permission", &self.permission),
+            label_and_long_value("challenge", &hex::encode(&self.challenge)),
+            label_and_long_value("response", &hex::encode(&self.response)),
+            self.with_proof,
+            label_and_long_optional_string("tier", self.tier.as_deref()),
+            match self.timestamp {
+                Some(timestamp) => timestamp.to_string(),
+                None => "(none)".to_string(),
+            },
+            self.expiry,
+            hex::encode(self.nonce),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +494,40 @@ mod tests {
         assert_ne!(base.canonical_bytes(), different_expiry.canonical_bytes());
     }
 
+    #[test]
+    fn canonical_display_is_deterministic_and_sensitive_to_every_field() {
+        let base = sample();
+        assert_eq!(base.canonical_display(), base.canonical_display());
+
+        let mut different_derivation = base.clone();
+        different_derivation.derivation_id = "deriv-2".to_string();
+        assert_ne!(
+            base.canonical_display(),
+            different_derivation.canonical_display()
+        );
+
+        let mut different_message = base.clone();
+        different_message.message_sha256 = vec![9, 9, 9];
+        assert_ne!(
+            base.canonical_display(),
+            different_message.canonical_display()
+        );
+
+        let mut different_nonce = base.clone();
+        different_nonce.nonce = [8; 16];
+        assert_ne!(
+            base.canonical_display(),
+            different_nonce.canonical_display()
+        );
+
+        let mut different_expiry = base.clone();
+        different_expiry.expiry += 1;
+        assert_ne!(
+            base.canonical_display(),
+            different_expiry.canonical_display()
+        );
+    }
+
     fn sample_pre() -> PreOperation {
         PreOperation {
             object_id: "object-1".to_string(),
@@ -321,6 +567,34 @@ mod tests {
         let mut different = base.clone();
         different.issued_at += 1;
         assert_ne!(base.canonical_bytes(), different.canonical_bytes());
+    }
+
+    #[test]
+    fn pre_canonical_display_is_deterministic_and_distinguishes_absent_from_sentinel_value() {
+        let base = sample_pre();
+        assert_eq!(base.canonical_display(), base.canonical_display());
+
+        let mut different_rdr_pk = base.clone();
+        different_rdr_pk.rdr_pk = vec![9, 9, 9];
+        assert_ne!(
+            base.canonical_display(),
+            different_rdr_pk.canonical_display()
+        );
+
+        // A present salt whose value is literally the unquoted sentinel text
+        // must still render distinctly from a genuinely absent salt.
+        let absent = PreOperation {
+            salt: None,
+            ..base.clone()
+        };
+        let sentinel_value = PreOperation {
+            salt: Some("(none)".to_string()),
+            ..base
+        };
+        assert_ne!(
+            absent.canonical_display(),
+            sentinel_value.canonical_display()
+        );
     }
 
     fn sample_store_secret() -> StoreSecretOperation {
@@ -368,5 +642,71 @@ mod tests {
             ..sample_store_secret()
         };
         assert_ne!(absent.canonical_bytes(), present_zero.canonical_bytes());
+    }
+
+    /// Reproduces a real production failure: a single-line
+    /// `derivation: "<64 hex chars>"` (78 characters total) got split by
+    /// Gmail's own reply-quoting between the label and the value, with no
+    /// RFC 3676 `format=flowed` marker to signal it had been wrapped —
+    /// so there was nothing for the matching side to reconstruct. Every
+    /// line `canonical_display()` renders must stay short enough to
+    /// survive at least one level of `> ` quoting (2 extra characters)
+    /// without crossing the ~76-78 character width most mail clients wrap
+    /// plain text at, for every operation type and realistically-sized
+    /// field value — not just the short fixtures the other tests above
+    /// use, which were never close to that width in the first place.
+    #[test]
+    fn canonical_display_lines_survive_one_level_of_reply_quoting() {
+        const MAIL_CLIENT_WRAP_WIDTH: usize = 78;
+        const QUOTE_PREFIX_LEN: usize = "> ".len();
+        const SAFE_WIDTH: usize = MAIL_CLIENT_WRAP_WIDTH - QUOTE_PREFIX_LEN;
+
+        fn assert_every_line_is_safe(label: &str, text: &str) {
+            for line in text.lines() {
+                assert!(
+                    line.len() <= SAFE_WIDTH,
+                    "{label}: line {line:?} is {} chars, too long to survive a single \
+                     level of `> ` quoting (max {SAFE_WIDTH})",
+                    line.len()
+                );
+            }
+        }
+
+        let sign = SignOperation {
+            derivation_id: "a".repeat(64),
+            message_sha256: vec![0u8; 32],
+            expiry: 1_795_793_967,
+            nonce: [0u8; 16],
+        };
+        assert_every_line_is_safe("SignOperation", &sign.canonical_display());
+
+        let pre = PreOperation {
+            object_id: "b".repeat(64),
+            // Realistic: a compressed BLS12-381 G1 point is 48 bytes.
+            rdr_pk: vec![0u8; 48],
+            derivation: Some(vec![0u8; 32]),
+            salt: Some("c".repeat(64)),
+            issued_at: 1_795_793_000,
+            expiry: 1_795_793_967,
+            nonce: [0u8; 16],
+        };
+        assert_every_line_is_safe("PreOperation", &pre.canonical_display());
+
+        let store_secret = StoreSecretOperation {
+            encrypted_document_sha256: vec![0u8; 32],
+            enc_cmt: vec![0u8; 48],
+            ring_id: "d".repeat(64),
+            policy_id: "e".repeat(64),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            challenge: vec![0u8; 32],
+            response: vec![0u8; 64],
+            with_proof: true,
+            tier: Some("f".repeat(64)),
+            timestamp: Some(1_795_793_000),
+            expiry: 1_795_793_967,
+            nonce: [0u8; 16],
+        };
+        assert_every_line_is_safe("StoreSecretOperation", &store_secret.canonical_display());
     }
 }

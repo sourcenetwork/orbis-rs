@@ -150,7 +150,7 @@ where
 
         // 1. Authentication.
         let (authenticated, inline_document) =
-            self.authenticate_pre_request(request, current_time)?;
+            self.authenticate_pre_request(request, current_time).await?;
 
         // 2. Bulletin reads.
         let bulletin_state = self

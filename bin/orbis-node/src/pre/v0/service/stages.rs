@@ -34,6 +34,7 @@ use crate::helpers::jti_replay::record_client_jti_after_acp;
 use crate::helpers::node_routes::resolve_and_validate_peer_ids;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding};
+use crate::pre::v0::email_auth;
 use crate::pre::v0::helpers::{
     build_ciphertext_context, build_reader_authorization_context, check_policy_access,
     decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads,
@@ -50,6 +51,7 @@ use authz::request::ValidWindow;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
 use crypto::context::{CiphertextContext, ReaderAuthorizationContext};
 use crypto::r#trait::ReaderAuthorizationSignature;
+use orbis_email::EmailEvidence;
 use orbis_webauthn::WebAuthnEvidence;
 
 /// Output of stage 1. The parsed inline document (if any) is returned alongside rather
@@ -57,6 +59,7 @@ use orbis_webauthn::WebAuthnEvidence;
 pub(super) struct AuthenticatedPreRequest {
     token_str: Option<String>,
     webauthn_assertion: Option<WebAuthnEvidence>,
+    email_assertion: Option<EmailEvidence>,
     pub(super) token: BearerToken<PreClaims>,
     pub(super) object_id: String,
     rdr_pk: Vec<u8>,
@@ -86,6 +89,7 @@ pub(super) struct PreBulletinState {
 pub(super) struct AuthorizedPreRequest {
     token_str: Option<String>,
     webauthn_assertion: Option<WebAuthnEvidence>,
+    email_assertion: Option<EmailEvidence>,
     token: BearerToken<PreClaims>,
     object_id: String,
     rdr_pk: Vec<u8>,
@@ -222,17 +226,19 @@ where
     /// and document are resolved and the full
     /// [`crypto::context::ReaderAuthorizationContext`] transcript can be rebuilt (see
     /// `authorize_pre_request`).
-    pub(super) fn authenticate_pre_request(
+    pub(super) async fn authenticate_pre_request(
         &self,
         request: Request<StartPreRequest>,
         current_time: u64,
     ) -> Result<(AuthenticatedPreRequest, Option<DocumentPayload>), PreError> {
-        // Mutually exclusive by convention (see `WebAuthnAssertion`'s proto
-        // doc comment): a WebAuthn-bearing request's bearer header, if any,
-        // is never even read, so it can never end up on the wire to peers
-        // alongside the WebAuthn evidence that actually authenticates it.
-        let has_webauthn = request.get_ref().webauthn_assertion.is_some();
-        let token_str = if has_webauthn {
+        // Mutually exclusive by convention (see `WebAuthnAssertion`'s/
+        // `EmailAssertion`'s proto doc comments): a WebAuthn- or
+        // email-bearing request's bearer header, if any, is never even
+        // read, so it can never end up on the wire to peers alongside the
+        // evidence that actually authenticates it.
+        let has_evidence = request.get_ref().webauthn_assertion.is_some()
+            || request.get_ref().email_assertion.is_some();
+        let token_str = if has_evidence {
             None
         } else {
             authn::extract_bearer_token(&request)
@@ -245,6 +251,10 @@ where
             .webauthn_assertion
             .take()
             .map(webauthn_auth::evidence_from_proto);
+        let email_assertion = req
+            .email_assertion
+            .take()
+            .map(email_auth::evidence_from_proto);
 
         let fields = authn::endpoints::pre::PreFields {
             object_id: req.object_id.clone(),
@@ -259,11 +269,15 @@ where
                 webauthn_assertion.as_ref(),
                 self.state.webauthn_rp_id.as_deref(),
                 self.state.webauthn_origin.as_deref(),
+                email_assertion.as_ref(),
+                self.state.email_authenticator.as_deref(),
+                self.state.email_dns_cache.as_deref(),
                 current_time,
                 MAX_TOKEN_LIFETIME_SECS,
                 MAX_JWT_BYTES,
                 JWT_CLOCK_SKEW_LEEWAY_SECS,
             )
+            .await
             .map_err(|e| PreError::Unauthorized(e.to_string()))?;
 
         let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
@@ -287,6 +301,7 @@ where
             AuthenticatedPreRequest {
                 token_str,
                 webauthn_assertion,
+                email_assertion,
                 token,
                 object_id: req.object_id,
                 rdr_pk: req.rdr_pk,
@@ -442,6 +457,7 @@ where
         Ok(AuthorizedPreRequest {
             token_str: authenticated.token_str,
             webauthn_assertion: authenticated.webauthn_assertion,
+            email_assertion: authenticated.email_assertion,
             token: authenticated.token,
             object_id: authenticated.object_id,
             rdr_pk: authenticated.rdr_pk,
@@ -508,12 +524,16 @@ where
                 audit_target_object_id,
                 authorized.actor_id.clone(),
                 authorized.valid_window.clone(),
-                // PET's own actor-permission check is JWT-only today and
-                // doubly-guarded against a non-`requires_pet` ring (checked
-                // here and again inside `initiate_pet_check` itself) — a
-                // deliberate, narrow gap, not something this change's scope
-                // extends to WebAuthn-authorized requests.
+                // The peer-side audit re-check (`verify_pet_audit_authorization`)
+                // re-derives the actor from whichever one of these three is
+                // actually present, via the same `resolve_request_auth`
+                // dispatch this request's own authentication already went
+                // through — so all three are forwarded, not just the JWT.
                 authorized.token_str.clone().unwrap_or_default(),
+                authorized.rdr_pk.clone(),
+                authorized.derivation.clone(),
+                authorized.webauthn_assertion.clone(),
+                authorized.email_assertion.clone(),
             )
             .await
             .map(Some)
@@ -605,6 +625,7 @@ where
             object_id: authorized.object_id,
             token_string: authorized.token_str,
             webauthn_assertion: authorized.webauthn_assertion,
+            email_assertion: authorized.email_assertion,
             derivation: authorized.derivation,
             salt: authorized.salt,
             valid_window: authorized.valid_window,

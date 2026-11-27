@@ -273,6 +273,30 @@ pub struct Args {
     /// `clientDataJSON.origin`, paired with `--webauthn-rp-id`.
     #[arg(long, env = "ORBIS_WEBAUTHN_ORIGIN")]
     pub webauthn_origin: Option<String>,
+    /// Accept DKIM-verified email evidence in place of a JWT (see
+    /// `orbis-email`). Off by default — the safe default for a ring that
+    /// doesn't use email authentication. Key resolution uses this node's
+    /// own live DNS unless `--email-dkim-keys-file` is also set.
+    ///
+    /// Deliberately *not* `env = "ORBIS_EMAIL_EVIDENCE_ENABLED"` here:
+    /// clap's own bool-from-env parsing requires the value to be exactly
+    /// `true`/`false` and hard-errors on an empty string — but
+    /// `${VAR:-}`-style Compose substitution for an unset host var sets the
+    /// container's env var to present-but-empty, not absent, which is
+    /// exactly what every other scenario's node containers get for this
+    /// one (confirmed: `ORBIS_EMAIL_EVIDENCE_ENABLED=""` makes this binary
+    /// refuse to start at all). `runtime::init_node` reads the env var
+    /// itself instead, with the same empty-is-unset tolerance
+    /// `non_empty` already gives every other flag here.
+    #[arg(long)]
+    pub email_evidence_enabled: bool,
+    /// Resolve DKIM keys for email-authorized requests from this fixed,
+    /// operator-curated file instead of live DNS (see
+    /// `orbis_email::PinnedDnsCache`'s own doc comment for when to prefer
+    /// this). Only takes effect when `--email-evidence-enabled` is also
+    /// set; omit to keep resolving over live DNS.
+    #[arg(long, env = "ORBIS_EMAIL_DKIM_KEYS_FILE")]
+    pub email_dkim_keys_file: Option<String>,
 }
 
 /// Operator-tunable P2P (QUIC/Iroh) inbound ingress admission budgets, grouped
