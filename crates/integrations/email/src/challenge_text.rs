@@ -31,21 +31,40 @@ pub fn challenge_text(operation: &impl CanonicalDisplay) -> String {
     operation.canonical_display()
 }
 
-/// Whether `body` contains `text`, tolerating only two specific,
-/// position-anchored mail-reply artifacts: leading `>` quote markers
-/// (RFC 3676) and incidental leading/trailing whitespace, both stripped
-/// per *line*, never from the middle of one. This is deliberately not a
-/// blanket character filter — an earlier version of this function deleted
-/// every `-`, whitespace, and `>` character anywhere in both strings,
-/// which tolerated mail-client reformatting but also silently collapsed
-/// *distinct* field values into the same normalized string (`"ab-cd"`
-/// and `"abcd"`, or `"foo bar"` and `"foobar"`, compared equal) — turning
-/// the exact-text binding this module exists to provide into something a
-/// captured reply for one operation could satisfy for a different one,
-/// as long as the rest of the rendering happened to match. Quoted-
-/// printable soft line breaks (mid-token wraps within a single line) are
-/// handled upstream by actually decoding the message
-/// (`crate::message_contains_text`), not by deleting characters here.
+/// Whether `body` contains `text`, tolerating mail-reply artifacts at
+/// exactly two places: leading `>` quote markers (RFC 3676) plus
+/// incidental leading/trailing whitespace, stripped per *line*, never
+/// from the middle of one — and *where* a line break falls at all, which
+/// [`normalize`] treats as unconstrained rather than trying to detect and
+/// undo any one specific wrapping convention (a mail client's own hard
+/// wrap with no signal it happened at all, or RFC 3676 `format=flowed`'s
+/// trailing-space-marked soft wrap, are both covered by this one rule,
+/// with no wrapping-convention-specific logic needed for either). This is
+/// deliberately not a blanket character filter — an earlier version of
+/// this function deleted every `-`, whitespace, and `>` character
+/// anywhere in both strings, which tolerated mail-client reformatting but
+/// also silently collapsed *distinct* field values into the same
+/// normalized string (`"ab-cd"` and `"abcd"`, or `"foo bar"` and
+/// `"foobar"`, compared equal) — turning the exact-text binding this
+/// module exists to provide into something a captured reply for one
+/// operation could satisfy for a different one, as long as the rest of
+/// the rendering happened to match.
+///
+/// Discarding line breaks entirely doesn't reopen that hole, because a
+/// newline is never semantic content to begin with: every
+/// [`orbis_integration_core::CanonicalDisplay`] implementation escapes a
+/// literal `\n`/`\r` inside a value into the two-character text `\n`/`\r`
+/// (see that trait's own doc comment), so a real line-break byte only
+/// ever appears as this module's own structural filler, never as part of
+/// a value — nothing is lost by ignoring where it falls. Field boundaries
+/// stay unambiguous on their own: a quoted field's value can never
+/// contain a bare `"` (any literal quote inside it is escaped to `\"`),
+/// and a hex-encoded field's alphabet (`[0-9a-f]`) can never be confused
+/// with the next field's label, since no label here is composed entirely
+/// of hex digits. Quoted-printable soft line breaks (mid-token wraps
+/// within a single line) are handled upstream by actually decoding the
+/// message (`crate::message_contains_text`), not by anything here.
+///
 /// Case is preserved (not folded): unlike a short, meaningless derived
 /// code, this text carries real identifying data (hex-encoded hashes and
 /// keys, IDs), so case-insensitive matching would risk treating two
@@ -55,6 +74,13 @@ pub fn body_contains_text(body: &[u8], text: &str) -> bool {
     normalize(&body_text).contains(&normalize(text))
 }
 
+/// Strips each line's leading `>`/whitespace and trailing whitespace,
+/// then concatenates every line directly with no separator — not even a
+/// `\n` — so a line break's exact position (and whether the mail client
+/// that put it there used a hard wrap, `format=flowed`, or anything
+/// else) never affects the comparison. See [`body_contains_text`]'s own
+/// doc comment for why this is safe to do unconditionally rather than a
+/// renewed version of the blanket-stripping bug it already fixed once.
 fn normalize(value: &str) -> String {
     value
         .lines()
@@ -62,8 +88,7 @@ fn normalize(value: &str) -> String {
             line.trim_start_matches(|c: char| c == '>' || c.is_whitespace())
                 .trim_end()
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect::<String>()
 }
 
 #[cfg(test)]
@@ -151,6 +176,51 @@ mod tests {
         let text = "toy-operation: deadbeef\nexpiry: 123\n";
         let body =
             "> toy-operation: deadbeef\n> expiry: 123\n>\n> On Mon, Jan 1, 2026, Ring wrote:";
+        assert!(body_contains_text(body.as_bytes(), text));
+    }
+
+    /// Reproduces a real production failure: Gmail's own reply-quoting
+    /// split a single-line `derivation: "<64 hex chars>"` field between
+    /// the label and its value — not because the value itself was
+    /// mid-token wrapped, but because the whole line, once quoted, didn't
+    /// fit, and Gmail chose to push the unbreakable value entirely onto
+    /// its own line. No RFC 3676 `format=flowed` marker was present to
+    /// signal this had happened. This must match regardless of whether
+    /// the *sent* text ever had this split — the point of this test (as
+    /// opposed to the one in `orbis_integration_core` that checks
+    /// `canonical_display` itself never renders a line long enough to
+    /// risk this) is that the matching side tolerates it even if some
+    /// future field, or some other client, wraps somewhere this crate's
+    /// own rendering didn't anticipate.
+    #[test]
+    fn body_contains_text_survives_a_line_wrapped_between_a_label_and_its_value() {
+        // Matches the shape `label_and_long_value` actually renders:
+        // label, then colon, then a line break — no space before it.
+        let text = "derivation:\n\"deadbeefcafe\"\nexpiry: 123\n";
+        let body = "> derivation:\n> \"deadbeefcafe\"\n> expiry: 123\n>\n> wrote:";
+        assert!(body_contains_text(body.as_bytes(), text));
+    }
+
+    /// Same general tolerance, but for a wrap landing *inside* a single
+    /// unbreakable value (mid-hex-string), with no quote markers at all —
+    /// the shape a naive hard-wrap (not reply-quoting) produces.
+    #[test]
+    fn body_contains_text_survives_a_line_wrapped_mid_value() {
+        let text = "rdr_pk: deadbeefcafef00dfeedface\n";
+        let body = "rdr_pk: deadbeefcafe\nf00dfeedface\n";
+        assert!(body_contains_text(body.as_bytes(), text));
+    }
+
+    /// RFC 3676 `format=flowed`'s own soft-wrap signal — a single
+    /// trailing space before the line break, meaning "rejoin this with
+    /// the next line" — needs no special-case handling: the existing
+    /// per-line `trim_end()` already strips that trailing space, and the
+    /// newline itself is discarded unconditionally regardless of why it's
+    /// there.
+    #[test]
+    fn body_contains_text_survives_a_format_flowed_soft_wrap() {
+        let text = "rdr_pk: deadbeefcafef00dfeedface\n";
+        let body = "rdr_pk: deadbeefcafe \r\nf00dfeedface\r\n";
         assert!(body_contains_text(body.as_bytes(), text));
     }
 

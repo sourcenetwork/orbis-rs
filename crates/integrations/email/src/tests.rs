@@ -283,6 +283,55 @@ fn evidence_for(raw_message: Vec<u8>, expiry: u64, nonce: [u8; 16]) -> EmailEvid
     }
 }
 
+/// Reproduces a real production failure, not a hypothetical one: a reply
+/// quoting the challenge text with Gmail's own `> ` reply-quoting (every
+/// line of the original independently prefixed) failed verification when
+/// `SignOperation::canonical_display` rendered `derivation: "<64 hex
+/// chars>"` on one line — 78 characters, right at the width Gmail wraps
+/// quoted plain text at — splitting the label from its value with no
+/// `format=flowed` marker to reconstruct from. See
+/// `orbis_integration_core::label_and_long_value`'s own doc comment for
+/// the fix: the label and value now render on their own, individually
+/// short lines, so quoting never needs to touch either one. Uses the
+/// real `SignOperation`, not `ToyOperation`, specifically to exercise
+/// that rendering.
+#[tokio::test]
+async fn verify_and_build_token_survives_gmail_style_quoting_of_a_realistic_sign_operation() {
+    let f = fixture();
+    let operation = orbis_integration_core::SignOperation {
+        derivation_id: "f800822404a9f03c7106a3737cf53546478ea8695dc679fd17c53ef679fdfcc8"
+            .to_string(),
+        message_sha256: hex::decode(
+            "03ffdf45276dd38ffac79b0e9c6c14d89d9113ad783d5922580f4c66a3305591",
+        )
+        .expect("valid hex"),
+        expiry: 1_700_000_300,
+        nonce: [9; 16],
+    };
+    let text = challenge_text(&operation);
+    // Mirrors exactly what a real Gmail reply does: every line of the
+    // original challenge text gets its own independent `> ` prefix, with
+    // no other reformatting.
+    let quoted_text: String = text.lines().map(|line| format!("> {line}\n")).collect();
+    let message = f
+        .key
+        .sign_message(FROM, TO, &format!("confirming:\n{quoted_text}"));
+    let evidence = evidence_for(message, 1_700_000_300, [1; 16]);
+
+    let token = verify_and_build_token_with_cache(
+        &f.authenticator,
+        &f.cache,
+        &evidence,
+        operation,
+        (),
+        1_700_000_100,
+        10_000,
+    )
+    .await
+    .expect("a Gmail-style quoted reply must still verify");
+    assert_eq!(token.issuer_id, authn::did_from_email_address(FROM));
+}
+
 #[tokio::test]
 async fn verify_and_build_token_succeeds_and_binds_issuer_to_the_verified_address() {
     let f = fixture();
