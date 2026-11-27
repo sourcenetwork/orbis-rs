@@ -38,7 +38,21 @@ pub fn client_valid_window(range: Option<(u64, u64)>) -> Option<ValidWindow> {
 /// (`orbis_webauthn::verify_endpoint_auth` / `orbis_email::verify_endpoint_auth`).
 /// All three are mutually exclusive; WebAuthn takes priority over email,
 /// which takes priority over the bearer token, and neither evidence kind
-/// ever falls through to inspect it.
+/// ever falls through to inspect it. That exclusivity is a convention
+/// enforced only here, never on the wire — `StartPreRequest`/
+/// `StartSignRequest`/`StoreSecretRequest` carry `webauthn_assertion` and
+/// `email_assertion` as two independent `optional` proto fields, not a
+/// `oneof`, so nothing stops a caller from setting both (or all three,
+/// alongside an Authorization header) at once. If it does: whichever
+/// lower-priority evidence loses isn't just deprioritized, it's never
+/// validated at all — a malformed or garbage email/JWT value sent
+/// alongside valid WebAuthn evidence has no effect, good or bad. And
+/// there's no fallback between mechanisms: if the winning evidence fails
+/// verification, the request fails outright, even if a lower-priority one
+/// would have succeeded on its own. A JWT is additionally never even
+/// extracted from the request once either evidence type is present at
+/// all — see each service's own `stages.rs` (`has_evidence`), upstream of
+/// this function.
 ///
 /// This lives in `orbis-node`, not in `authn`, `orbis-webauthn`, or
 /// `orbis-email`, deliberately: none of those crates can know about each
