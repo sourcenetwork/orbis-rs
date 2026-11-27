@@ -58,13 +58,36 @@ pub struct PetCheckContext {
     pub document_inline: bool,
     /// Raw JWT authorizing this specific audit request (the same token the
     /// underlying PRE request was authorized with — a PET check never runs
-    /// standalone). Every phase's handler independently re-verifies it and
-    /// binds it to `object_id`/`salt` before this node's secret share is
-    /// ever touched, exactly like PRE's own responders re-verify
-    /// `PreRequestContext::token_string`. Without this, a direct peer
-    /// request could obtain a genuine contribution for any document/target
-    /// without ever going through the ACP-gated normal PRE entry point.
+    /// standalone), empty when the underlying request used WebAuthn or
+    /// email evidence instead (see `webauthn_assertion`/`email_assertion`
+    /// below) — exactly the same "at most one of three" convention
+    /// `pre::v0::messages::PreRequestContext` itself uses. Every phase's
+    /// handler independently re-verifies whichever one is present and binds
+    /// it to `object_id`/`rdr_pk`/`derivation`/`salt` before this node's
+    /// secret share is ever touched, exactly like PRE's own responders
+    /// re-verify `PreRequestContext`'s own evidence. Without this, a direct
+    /// peer request could obtain a genuine contribution for any
+    /// document/target without ever going through the ACP-gated normal PRE
+    /// entry point.
     pub token_string: String,
+    /// The reader public key the underlying PRE request named — needed
+    /// (alongside `derivation` below) to reconstruct the exact
+    /// `PreOperation`/`PreFields` a WebAuthn or email evidence's challenge
+    /// was bound to; the JWT path's own claims already carry this, but
+    /// `verify_pet_audit_authorization` now re-derives the actor through
+    /// the same `resolve_request_auth` dispatch every PRE entry point uses,
+    /// so all three mechanisms need the same inputs.
+    pub rdr_pk: Vec<u8>,
+    /// See `rdr_pk` above.
+    pub derivation: Option<Vec<u8>>,
+    /// WebAuthn evidence authorizing this specific audit request, when the
+    /// underlying PRE request used WebAuthn instead of a JWT. See
+    /// `token_string`'s doc comment.
+    pub webauthn_assertion: Option<orbis_webauthn::WebAuthnEvidence>,
+    /// Email evidence authorizing this specific audit request, when the
+    /// underlying PRE request used email instead of a JWT. See
+    /// `token_string`'s doc comment.
+    pub email_assertion: Option<orbis_email::EmailEvidence>,
     /// The plaintext owner identity being audited — not an ACP handle to
     /// resolve, see `pet::README.md`'s "no ACP identity-resolution step"
     /// invariant and `pre::v0::messages::PreRequestContext::audit_target_object_id`'s

@@ -524,12 +524,16 @@ where
                 audit_target_object_id,
                 authorized.actor_id.clone(),
                 authorized.valid_window.clone(),
-                // PET's own actor-permission check is JWT-only today and
-                // doubly-guarded against a non-`requires_pet` ring (checked
-                // here and again inside `initiate_pet_check` itself) — a
-                // deliberate, narrow gap, not something this change's scope
-                // extends to WebAuthn-authorized requests.
+                // The peer-side audit re-check (`verify_pet_audit_authorization`)
+                // re-derives the actor from whichever one of these three is
+                // actually present, via the same `resolve_request_auth`
+                // dispatch this request's own authentication already went
+                // through — so all three are forwarded, not just the JWT.
                 authorized.token_str.clone().unwrap_or_default(),
+                authorized.rdr_pk.clone(),
+                authorized.derivation.clone(),
+                authorized.webauthn_assertion.clone(),
+                authorized.email_assertion.clone(),
             )
             .await
             .map(Some)

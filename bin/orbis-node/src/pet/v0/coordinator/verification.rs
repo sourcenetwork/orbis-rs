@@ -42,8 +42,8 @@ use crate::reporting::v0::types::{
     PetBlindSignedReveal, ReportedDocumentEvidence,
 };
 use crate::ring_state::RingShareBundle;
-use authn::endpoints::pre::PreClaims;
-use authn::{resolve_jwt_did, BearerToken};
+use authn::endpoints::pre::{PreClaims, PreEndpoint, PreFields};
+use authn::BearerToken;
 use authz::r#trait::Authz;
 use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::Bulletin;
@@ -103,45 +103,63 @@ pub(crate) async fn check_pet_permission(
 /// directly over the wire, for whichever phase is currently running. Unlike
 /// the normal initiator's own entry point (which calls `check_pet_permission`
 /// before doing anything) and unlike PRE admission (whose caller already
-/// independently re-verified the same JWT before ever reaching it), every
-/// phase's handler is reachable from a raw wire message with no other
+/// independently re-verified the same evidence before ever reaching it),
+/// every phase's handler is reachable from a raw wire message with no other
 /// upstream authentication at all. Without this, a direct peer request could
 /// obtain a genuine contribution for any document/target without ever going
 /// through the ACP-gated normal PRE entry point — see the PET audit fix
 /// checklist, finding #3.
 ///
-/// Re-verifies `ctx.token_string` the same way PRE's own responders
-/// re-verify `PreRequestContext::token_string`, binds it to *this* request's
-/// `object_id`/`salt`, derives the actor from it, and then runs the exact
+/// Re-verifies whichever one of `ctx.token_string`/`webauthn_assertion`/
+/// `email_assertion` the underlying PRE request actually used, by
+/// delegating to the exact same `helpers::auth::resolve_request_auth`
+/// three-way dispatch every PRE/Sign entry point already uses — not a
+/// hand-rolled second copy of that dispatch (or, as before this, a JWT-only
+/// re-implementation of one third of it). This both closes the gap where a
+/// WebAuthn- or email-authorized PET-requiring request had no independent
+/// peer-side audit re-check at all (only JWT did), and, as a side effect of
+/// sharing `PreEndpoint::validate_claims`, now also binds the JWT path to
+/// `rdr_pk`/`derivation` the same way the normal PRE entry point already
+/// does — `PetCheckContext` previously only checked `object_id`/`salt`.
+///
+/// Derives the actor from whichever evidence verified, then runs the exact
 /// same `check_pet_permission` gate the normal initiator already runs.
 /// Returns the derived `actor_id` — needed by every caller to build this
 /// attempt's canonical `PetBlindContext`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn verify_pet_audit_authorization(
     authz: &(dyn Authz + Send + Sync),
     ctx: &PetCheckContext,
     trusted_auth_relay_dids: Option<&[String]>,
+    webauthn_rp_id: Option<&str>,
+    webauthn_origin: Option<&str>,
+    email_authenticator: Option<&mail_auth::MessageAuthenticator>,
+    email_dns_cache: Option<&orbis_email::PinnedDnsCache>,
     current_time: u64,
 ) -> Result<String> {
-    let token: BearerToken<PreClaims> = resolve_jwt_did(
-        &ctx.token_string,
+    let fields = PreFields {
+        object_id: ctx.object_id.clone(),
+        rdr_pk: ctx.rdr_pk.clone(),
+        derivation: ctx.derivation.clone(),
+        salt: ctx.salt.clone(),
+    };
+    let token_string = (!ctx.token_string.is_empty()).then_some(ctx.token_string.as_str());
+    let token: BearerToken<PreClaims> = crate::helpers::auth::resolve_request_auth::<PreEndpoint>(
+        &fields,
+        token_string,
+        ctx.webauthn_assertion.as_ref(),
+        webauthn_rp_id,
+        webauthn_origin,
+        ctx.email_assertion.as_ref(),
+        email_authenticator,
+        email_dns_cache,
         current_time,
         crate::constants::MAX_TOKEN_LIFETIME_SECS,
         crate::constants::MAX_JWT_BYTES,
         crate::constants::JWT_CLOCK_SKEW_LEEWAY_SECS,
     )
-    .map_err(|e| PetError::InvalidInput(format!("JWT validation failed: {}", e)))?;
-
-    if token.claims.object_id != ctx.object_id {
-        return Err(PetError::InvalidInput(format!(
-            "Token object_id '{}' does not match request object_id '{}'",
-            token.claims.object_id, ctx.object_id
-        )));
-    }
-    if token.claims.salt != ctx.salt {
-        return Err(PetError::InvalidInput(
-            "Token salt does not match request salt".to_string(),
-        ));
-    }
+    .await
+    .map_err(PetError::InvalidInput)?;
 
     let actor_id = crate::helpers::auth::request_actor(&token, trusted_auth_relay_dids)
         .map_err(PetError::InvalidInput)?;
@@ -834,8 +852,14 @@ where
             document_inline,
             // Unused on this path — see `handle_check_request`'s original
             // note (still accurate): this function already performed its
-            // own, equivalent authorization above.
+            // own, equivalent authorization above. Same for the four
+            // fields below: `verify_pet_audit_authorization` is never
+            // called with this particular `ctx`.
             token_string: String::new(),
+            rdr_pk: Vec::new(),
+            derivation: None,
+            webauthn_assertion: None,
+            email_assertion: None,
             audit_target_object_id: audit_target_object_id.to_string(),
             valid_window,
         };

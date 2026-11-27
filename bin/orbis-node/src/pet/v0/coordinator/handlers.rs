@@ -123,6 +123,10 @@ where
             &*self.app_state.authz,
             &ctx,
             ring_payload.trusted_auth_relay_dids.as_deref(),
+            self.app_state.webauthn_rp_id.as_deref(),
+            self.app_state.webauthn_origin.as_deref(),
+            self.app_state.email_authenticator.as_deref(),
+            self.app_state.email_dns_cache.as_deref(),
             current_time,
         )
         .await?;
@@ -260,6 +264,10 @@ where
             &*self.app_state.authz,
             &ctx,
             ring_payload.trusted_auth_relay_dids.as_deref(),
+            self.app_state.webauthn_rp_id.as_deref(),
+            self.app_state.webauthn_origin.as_deref(),
+            self.app_state.email_authenticator.as_deref(),
+            self.app_state.email_dns_cache.as_deref(),
             current_time,
         )
         .await?;
@@ -451,6 +459,10 @@ where
             &*self.app_state.authz,
             &ctx,
             ring_payload.trusted_auth_relay_dids.as_deref(),
+            self.app_state.webauthn_rp_id.as_deref(),
+            self.app_state.webauthn_origin.as_deref(),
+            self.app_state.email_authenticator.as_deref(),
+            self.app_state.email_dns_cache.as_deref(),
             current_time,
         )
         .await?;

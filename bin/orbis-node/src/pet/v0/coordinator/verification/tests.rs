@@ -20,6 +20,12 @@ use crypto::r#trait::{CryptoSerialize, PriShare};
 use crypto::{DkgImpl, PetImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
+use orbis_email::test_support::TestSigningKey;
+use orbis_email::{EmailEvidence, PinnedDnsCache};
+use orbis_integration_core::{CanonicalOperation, PreOperation};
+use orbis_webauthn::WebAuthnEvidence;
+use p256::ecdsa::SigningKey;
+use sha2::Digest;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
@@ -739,6 +745,10 @@ async fn verify_pet_check_request_rejects_a_document_object_id_mismatch() {
         object_id: object_id_for(&fixture_b),
         document_inline: false,
         token_string: String::new(),
+        rdr_pk: Vec::new(),
+        derivation: None,
+        webauthn_assertion: None,
+        email_assertion: None,
         audit_target_object_id: String::new(),
         valid_window: None,
     };
@@ -824,11 +834,25 @@ async fn verify_pet_audit_authorization_rejects_a_garbage_token() {
         object_id,
         document_inline: false,
         token_string: "not-a-jwt".to_string(),
+        rdr_pk: Vec::new(),
+        derivation: None,
+        webauthn_assertion: None,
+        email_assertion: None,
         audit_target_object_id: "any-target".to_string(),
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+    let result = verify_pet_audit_authorization(
+        &authz,
+        &ctx,
+        None,
+        None,
+        None,
+        None,
+        None,
+        current_unix_time(),
+    )
+    .await;
     assert!(
         matches!(result, Err(PetError::InvalidInput(_))),
         "a garbage token must be rejected: {:?}",
@@ -850,11 +874,25 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_object_i
         object_id,
         document_inline: false,
         token_string: token,
+        rdr_pk: b"unused".to_vec(),
+        derivation: None,
+        webauthn_assertion: None,
+        email_assertion: None,
         audit_target_object_id: "any-target".to_string(),
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+    let result = verify_pet_audit_authorization(
+        &authz,
+        &ctx,
+        None,
+        None,
+        None,
+        None,
+        None,
+        current_unix_time(),
+    )
+    .await;
     assert!(
         matches!(result, Err(PetError::InvalidInput(_))),
         "a token authorizing a different object_id must be rejected: {:?}",
@@ -881,11 +919,25 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_salt() {
         object_id,
         document_inline: false,
         token_string: token,
+        rdr_pk: b"unused".to_vec(),
+        derivation: None,
+        webauthn_assertion: None,
+        email_assertion: None,
         audit_target_object_id: "any-target".to_string(),
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+    let result = verify_pet_audit_authorization(
+        &authz,
+        &ctx,
+        None,
+        None,
+        None,
+        None,
+        None,
+        current_unix_time(),
+    )
+    .await;
     assert!(
         matches!(result, Err(PetError::InvalidInput(_))),
         "a token authorizing a different salt must be rejected: {:?}",
@@ -907,14 +959,318 @@ async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_token() {
         object_id,
         document_inline: false,
         token_string: token,
+        rdr_pk: b"unused".to_vec(),
+        derivation: None,
+        webauthn_assertion: None,
+        email_assertion: None,
         audit_target_object_id: "any-target".to_string(),
         valid_window: None,
     };
     let authz = DummyAuthZ;
-    let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+    let result = verify_pet_audit_authorization(
+        &authz,
+        &ctx,
+        None,
+        None,
+        None,
+        None,
+        None,
+        current_unix_time(),
+    )
+    .await;
     assert!(
         result.is_ok(),
         "a genuinely matching, valid token must be accepted: {:?}",
+        result
+    );
+}
+
+// ========================================================================
+// `verify_pet_audit_authorization` dispatches through the same
+// `helpers::auth::resolve_request_auth` three-way auth check every PRE
+// entry point uses, rather than only ever re-verifying a JWT — closing the
+// gap where a WebAuthn- or email-authorized, PET-requiring PRE request had
+// no independent peer-side audit re-check at all. These mirror the JWT
+// accept/reject tests above for the other two mechanisms.
+// ========================================================================
+
+const WEBAUTHN_AUDIT_RP_ID: &str = "pet-audit.example.test";
+const WEBAUTHN_AUDIT_ORIGIN: &str = "https://pet-audit.example.test";
+
+fn webauthn_audit_key_and_did() -> (SigningKey, String) {
+    let mut scalar = [0u8; 32];
+    scalar[31] = 11;
+    let key = SigningKey::from_bytes((&scalar).into()).expect("small nonzero scalar is valid");
+    let compressed: [u8; 33] = key
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .expect("compressed P-256 point is 33 bytes");
+    (key, authn::did_from_p256_public_key(&compressed))
+}
+
+fn webauthn_audit_evidence(
+    key: &SigningKey,
+    did: &str,
+    operation: &PreOperation,
+) -> WebAuthnEvidence {
+    let assertion = orbis_webauthn::build_test_assertion(
+        key,
+        WEBAUTHN_AUDIT_RP_ID,
+        WEBAUTHN_AUDIT_ORIGIN,
+        &operation.canonical_bytes(),
+    );
+    WebAuthnEvidence {
+        issuer_did: did.to_string(),
+        authenticator_data: assertion.authenticator_data,
+        client_data_json: assertion.client_data_json,
+        signature: assertion.signature,
+        issued_at: operation.issued_at,
+        expiry: operation.expiry,
+        nonce: operation.nonce.to_vec(),
+    }
+}
+
+fn email_audit_evidence(
+    key: &TestSigningKey,
+    from_address: &str,
+    operation: &PreOperation,
+) -> EmailEvidence {
+    let text = orbis_email::challenge_text(operation);
+    let raw_message = key.sign_message(
+        from_address,
+        "ring@orbis.test",
+        &format!("confirming:\n{text}"),
+    );
+    EmailEvidence {
+        claimed_address: from_address.to_string(),
+        raw_message,
+        issued_at: operation.issued_at,
+        expiry: operation.expiry,
+        nonce: operation.nonce.to_vec(),
+    }
+}
+
+#[tokio::test]
+async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_webauthn_assertion() {
+    let (_signer, document, object_id) = audit_authz_fixture();
+    let (key, did) = webauthn_audit_key_and_did();
+    let operation = PreOperation {
+        object_id: object_id.clone(),
+        rdr_pk: b"webauthn-rdr-pk".to_vec(),
+        derivation: None,
+        salt: None,
+        issued_at: current_unix_time(),
+        expiry: current_unix_time() + 300,
+        nonce: [7u8; 16],
+    };
+    let evidence = webauthn_audit_evidence(&key, &did, &operation);
+    let ctx = PetCheckContext {
+        ring_state_sha256: String::new(),
+        public_polynomial: Vec::new(),
+        document,
+        salt: operation.salt.clone(),
+        object_id,
+        document_inline: false,
+        token_string: String::new(),
+        rdr_pk: operation.rdr_pk.clone(),
+        derivation: operation.derivation.clone(),
+        webauthn_assertion: Some(evidence),
+        email_assertion: None,
+        audit_target_object_id: "any-target".to_string(),
+        valid_window: None,
+    };
+    let authz = DummyAuthZ;
+    let result = verify_pet_audit_authorization(
+        &authz,
+        &ctx,
+        None,
+        Some(WEBAUTHN_AUDIT_RP_ID),
+        Some(WEBAUTHN_AUDIT_ORIGIN),
+        None,
+        None,
+        current_unix_time(),
+    )
+    .await;
+    let actor_id = result.expect("a genuinely matching, valid WebAuthn assertion must be accepted");
+    assert_eq!(
+        actor_id, did,
+        "the derived actor_id must be the WebAuthn assertion's own issuer DID"
+    );
+}
+
+#[tokio::test]
+async fn verify_pet_audit_authorization_rejects_a_webauthn_assertion_for_a_different_object_id() {
+    let (_signer, document, object_id) = audit_authz_fixture();
+    let (key, did) = webauthn_audit_key_and_did();
+    let signed_operation = PreOperation {
+        object_id: "a-different-object-id".to_string(),
+        rdr_pk: b"webauthn-rdr-pk".to_vec(),
+        derivation: None,
+        salt: None,
+        issued_at: current_unix_time(),
+        expiry: current_unix_time() + 300,
+        nonce: [7u8; 16],
+    };
+    let evidence = webauthn_audit_evidence(&key, &did, &signed_operation);
+    let ctx = PetCheckContext {
+        ring_state_sha256: String::new(),
+        public_polynomial: Vec::new(),
+        document,
+        salt: signed_operation.salt.clone(),
+        // The request's own object_id, deliberately not what the
+        // assertion's challenge actually committed to above.
+        object_id,
+        document_inline: false,
+        token_string: String::new(),
+        rdr_pk: signed_operation.rdr_pk.clone(),
+        derivation: signed_operation.derivation.clone(),
+        webauthn_assertion: Some(evidence),
+        email_assertion: None,
+        audit_target_object_id: "any-target".to_string(),
+        valid_window: None,
+    };
+    let authz = DummyAuthZ;
+    let result = verify_pet_audit_authorization(
+        &authz,
+        &ctx,
+        None,
+        Some(WEBAUTHN_AUDIT_RP_ID),
+        Some(WEBAUTHN_AUDIT_ORIGIN),
+        None,
+        None,
+        current_unix_time(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(PetError::InvalidInput(_))),
+        "an assertion authorizing a different object_id must be rejected: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_email_evidence() {
+    const FROM: &str = "alice@pet-audit.example.test";
+    let (_signer, document, object_id) = audit_authz_fixture();
+    let signing_key = TestSigningKey::generate("pet-audit.example.test", "orbistest-pet-audit");
+    let pinned_cache = PinnedDnsCache::default();
+    pinned_cache
+        .insert_dkim_key(
+            "pet-audit.example.test",
+            "orbistest-pet-audit",
+            signing_key.txt_record(),
+        )
+        .expect("valid test DKIM key record");
+    let authenticator = mail_auth::MessageAuthenticator::new_system_conf().expect("authenticator");
+    let operation = PreOperation {
+        object_id: object_id.clone(),
+        rdr_pk: b"email-rdr-pk".to_vec(),
+        derivation: None,
+        salt: None,
+        issued_at: current_unix_time(),
+        expiry: current_unix_time() + 300,
+        nonce: [8u8; 16],
+    };
+    let evidence = email_audit_evidence(&signing_key, FROM, &operation);
+    let ctx = PetCheckContext {
+        ring_state_sha256: String::new(),
+        public_polynomial: Vec::new(),
+        document,
+        salt: operation.salt.clone(),
+        object_id,
+        document_inline: false,
+        token_string: String::new(),
+        rdr_pk: operation.rdr_pk.clone(),
+        derivation: operation.derivation.clone(),
+        webauthn_assertion: None,
+        email_assertion: Some(evidence),
+        audit_target_object_id: "any-target".to_string(),
+        valid_window: None,
+    };
+    let authz = DummyAuthZ;
+    let result = verify_pet_audit_authorization(
+        &authz,
+        &ctx,
+        None,
+        None,
+        None,
+        Some(&authenticator),
+        Some(&pinned_cache),
+        current_unix_time(),
+    )
+    .await;
+    let actor_id =
+        result.expect("a genuinely matching, pinned-key-verified email reply must be accepted");
+    assert_eq!(
+        actor_id,
+        format!(
+            "did:key:{}",
+            hex::encode(sha2::Sha256::digest(FROM.as_bytes()))
+        ),
+        "the derived actor_id must be did:key:sha256(the confirmed address)"
+    );
+}
+
+/// Same dispatch, but with no pinned cache supplied — the synthetic
+/// signing key was never published to live DNS, so this must fail inside
+/// the email branch rather than silently falling through to live DNS (or
+/// to the JWT path). Mirrors
+/// `helpers::auth::tests::rejects_email_evidence_over_live_dns_when_key_is_only_pinned`;
+/// PET's own audit re-check needed its own copy of this guarantee since it
+/// now does its own email dispatch, not because the underlying dispatch
+/// logic is any different.
+#[tokio::test]
+async fn verify_pet_audit_authorization_rejects_email_evidence_over_live_dns_when_key_is_only_pinned(
+) {
+    const FROM: &str = "alice@pet-audit.example.test";
+    let (_signer, document, object_id) = audit_authz_fixture();
+    let signing_key =
+        TestSigningKey::generate("pet-audit.example.test", "orbistest-pet-audit-live-dns");
+    let authenticator = mail_auth::MessageAuthenticator::new_system_conf().expect("authenticator");
+    let operation = PreOperation {
+        object_id: object_id.clone(),
+        rdr_pk: b"email-rdr-pk".to_vec(),
+        derivation: None,
+        salt: None,
+        issued_at: current_unix_time(),
+        expiry: current_unix_time() + 300,
+        nonce: [8u8; 16],
+    };
+    let evidence = email_audit_evidence(&signing_key, FROM, &operation);
+    let ctx = PetCheckContext {
+        ring_state_sha256: String::new(),
+        public_polynomial: Vec::new(),
+        document,
+        salt: operation.salt.clone(),
+        object_id,
+        document_inline: false,
+        token_string: String::new(),
+        rdr_pk: operation.rdr_pk.clone(),
+        derivation: operation.derivation.clone(),
+        webauthn_assertion: None,
+        email_assertion: Some(evidence),
+        audit_target_object_id: "any-target".to_string(),
+        valid_window: None,
+    };
+    let authz = DummyAuthZ;
+    let result = verify_pet_audit_authorization(
+        &authz,
+        &ctx,
+        None,
+        None,
+        None,
+        Some(&authenticator),
+        // No pinned cache: this must not fall through to live DNS.
+        None,
+        current_unix_time(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(PetError::InvalidInput(_))),
+        "email evidence for a key that was never pinned must be rejected, not resolved over \
+             live DNS: {:?}",
         result
     );
 }
@@ -945,6 +1301,10 @@ async fn handle_commit_request_rejects_a_request_with_no_valid_audit_authorizati
             object_id: object_id_for(&fixture),
             document_inline: false,
             token_string: "not-a-jwt".to_string(),
+            rdr_pk: Vec::new(),
+            derivation: None,
+            webauthn_assertion: None,
+            email_assertion: None,
             audit_target_object_id: AUDIT_TARGET.to_string(),
             valid_window: None,
         },
@@ -993,6 +1353,10 @@ async fn handle_commit_request_accepts_a_request_with_valid_audit_authorization(
             object_id,
             document_inline: false,
             token_string: token,
+            rdr_pk: b"unused".to_vec(),
+            derivation: None,
+            webauthn_assertion: None,
+            email_assertion: None,
             audit_target_object_id: AUDIT_TARGET.to_string(),
             valid_window: None,
         },
@@ -1014,7 +1378,7 @@ async fn handle_commit_request_accepts_a_request_with_valid_audit_authorization(
 fn authorized_pet_context(fixture: &TagFixture) -> PetCheckContext {
     let mut context = admission_ctx(fixture);
     context.token_string = TestKeyPair::new()
-        .create_pre_jwt(b"unused".to_vec(), &context.object_id, None, None)
+        .create_pre_jwt(context.rdr_pk.clone(), &context.object_id, None, None)
         .expect("sign token")
         .0;
     context
@@ -1383,6 +1747,10 @@ fn admission_ctx(fixture: &TagFixture) -> PetCheckContext {
         object_id: object_id_for(fixture),
         document_inline: false,
         token_string: String::new(),
+        rdr_pk: Vec::new(),
+        derivation: None,
+        webauthn_assertion: None,
+        email_assertion: None,
         audit_target_object_id: AUDIT_TARGET.to_string(),
         valid_window: None,
     }
