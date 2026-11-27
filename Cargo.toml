@@ -50,14 +50,14 @@ orbis-webauthn = { path = "crates/integrations/webauthn" }
 orbis-email = { path = "crates/integrations/email" }
 orbis-sdk = { path = "bin/orbis-sdk", default-features = false }
 
-vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
-vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "fc0bd8e47019a5f3175239884ab4ae935f3b973f" }
+acp = { package = "sourcenetwork-acp", version = "=0.0.1" }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
 # Common dependencies across workspace
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }

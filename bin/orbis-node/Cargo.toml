@@ -58,7 +58,7 @@ hyper-util = { workspace = true }
 [dev-dependencies]
 wiremock = "0.6"
 defra-edge = { package = "edge", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606" }
-acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "25da44c835b810e854caa938d5c55052da8525e7" }
+acp-light-client = { package = "vera-light-client", git = "https://github.com/sourcenetwork/vera.rs", rev = "c1ccb6ebb9611f16b1f32a02dcf47061aea1eb27" }
 defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606", default-features = false, features = ["p2p"] }
 defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606", default-features = false, features = ["iroh-transport"] }
 defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e6f673bf5229b3fbb98a5ee2afae8ecdd8e6606" }
@@ -78,7 +78,7 @@ commonware-codec = { version = "=2026.10.0" }
 k256 = { workspace = true }
 vera-crypto = { workspace = true }
 vera-harness = { workspace = true }
-vera-acp = { workspace = true }
+acp = { workspace = true }
 vera-modules = { workspace = true }
 alloy-sol-types = "1"
 authz = { path = "../../crates/authz", default-features = false, features = ["test-helpers"] }
